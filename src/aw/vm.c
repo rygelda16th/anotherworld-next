@@ -69,6 +69,7 @@ uint16_t aw_call_stack[256];
 uint8_t aw_sp;
 
 uint8_t aw_goto_next;
+uint8_t aw_out_of_budget;
 uint16_t aw_blits;
 uint16_t aw_part_req;
 uint8_t aw_bad_op;              /* opcodes above 0x1A, which the engine errors on */
@@ -420,11 +421,24 @@ void aw_check_requests(void) __z88dk_fastcall
     }
 }
 
+/* An OPCODE BUDGET, so the harness always terminates. While op_updateMemList is a
+ * stub the intro's script waits for a resource that never arrives and a thread
+ * loops without ever reaching pauseThread - and a checker cannot read a spinning
+ * machine reliably, because the MMU is moving underneath it. A tracing harness
+ * wants a bound on its own account. */
+uint16_t aw_budget;
+
 static void execute_thread(void)
 {
     uint8_t opcode;
     uint16_t pc_before;
     while (!aw_goto_next) {
+        if (aw_budget == 0) {
+            aw_goto_next = 1;
+            aw_out_of_budget = 1;
+            return;
+        }
+        --aw_budget;
         pc_before = aw_pc_now;
         opcode = fetch_byte();
         aw_logrec(1, pc_before, opcode);
@@ -444,6 +458,8 @@ uint8_t aw_host_frame(void) __z88dk_fastcall
 {
     uint8_t t, blitted = 0;
     for (t = 0; t < NUM_THREADS; ++t) {
+        if (aw_out_of_budget)
+            break;
         if (aw_state[t])
             continue;
         if (aw_pc[t] == INACTIVE)
@@ -473,7 +489,10 @@ int main(void)
     aw_init_part();
     aw_blits = 0;
     aw_log_count = 0;
+    aw_out_of_budget = 0;
     for (aw_frames_done = 0; aw_frames_done < aw_frames; ++aw_frames_done) {
+        if (aw_out_of_budget)
+            break;
         aw_check_requests();
         aw_host_frame();
     }

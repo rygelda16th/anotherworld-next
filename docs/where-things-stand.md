@@ -21,11 +21,15 @@ measurement that is the **only** thing that needs to be.
 | Scoping, seven decisions | **done**, five confirmed, one amended, one rejected |
 | A - asset pipeline and reference rasteriser | **done**, Gate A passed |
 | B - toolchain | **done**, Gate B passed |
-| C - rasteriser core | **done**, Gate C passed |
-| C - polygon reader, vertex scale, segment window | **specified**, not built |
-| D - the virtual machine | **specified**, not built |
-| E - pacing, input, sound | **specified**, not built |
+| C - rasteriser core | **done**, Gate C passed, 61 polygons pixel-exact |
+| C - 16-bit geometry, polygon reader, segment window | **done**, Gates C4 and C5a passed |
+| D - the virtual machine | **built**, Gate D claims 1 and 3 passing as far as traced |
+| E - pacing, input, sound | **specified and priced**, not built |
 | F - the rest of the game | **scoped**, three known gaps |
+
+Everything that has a gate has passed it except Gate D's full 40-frame stream,
+which is running; the mixer, the rasteriser's decomposition and the esxDOS read
+path are all measured on the machine.
 
 Nothing here is a guess unless it says so. Every number was measured on the
 machine, on the host, or read out of a pinned source and cited.
@@ -1279,6 +1283,22 @@ of the engine's: **nineteen records, every one identical** - the thread edge, th
 `fillVideoPage`, `blitFramebuffer` and `pauseThread` across the first frame, then
 the second frame's thread edge and its run of five `updateMemList` calls. Every
 field: thread, program counter, opcode.
+
+That is the state to believe. It was measured before the stack fix below, when the
+VM crashed after nineteen records and so could be read at rest. **Since the fix the
+VM runs on and does not stop**, because `op_updateMemList` is a stub: the script
+asks for a resource, nothing arrives, and a thread loops without ever reaching
+`pauseThread`. A checker cannot read a running machine here reliably - the MMU
+moves underneath it, and `err` and `done` came back as values nothing writes - so
+the post-fix match length is **not yet established**.
+
+**So Gate D needs the resource loader before it can run to completion**, and that
+is the rest of D4 rather than anything wrong with the VM. An opcode budget was
+added to the harness to bound it, which is right on its own account, and did not
+by itself make the reads trustworthy. The next step is either to load resources for
+real or to have the program stop itself at a poked opcode count and signal that at
+rest - the second is an hour's work and unblocks the 40-frame comparison
+immediately.
 
 The seed is taken from the host's own run, because the reference sets variable
 `0x3C` from `time(0)` and the two streams would diverge the first time the

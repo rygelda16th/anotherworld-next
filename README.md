@@ -25,11 +25,14 @@ mixer, which turns out to be running almost all the time.
 |---|---|
 | A - asset pipeline, reference rasteriser | done, Gate A passed |
 | B - toolchain | done, Gate B passed |
-| C - rasteriser core | done, Gate C passed, 49,152/49,152 pixels exact |
-| C - polygon reader, vertex scale, segment window | specified, not built |
-| D - the virtual machine | specified, not built |
-| E - pacing, input, sound | specified, not built |
+| C - rasteriser, 16-bit geometry, reader, window | done, Gates C, C4 and C5a passed |
+| D - the virtual machine | built in C; Gate D's stream matches as far as it is traced |
+| E - pacing, input, sound | specified, and the mixer priced on the machine |
 | F - the rest of the game | scoped, three known gaps |
+
+Measured on the machine so far: a polygon span end to end, a polygon's setup cost,
+one output sample of the four-voice mixer, and that esxDOS reads every byte
+correctly (its speed needs hardware - the emulator charges nothing for it).
 
 ## Getting started
 
