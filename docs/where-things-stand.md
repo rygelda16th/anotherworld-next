@@ -2039,7 +2039,7 @@ had failed to find in dozens.
 | **I5** | **sound in the game** - `op_playSound` and `op_playMusic` reach the gated player, **and the music module is parsed** | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | SFX and music events fire at the same frames as the engine's `sound.txt`, the mixer output stays byte-exact **on real sound resources**, and the module's order table and patterns match `sfxplayer.cpp`'s reading of them |
 | **I6** | **part transitions** - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
 | **I7** | **the full-screen bitmap path** | 70 of them load in the arena and no gate covers the machine half | the arena's bitmaps, on the machine, against the engine's pages |
-| **I8** | **the code screen, and its bypass** | "fully playable" includes it, and the bypass keeps the gates comparable to the reference build | the screen renders and accepts a correct code; with the flag set the sequence is skipped exactly as `BYPASS_PROTECTION` skips it |
+| **I8** | **the code screen, and its bypass** - which is a **starting part number**, not a subsystem | the wheel screen is `GAME_PART1` and is drawn by ordinary bytecode (`engine.cpp:71-73`); the bypass keeps every gate comparable to the reference build | the screen renders and accepts a correct code; with the flag set, part 2 starts directly, exactly as `BYPASS_PROTECTION` does |
 | **I9** | **save and load** | in the definition of done, and the reference has a format to match | save mid-part, reload, and both the VM state and the opcode stream from that point match a run that never saved |
 | **I9a** | **the whole suite, on the game** | every gate in Chain 1 was run against a HARNESS, not against the integrated binary | all twelve checkers pass against `aw.nex` rather than their own `.nex`, and the four narrow gates below pass against a gameplay part |
 | **I10** | **playable to the end** - every part, real input | this is the goal | **a full playthrough under the patched ZEsarUX**, recorded, with the per-frame budget re-measured on the real thing against the per-part table |
@@ -2092,6 +2092,207 @@ program that pages every region named above in turn and reads a signature back o
 of each. If two of them cannot coexist, that is known in an hour instead of after a
 week of integration - and it is exactly the shape of experiment that has worked
 here before.
+
+### The steps in full
+
+Citations are to the pinned AWBI checkout in `preflight/hostprobe/probe`, which is
+GPL-2.0-or-later and may be read. Everything each step REUSES is already gated;
+where a step has real risk it names the cheapest experiment that would kill it.
+
+#### I1a. Read a real keyboard, and a joystick behind the same mask
+
+**Nothing in this project reads input.** `src/petest.asm` proves the mapping and is
+handed its input as two poked bytes, `in_mask` and `in_button`. That mapping is
+exact - all 32 combinations, against `inp_updatePlayer`'s own order - and it is the
+half that was hard. The half that does not exist is acquisition.
+
+The six variables it drives are `VM_VARIABLE_HERO_POS_UP_DOWN 0xE5`,
+`HERO_ACTION 0xFA`, `HERO_POS_JUMP_DOWN 0xFB`, `HERO_POS_LEFT_RIGHT 0xFC`,
+`HERO_POS_MASK 0xFD` and `HERO_ACTION_POS_MASK 0xFE` (`vm.h:35-44`).
+
+Write one routine that produces the mask `petest.asm` already consumes: five bits,
+four directions and a button. Read the keyboard's half-rows on port `$FE` and OR in
+a Kempston read on port `$1F`, so a joystick needs no second code path and H1 has
+nothing to add but wiring. Wolf3D-next's key handling is the model and is ours to
+copy from.
+
+**Gate:** the six variables track real keys, with `check-pace`'s existing table as
+the oracle - the same 32 combinations, driven from the keyboard rather than from a
+poke.
+
+#### I2. The VM draws
+
+The six callbacks in `src/vmtest.asm` that currently increment a word become the
+real thing. Each has an exact counterpart:
+
+| callback | the reference | what it becomes |
+|---|---|---|
+| `aw_draw_poly` | `readAndDrawPolygon` `video.cpp:85`, `fillPolygon` `video.cpp:127`, `readAndDrawPolygonHierarchy` `video.cpp:222` | the gated reader and rasteriser, already pixel-exact over 771 polygons at 55 zooms |
+| `aw_select_page` | `changePagePtr1` `video.cpp:491` | a pointer swap among four pages |
+| `aw_fill_page` | `fillPage` `video.cpp:498` | a 49,152-byte fill, already priced |
+| `aw_copy_page` | `copyPage(src, dst, vscroll)` `video.cpp:513` | **and vscroll is not optional** - it is how the game scrolls |
+| `aw_blit` | `updateDisplay` `video.cpp:597` | NextReg `$12`, with `$FE` meaning no change and `$FF` meaning swap |
+| `aw_set_palette` | `changePal` `video.cpp:587` | a Layer 2 palette select, and **it applies BEFORE the flip** |
+
+**Four pages, not three** (`video.cpp:49`, `malloc(4 * VID_PAGE_SIZE)`; `_pages[4]`
+at `video.h:70`), and ours are 49,152 bytes rather than the original's 32,000.
+
+**Gate:** `check-ref` pointed at the machine instead of at the Python reference -
+the intro's four pages, byte for byte against the engine's.
+
+**The trap this step exists to avoid** is already recorded twice in this document:
+the reference was at fault twice and the machine right. So when the pages differ,
+suspect the harness before the rasteriser - and bisect to the first polygon, the way
+`checkpoly.py` does, rather than reading a 49,152-byte diff.
+
+#### I3. Resources arrive at runtime
+
+`op_updateMemList` currently notices a part request and does nothing else. The
+reference's chain is `loadPartsOrMemoryEntry` (`resource.cpp:258`) into
+`loadMarkedAsNeeded` (`166`) into `readBank` (`32`), with `invalidateRes` (`229`)
+and `invalidateAll` (`241`) clearing between parts.
+
+**The decompression is already done.** `tools/mkassets.py` writes every resource out
+as a file - `RES%02X.BIN` for anything that passes through, `PAL%02X.BIN` for the
+nine palette resources, `BMP%02X.BIN` for the full-screen bitmaps - so `readBank`'s
+Bytekiller unpacking happens on the host at asset-build time, not on the Z80. 125
+RES, 9 PAL and 12 BMP files are on the card now. The six types are `RT_SOUND 0`,
+`RT_MUSIC 1`, `RT_POLY_ANIM 2` (0x7D00 bytes), `RT_PALETTE 3` (2048),
+`RT_BYTECODE 4`, `RT_POLY_CINEMATIC 5` (`resource.h:65-76`).
+
+So this step is the memory list and the lifetime, not the codec: which resources a
+part marks as needed, where they land in banked RAM, and what is freed when the part
+changes.
+
+**Gate:** every resource the intro and part 2 ask for arrives, its CRC cancels **on
+the machine**, the heap stays under its reservation, and the in-frame load is
+measured and reported.
+
+**The thing to measure, not assume:** `op_updateMemList` loads one resource inside a
+frame and the largest is 65,230 bytes. Step 5 established that the emulator cannot
+time esxDOS, so this frame's cost is unknown until H1 - report it, do not model it.
+
+#### I4. Text
+
+`drawString` (`video.cpp:267`) looks a string id up in `_stringsTableEng`
+(`staticres.cpp:123`) and calls `drawChar` (`video.cpp:299`) per character: an 8x8
+glyph, x in character cells and y in pixel rows.
+
+Two things are already in hand. The font is dumped - 96 glyphs of 8 bytes from
+`' '`, written to `font.bin` by the probe rather than transcribed. And the string
+table is static data in the reference, so it converts on the host like everything
+else.
+
+**Gate:** every string the intro draws, pixel-exact against the reference.
+
+#### I5. Sound in the game
+
+`op_playSound` and `op_playMusic` reach the player that `make check-snd` already
+proves. **But read what that gate actually covers before trusting it:** it proves
+the mixer's arithmetic - four voices byte-exact at three block lengths, nine ring
+wraps, nothing written outside the ring - and `src/sndtest.asm` feeds it **a
+synthetic ramp**, chosen so that a wrong pointer shows as a wrong value. It has
+never mixed one of the game's own sound resources.
+
+And the music is a module, not a sample. `SfxModule` holds `curPos`, `curOrder`,
+`numOrder` and an `orderTable[0x80]`, with `SfxInstrument` and `SfxPattern` beside
+it (`sfxplayer.h:24-38`); `loadSfxModule(resNum, delay, pos)`, `setEventsDelay` and
+`handleEvents` drive it (`sfxplayer.h:71-76`). **Nothing anywhere in this project
+has parsed that format.** It is the largest single piece of unwritten code in
+Chain 2.
+
+**Gate, in two halves because it is two claims:** SFX and music events fire at the
+same frames as the engine's `sound.txt` log; and the mixer's output stays byte-exact
+**on the game's own sound resources**, not on a ramp.
+
+#### I6. Part transitions
+
+`aw_part_req` is set and never acted on. The reference acts on it between frames -
+`setupPart` (`resource.cpp:280`) takes a part id, bounds-checks it against
+`GAME_PART_FIRST 0x3E80` and `GAME_PART_LAST 0x3E89`, and loads the **four**
+resources that part names.
+
+That table is the whole structure of the game (`parts.cpp:14-28`): ten parts, each
+one a palette, a bytecode segment, a first video segment and an optional second.
+Parts 3 through 8 share video2 `0x11`; parts 9 and 10 share all three of `0x7D`,
+`0x7E`, `0x7F`.
+
+**Gate:** the intro runs into part 2 and part 2 into part 3 unaided, and the opcode
+stream matches the engine's **across** the transition - which is where a missed
+`invalidateAll` or an un-reset thread table shows up.
+
+#### I7. The full-screen bitmap path
+
+`RT_POLY_ANIM`, 0x7D00 bytes, presented by the second `copyPage` overload
+(`video.cpp:550`) which takes a raw source rather than a page id.
+
+Half of this is gated: `make check-bitmap` proves `mkassets.py`'s deplaner is the
+engine's, pixel for pixel, on real resources. The machine half does not exist. The
+data is one plane per 8K page and the deplaner reads one byte from each of four
+pages per output group.
+
+**Gate:** the arena's bitmaps, on the machine, against the engine's pages.
+
+**Why this is work rather than wiring:** 70 of them load in part 7 and **zero** in
+72,000 frames of parts 2 and 3, so nothing measured so far has paid for this path -
+not its load time, not its blit cost, not the frame it lands in.
+
+#### I8. The code screen, and its bypass - much cheaper than it looks
+
+**The protection screen is a game part.** `engine.cpp:71-73`:
+
+    uint16_t part = GAME_PART1;  // This game part is the protection screen
+    #ifdef BYPASS_PROTECTION
+      part = GAME_PART2;
+
+`GAME_PART1` is `0x3E80` and its three resources are `0x14`, `0x15`, `0x16`
+(`parts.cpp`, first row, commented "protection screens"). There is no special-case
+code to port: the wheel screen is drawn by the same opcodes as everything else, and
+**the bypass is a different starting part number.** Part 10, `0x3E89`, is the
+password screen and is likewise just a part.
+
+So I8 is: start at part 1, and a build flag that starts at part 2 instead. It earns
+its place in the chain only because it must be *decided* rather than discovered, and
+because the flag keeps every gate comparable to the reference build the measurements
+came from.
+
+**Gate:** the screen renders and accepts a correct code; with the flag set, part 2
+starts directly, exactly as `BYPASS_PROTECTION` does.
+
+#### I9. Save and load
+
+Five objects serialise, in this order (`engine.cpp:136-138` and its neighbours):
+`vm.saveOrLoad` (`vm.cpp:736`), `res.saveOrLoad` (`resource.cpp:358`),
+`video.saveOrLoad` (`video.cpp:624`), `player.saveOrLoad` (`sfxplayer.cpp:212`) and
+`mixer.saveOrLoad` (`mixer.cpp:156`). The engine drives it from two input flags,
+`sys->input.load` and `sys->input.save`, against a slot (`engine.cpp:98-104`), and
+writes a "quicksave" description.
+
+**Our format does not have to be theirs** - nothing reads our saves but us - so the
+work is enumerating the state, not matching a layout. The mixer and the player being
+in that list is the part worth noticing: a save taken mid-note has to restore the
+note.
+
+**Gate:** save mid-part, reload, and both the VM state and the opcode stream from
+that point match a run that never saved. The stream comparison is the real test; a
+state dump that matches can still resume wrongly.
+
+#### I10. Playable to the end
+
+Every part, real input, sound, from the first screen to the ending.
+
+**Gate:** a full playthrough under the patched ZEsarUX, recorded, with the per-frame
+budget re-measured against the per-part table in *Phase F*. The playthrough is the
+gate. Nothing smaller is a substitute for it, which is the whole reason this chain
+exists.
+
+#### H1. Real hardware
+
+Card boot, the joystick's physical wiring, and timing on metal without the three
+local ZEsarUX patches (`prescalar`, `readback`, `autorestart`). Its gate cannot be
+run until the KS3 arrives, and it is the only step in this document of which that is
+true. It is also where the one genuinely unmeasurable number lands: esxDOS read
+rate, which step 5 established the emulator cannot time.
 
 ### Four gates are narrower than they sound, and must be re-run before I10
 
