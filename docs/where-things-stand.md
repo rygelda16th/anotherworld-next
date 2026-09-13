@@ -22,12 +22,22 @@ measurement that is the **only** thing that needs to be.
 | A - asset pipeline and reference rasteriser | **done**, Gate A passed |
 | B - toolchain | **done**, Gate B passed |
 | C - rasteriser core | **done**, Gate C passed |
-| C - polygon reader, vertex scale, register allocation | outstanding |
-| D - the virtual machine | not started |
-| E - pacing, input, sound | not started, and sound is unscoped |
+| C - polygon reader, vertex scale, segment window | **specified**, not built |
+| D - the virtual machine | **specified**, not built |
+| E - pacing, input, sound | **specified**, not built |
+| F - the rest of the game | **scoped**, three known gaps |
 
 Nothing here is a guess unless it says so. Every number was measured on the
 machine, on the host, or read out of a pinned source and cited.
+
+**The headline changed on 2026-09-13.** A second round of host measurement found
+that the previous numbers described the intro cinematic only - with no input the
+run stalls at a "press fire" prompt and 57,386 of 60,000 frames draw nothing -
+and that the frame budget had been compared against the wrong denominator. The
+scripts ask for **80 to 100 ms a frame**, not 20. Measured against the pause each
+frame itself requests, the rasteriser uses a quarter of the time available and
+**0.73% of frames overrun**. The two optimisations that were on the critical path
+are now optional. See *What has been measured*.
 
 ## Run it
 
@@ -38,6 +48,8 @@ machine, on the host, or read out of a pinned source and cited.
     make check-span    step 0: what one polygon span costs
     make check-cc      Gate B: C calls assembly at a fixed address and returns
     make check-poly    Gate C: the rasteriser, pixel-exact vs the reference
+    make frame-load    every frame against the pause its own script asked for
+    make voices        how many mixer voices are live, and at what rates
     make toolchain-diff  has the shared toolchain drifted from wolf3d-next?
 
 `make check-ref` and `make check-poly` need the host probe built and run first;
@@ -262,8 +274,9 @@ into the glibc image - hence a separate container rather than a build stage.
 
 **Fallback if that image ever disappears:** a from-source build with
 `BUILD_SDCC` unset builds cleanly and yields sccz80 instead of zsdcc. Verified.
-Adequate here, because the VM's worst measured frame dispatches 96 opcodes
-against a 280 budget.
+Adequate here: the VM's worst measured frame dispatches 509 opcodes, which at
+the measured 400 T of dispatch is 9% of the pause the scripts ask for, so even
+sccz80's worse code generation has room.
 
 ---
 
@@ -331,6 +344,14 @@ the original calls it twice, so the second call overwrites it.** The loop height
 comes from the *second* edge. For a well-formed trapezoid both are equal, which
 is why taking the first passed every frame of a 64,897-polygon trace, but it is
 not what the original does.
+
+And three more, from the second round of measurement on 2026-09-13:
+
+| Claim | Finding |
+|---|---|
+| the scripts set the pause to 1 to 5 slices | true as a range and misleading as a fact. They ask for **4 slices 71.8% of the time in gameplay and 5 slices 78.9% of the time in the intro**. A budget of one refresh a frame was never the game's budget |
+| `_scriptStackCalls` is 64 entries | the *declaration* is 64 (`vm.h:81`), the *serialiser* writes 256 (`vm.cpp:712`), and the *bounds check* allows 255 (`vm.cpp:96-99`). The reference can overrun its own array. Allocate 256 |
+| the child count in a hierarchy record is a count | it is a count **minus one**, read as an unsigned byte and widened to signed, then looped while `>= 0` (`video.cpp:210-215`). 0 means one child; 255 means 256 |
 
 ### The three sizes that shape the memory map
 
@@ -419,28 +440,113 @@ nothing.
 
 ### On the host, over real bytecode
 
-12,000 frames through a headless instrumented build of the reference interpreter,
-reaching the intro cinematic and the first gameplay part by natural progression.
+Two runs through a headless instrumented build of the reference interpreter: 12,000
+frames with no input, and 60,000 frames with synthetic input.
 
-| Per VM frame | Intro mean | Gameplay mean | Worst seen | Budgeted |
+**The second run exists because the first one lies.** Without input the intro
+reaches its "press fire" prompt and stops: over 60,000 frames, 57,386 of them draw
+nothing at all, the player-and-enemy polygon segment is never loaded, and every
+number describes the protection screen and the intro cinematic. The probe now
+takes a fourth argument that walks right, jumps and fires, which is enough to
+enter the game and to keep dying in it - and a death restarts the part, which is
+the heaviest drawing there is.
+
+| Per VM frame | Intro mean | Gameplay mean | Worst intro | Worst gameplay |
 |---|---|---|---|---|
-| opcodes dispatched | 20.9 | 13.5 | **96** | 280 |
-| polygons filled | 20.3 | 1.3 | 270 | |
-| spans drawn | 152 | 7.6 | **4,004** | |
-| `fillVideoPage` | 0.02 | 0.00 | 2 | 1 |
-| `copyVideoPage` | 0.82 | 1.00 | 2 | 1 |
+| opcodes dispatched | 20.9 | 64.0 | 96 | **509** |
+| polygons filled | 20.3 | 55.4 | 270 | **956** |
+| spans drawn | 152 | 376 | **4,004** | 3,637 |
+| `fillVideoPage` | 0.02 | 0.10 | 2 | 2 |
+| `copyVideoPage` | 0.82 | 0.98 | 2 | 3 |
 
-Span lengths over 469,537 spans: mean about 22 bytes at 256 wide, 87.6% below 47
-bytes, 96.1% below 111.
+Gameplay dispatches five times the opcodes and fills three and a half times the
+polygons, and yet draws **no more spans**. The intro's spans are long - 1.3% of
+them are 256 pixels or wider - and gameplay's are short, 96.0% under 47 bytes
+against the intro's 87.6%. Gameplay draws many more, much smaller shapes.
 
-**Conclusions.** The VM is not the problem and C is safe - 96 opcodes at 400 T is
-under 7% of a refresh, so even a fourfold miss on compiled C fits. The rasteriser
-is the entire cost. Page operations are cheaper than budgeted: a copy about once a
-frame and a fill almost never, so about 16% of a refresh rather than 32%.
+The single heaviest frame is a scene redraw: **956 polygons and 3,637 spans, 3.8
+spans a polygon**, recurring exactly every 141 frames in the autoplay run as the
+part restarts. **That inverts the cost model.** For the intro the span fill is the
+cost; for gameplay the per-polygon setup is, and setup has never been measured on
+the machine.
 
-**Caveats.** Only two parts were reached and no input was fed, so Lester never
-moved and the gameplay means understate real play. Design against the worst-frame
-column. The intro is genuinely the polygon-heavy case.
+### The budget's denominator, which had been assumed
+
+A frame is allowed `vmVariables[0xFF] * 20` ms (`vm.cpp:283-287`), and the
+received wisdom - written into the previous version of this document - is "the
+scripts use 1 to 5". What they actually ask for:
+
+| slices | ms | gameplay, 60,000 blits | intro, 12,000 blits |
+|---|---|---|---|
+| 1 | 20 | 0.0% | 3.0% |
+| 2 | 40 | - | 6.1% |
+| 3 | 60 | 8.1% | 5.2% |
+| 4 | 80 | **71.8%** | 6.4% |
+| 5 | 100 | 20.1% | **78.9%** |
+| 6 and 9 | 120, 180 | - | 0.3% |
+
+**The game asks for 80 to 100 ms a frame.** It is a 10 to 12 fps game by design -
+which is what Another World looked like on an Amiga - and the budget is four to
+five refreshes, 2.24 to 2.80 million T-states, not 560,000.
+
+### What that does to the rasteriser's verdict
+
+`make frame-load` scores every frame against the pause **it itself asked for**,
+using the measured 672 T span and sweeping the per-polygon setup cost because that
+one has not been measured on the machine yet:
+
+| | p50 | p90 | p99 | worst | frames that overrun | mean load |
+|---|---|---|---|---|---|---|
+| intro | 0.18 | 0.46 | 1.52 | 13.3 | 0.07% | 6.6% |
+| gameplay | 0.76 | 1.94 | 2.43 | 9.95 | **0.73%** | **24.8%** |
+
+In refreshes, at 3,000 T a polygon. Swept from 1,500 to 4,500 T the overrun rate
+does not move from 0.73% at all, because the frames that miss are the handful of
+enormous ones and nothing near the median is close to its deadline.
+
+**So the rasteriser is comfortably fast enough.** It uses a quarter of the time
+the scripts give it, the 99th percentile has 40% spare against a four-slice pause,
+and fewer than one frame in a hundred overruns. The frames that do overrun are
+room entries and part restarts, where a long frame reads as a load rather than as
+a stutter.
+
+The previous reading - "the worst frame clears its budget by about 4%, passing but
+not comfortable" - was the worst frame of the whole run set against a **one**-slice
+pause that the scripts almost never request. The arithmetic was right and the
+comparison was wrong.
+
+### Structure, heap and voices
+
+`structure.patch` on the host probe, over 3.3 million polygon records and 990,000
+hierarchy records. Each of these decides a design rather than describing the
+engine:
+
+| | measured | what it decides |
+|---|---|---|
+| deepest hierarchy nesting | **4** | a four-entry explicit stack, not recursion |
+| widest fan-out | 119 children | the child counter is a byte and 119 fits it |
+| most vertices in one record | 40, an 83-byte record | any sliding window over 8K is overkill |
+| full-screen bitmaps loaded | **0** in 72,000 frames | the `RT_POLY_ANIM` path is unexercised, and so unverified by Gate A |
+| peak script-heap use | **241,363** of 581,632 bytes | 30 pages of 8K, 15 banks |
+
+Voices, simulated by `make voices` from the event log, each voice holding its
+channel until it is replaced, stopped, or exhausted at its own playback rate:
+
+| | silent | mean voices | all four busy |
+|---|---|---|---|
+| intro, music playing | **1.7%** | 2.83 | 26.1% |
+| gameplay, effects only | 25.0% | 1.60 | 9.7% |
+
+**Sound is not an occasional cost.** Through the intro something is playing 98.3%
+of the time and the mean is nearly three voices, so the mixer is a permanent tax
+on the frame budget and has to be counted as one - not, as wolf3d-next could
+fairly treat it, as "2 to 7% while something plays". Playback rates run 3,327 to
+25,031 Hz with a median of 10,559, and 205 of 710 voice starts loop, so a looping
+voice holds its channel until something displaces it.
+
+The 25,031 Hz top end is the one number that constrains the output rate: a mix
+clocked below it decimates the fastest samples. The reference itself mixes at
+22,050 (`sysImplementation.cpp:30`).
 
 ### On the machine
 
@@ -463,18 +569,30 @@ is the evidence that the harness measures what it claims.
     PER SPAN, end to end             672 T
     worst frame, 4,004 spans         2,692,379 T = 4.81 refreshes
 
-**The budget.** A VM frame is the script's pause-slice variable times 20 ms, and
-the scripts use 1 to 5, so the budget is 560,000 to 2,800,000 T-states. The worst
-frame fits a five-slice pause with about 4% spare. Passing, not comfortable.
+**Read that last line against the right budget.** A five-slice pause is 2,800,000
+T, so the worst frame of the whole run fits it - and the scripts ask for four or
+five slices over 90% of the time. Scored frame by frame against the pause each one
+requests, 0.73% overrun; see *What that does to the rasteriser's verdict* above.
 
-**Where the margin is**, in order of return: hold the four accumulator words in
-registers across a trapezoid instead of loading and storing them per scanline,
-which is most of the 433 T; and unroll the blend and copy fills as the opaque one
-already is, taking blend from 32 to about 19 T/byte and copy from 37.5 to about
-24. Both are techniques already measured here, not guesses.
+**Where the margin is, if it is ever wanted**, in order of return: hold the four
+accumulator words in registers across a trapezoid instead of loading and storing
+them per scanline, which is most of the 433 T; and unroll the blend and copy fills
+as the opaque one already is, taking blend from 32 to about 19 T/byte and copy from
+37.5 to about 24. Both are techniques already measured here, not guesses.
 
-**Stores versus PUSH cross at 12 bytes**, and 88% of real spans are longer, so the
-fill should be PUSH with a store fallback below that.
+**Neither is on the critical path any more.** They were, while the worst frame was
+being compared against one refresh. They now buy smoothness on room entries.
+Before either, measure the thing that gameplay actually spends its time on: the
+**per-polygon setup cost**, which no measurement here has isolated. `check-poly`
+already takes a polygon limit, so fitting cost against limit over several runs
+gives it for almost nothing - the same fitting method `check-span` used for cost
+per byte.
+
+**Stores versus PUSH cross at 12 bytes**, and 88% of the intro's spans are longer,
+so the fill should be PUSH with a store fallback below that. In gameplay 96% of
+spans are under 47 bytes and the median is far shorter, so **re-check that
+crossover against gameplay's distribution** before trusting it: the fallback may
+be the common path, not the exception.
 
 ### Palette loss
 
@@ -564,16 +682,94 @@ coverage. `calc_step` is separately exhaustive at **648 of 648 cases**.
 
 `make check-poly`.
 
-### Still outstanding in Phase C
+### Still outstanding in Phase C, now specified
 
-- the polygon reader: both opcode forms, including the five nested conditionals
-  over the bit-6 opcode's low bits, and the child hierarchy with its saved
-  program counter
-- the vertex scale on the machine (the arithmetic is specified above)
-- the register allocation that attacks the 433 T of per-span overhead
-
-All three are now protected by the test vector, which is what makes them safe to
+All of it is protected by the Gate C test vector, which is what makes it safe to
 attempt rather than hopeful.
+
+**C4. The polygon reader.** `video.cpp:83-115` for the record forms,
+`video.cpp:206-243` for the hierarchy, `vm.cpp:485-580` for the two opcode forms
+that enter it.
+
+A record's first byte decides everything:
+
+| first byte | meaning |
+|---|---|
+| `>= 0xC0` | a leaf. If the incoming colour has bit 7 set, the colour becomes `byte & 0x3F`. Vertices follow. |
+| `& 0x3F == 2` | a hierarchy record |
+| anything else | the reference warns and draws nothing. Do the same, and count it. |
+
+A leaf is `bbw`, `bbh`, `numPoints`, then `numPoints` pairs, every one scaled by
+`* zoom / 64` (`video.cpp:25-37`). `numPoints` is asserted even and under 50.
+
+A hierarchy record subtracts a scaled (x, y) from the incoming point, then reads a
+child count as **an unsigned byte widened to signed** and loops while `childs >= 0`
+(`video.cpp:206-213`). So the byte is children **minus one**: 0 means one child and
+255 means 256. Each child is a word offset, a scaled (x, y) pair, and - only when
+bit 15 of the offset is set - a colour byte read from the stream **without
+advancing past it**, followed by an unconditional `pc += 2` (`video.cpp:226-230`).
+The target is `(off & 0x7FFF) * 2` **from the segment base, not from the current
+position**, and the reader restores its own program counter afterwards.
+
+Measured depth is 4, so a four-entry explicit stack of saved offsets is enough.
+Size it eight and assert on overflow rather than trusting the measurement: it is a
+measurement of two parts out of ten.
+
+**The two opcode forms** differ in how much they fetch, not in what they draw:
+
+- **bit 7 set** (`vm.cpp:485-505`): the offset is `((opcode << 8) | nextByte) * 2`,
+  x and y are single **signed** bytes, the buffer is always the cinematic segment,
+  the zoom is always 0x40, and the colour passed in is `0xFF`, whose bit 7 is set -
+  which is what lets the record's own first byte supply the colour. Then the y
+  clamp: `h = y - 199; if (h > 0) { y = 199; x += h; }` - a **diagonal** slide, not
+  a clamp, and easy to write as two independent clamps by mistake.
+- **bit 6 set** (`vm.cpp:507-577`): five nested conditionals over bits 5, 4, 3, 2,
+  1 and 0 choosing whether x, y and zoom come from a second byte, a variable, or a
+  constant - and two of the branches **rewind the program counter by one** before
+  substituting 0x40 for the zoom. One of those also switches the buffer to
+  `_segVideo2`. Bit 0 with bit 1 set is the only path that reads the
+  player-and-enemy segment at all, which is why the intro never touches it.
+
+**C5. Zoom composes with the vertex scale, and the order is not free.** The
+reference computes `byte * zoom / 64` in 320x200 space and truncates; our scale
+(above) then maps to 256x192 and truncates again. Two truncations, in that order.
+Folding them into one multiply, or scaling before zooming, differs on values a
+well-chosen test will find.
+
+**And a test drawn from the intro would barely find any of them.** `DEFAULT_ZOOM`
+is 0x40, which makes the first step the identity, and over the 64,897 polygons of
+the traced intro window **97.4% are at zoom 0x40**. There are 55 distinct zooms in
+there, but the whole non-identity tail is 2.6% of the polygons, running from 0x49
+to 0x153 - so magnification as well as reduction. Gameplay reaches the bit-6
+opcode form 9.4 times a frame against the intro's 2.6, so draw any zoom vector
+from the autoplay trace.
+
+**Gate C does not test the zoom at all, by construction.** The host probe records
+a polygon's bounding box and vertices *after* `readVertices` has applied the zoom,
+so `tools/mkpolytest.py` gets post-zoom geometry and the machine is fed the same.
+That was the right call - it made Gate C a test of the rasteriser alone - but it
+means the zoom multiply and the vertex scale need a check of their own, in the
+shape of `mkcsteps`: enumerate byte against zoom over the real range, compute both
+truncations on the host, compare on the machine. Exhaustive is 256 x 340 = 87,040
+cases - a table too large to ship, a loop small enough to run.
+
+**C6. The segment window.** A thread's program counter and a polygon offset are
+both 16-bit offsets from a segment base, and the largest cinematic segment is
+**65,230 bytes** - 306 bytes short of everything 16 bits can address. A segment
+therefore cannot be mapped linearly into a 64K space that also holds code, and
+there is no 16-bit arithmetic to avoid, because the offsets are genuinely 16-bit.
+
+Map a **two-page 16K window**: `page = off >> 13`, address `$C000 + (off & 0x1FFF)`,
+with pages `base + page` and `base + page + 1` in MMU6 and MMU7. Any record
+starting in the low half can then be read to its end without a remap, since the
+longest leaf measured is 83 bytes and the widest hierarchy record 717 - three
+header bytes and 119 children of six. A
+record starting in the high half needs the window advanced by one page first,
+which costs one `nextreg` and a subtraction.
+
+**C7. The register allocation** that attacks the 433 T of per-span overhead. **Now
+optional.** See the note in *On the machine*: measure the per-polygon setup cost
+first, because gameplay spends its time there and nothing has weighed it.
 
 ### Six faults, and one was in the specification
 
@@ -619,49 +815,481 @@ Not the 49,152-byte comparison, which only ever says that something is wrong.
 
 ---
 
-## What is next
+## Phase D - the virtual machine
 
-**Phase D, the virtual machine**, is unblocked and has everything it needs.
+Unblocked, and specified below. Every fact is read out of the pinned reference and
+cited. Each step is gated on the previous one's measurement, and the gates are
+cheap deliberately: a VM that is wrong in one opcode is a VM that renders almost
+correctly, which is the worst kind of wrong to debug at the end.
 
-1. the scheduler in C: the doubled request arrays applied between frames, and the
-   shared 64-entry call stack whose pointer resets per thread
-2. the 27 table opcodes, plus the two polygon dispatches calling into Phase C
-3. resource loading over esxDOS from the Phase A blobs, and part switching
+### D1. Where a part's data lives
 
-Gate D: `make check-boot` - the thread table matches `initForPart` exactly
-(thread 0's PC at 0, every other thread inactive at `0xFFFF`, all channel states
-zero), thread 0's PC advances between two reads, and then the intro renders.
+A part is four resources. These are the real sizes, from the user's own memlist via
+`tools/memlist.py`:
 
-Phase C's three outstanding items can be done before or alongside D; the reader is
-a prerequisite for the intro actually rendering.
+| part | palette | bytecode | cinematic | video2 | total |
+|---|---|---|---|---|---|
+| protection | 2,048 | 4,321 | 5,124 | - | 11,493 |
+| intro cinematic | 2,048 | 9,871 | 65,230 | - | 77,149 |
+| 3, water | 2,048 | 20,810 | 57,510 | 25,108 | 105,476 |
+| 4, jail | 2,048 | 39,695 | 53,720 | 25,108 | 120,571 |
+| 5, cave | 2,048 | 62,683 | 65,132 | 25,108 | **154,971** |
+| battlechar cinematic | 2,048 | 8,287 | 29,212 | - | 39,547 |
+| 7, arena | 2,048 | 50,736 | 64,958 | 25,108 | 142,850 |
+| 8, baths | 2,048 | 2,886 | 20,026 | 25,108 | 50,068 |
+| 9, final | 2,048 | 4,257 | 5,048 | - | 11,353 |
+| password screen | 2,048 | 4,257 | 5,048 | - | 11,353 |
+
+The largest bytecode is 62,683 bytes and the largest cinematic 65,230, and the
+player-and-enemy segment is always resource 0x11 at 25,108 bytes (`parts.cpp:14-26`).
+
+On top of a part, sound effects load at run time onto the same heap and are never
+freed until the part changes (`resource.cpp:165-222`), so the peak is not the part
+total: **measured peak 241,363 bytes**. As 8K pages that is 30 pages, or 15 banks
+of 16, against 112 on the 2 MB profile with 12 already spent on the four
+framebuffers. There is room, and the constraint is the 64K address space, not the
+memory.
+
+**The heap is two-ended in the reference and does not need to be here.** Script
+data grows up from the bottom; a 32,000-byte staging area sits at the top for
+full-screen bitmaps, and `_vidCurPtr` never advances, so it is a fixed scratch
+buffer rather than an allocator (`resource.cpp:337-341`). Our allocator is a page
+counter: each resource gets whole 8K pages, rounded up, which wastes about 4K per
+resource across the 53 seen live - 217K of a 2 MB machine, for an allocator with
+no arithmetic in it.
+
+**The decision: pre-decompress on the host.** `make check-data` already decodes
+every resource and proves its CRC cancels; `make assets` writes them out flat, so
+the Next never runs byte-killer and never carries its 32-bit reservoir. That trades
+1,730,258 bytes of SD card - the whole game, decoded - for the entire decompressor.
+The data stays the user's and out of the repository, exactly as `DATA_DIR` does for
+Wolf3D.
+
+### D2. The scheduler
+
+`engine.cpp:31-42` is the whole main loop, four calls:
+
+    checkThreadRequests();     apply what last frame asked for
+    inp_updatePlayer();        input into variables 0xE5, 0xFA-0xFE
+    processInput();            save/load slots; ours does nothing
+    hostFrame();               run all 64 threads once
+
+`checkThreadRequests` (`vm.cpp:401-431`) does three things in order: it switches
+part if one was requested; it copies `vmIsChannelActive[REQUESTED]` over
+`[CURR]` for every thread; and for every thread whose `REQUESTED_PC` is not
+`0xFFFF` it moves that into `PC`, translating the sentinel `0xFFFE` to
+`0xFFFF`, then resets the request to `0xFFFF`. The doubling is the whole point:
+a thread may retarget or pause any thread including itself, and nothing takes
+effect until the frame boundary.
+
+`hostFrame` (`vm.cpp:433-476`) skips threads whose `CURR` state is non-zero, sets
+the script pointer from the thread's PC, **resets `_stackPtr` to 0**, clears
+`gotoNextThread`, and runs `executeThread` until an opcode sets it. A thread with
+no `pauseThread` (0x06) or `killThread` (0x11) in its path never yields.
+
+**The call stack is one shared scratch array, and the reference's own bounds
+disagree.** It is declared `uint16_t _scriptStackCalls[64]` (`vm.h:81`), serialised
+as 256 entries (`vm.cpp:712`), and bounds-checked against 255 (`vm.cpp:96-99`) -
+and the check happens *after* the write. Allocate **256** and assert. Because the
+pointer resets per thread, a `call` cannot survive a `pauseThread`: this is
+scratch, not per-thread state, and it is the correction that most changes code.
+
+**Initial state**, `initForPart` (`vm.cpp:381-398`): stop music and all channels,
+set `vmVariables[0xE4] = 0x14`, load the part, fill `threadsData` entirely with
+`0xFF` bytes so every PC and request is `0xFFFF`, zero both channel-state arrays,
+then set thread 0's PC to 0. And from `init` (`vm.cpp:34-49`): `vmVariables[0x54]
+= 0x81`, the random seed in `0x3C`, and - because we bypass the protection screen
+as the reference does - `0xBC = 0x10`, `0xC6 = 0x80`, `0xF2 = 4000`, `0xDC = 33`.
+Those four are set by the original game code and executable, not by the bytecode,
+so a port that omits them starts a part that cannot work.
+
+### D3. The opcodes
+
+27 in the table, `0x00` to `0x1A` (`staticres.cpp:31-59`), plus the two polygon
+forms. Operand bytes are what the fetch sequence consumes:
+
+| op | name | operands | notes |
+|---|---|---|---|
+| 0x00 | movConst | var, word | |
+| 0x01 | mov | var, var | |
+| 0x02 | add | var, var | wraps as int16 |
+| 0x03 | addConst | var, word | carries a protection-screen special case at part 0x3E86, pc 0x6D48 |
+| 0x04 | call | word | pushes the return offset, then `++sp` |
+| 0x05 | ret | - | `--sp` then read |
+| 0x06 | pauseThread | - | yields to the next thread |
+| 0x07 | jmp | word | |
+| 0x08 | setSetVect | thread, word | writes `REQUESTED_PC`, effective next frame |
+| 0x09 | jnz | var, word | **pre-decrements the variable**, then jumps if non-zero |
+| 0x0A | condJmp | op, var, (var\|word\|byte), word | see below |
+| 0x0B | setPalette | word | uses the **high byte** only |
+| 0x0C | resetThread | thread, last, action | see below |
+| 0x0D | selectVideoPage | page | |
+| 0x0E | fillVideoPage | page, colour | |
+| 0x0F | copyVideoPage | src, dst | vertical scroll comes from variable 0xF9 |
+| 0x10 | blitFramebuffer | page | the frame boundary: pacing, then display |
+| 0x11 | killThread | - | sets pc to 0xFFFF |
+| 0x12 | drawString | word, x, y, colour | x is a character cell, y a pixel row |
+| 0x13 | sub | var, var | |
+| 0x14 | and | var, word | unsigned |
+| 0x15 | or | var, word | unsigned |
+| 0x16 | shl | var, word | unsigned, count is a **word** |
+| 0x17 | shr | var, word | unsigned, count is a **word** |
+| 0x18 | playSound | word, freq, vol, chan | freq indexes a 40-entry table; `vol == 0` stops the channel |
+| 0x19 | updateMemList | word | 0 stops everything and invalidates; `> numMemList` requests a part |
+| 0x1A | playMusic | word, word, pos | res 0 with a delay only changes the tempo |
+
+`condJmp` (`vm.cpp:142-208`) fetches a sub-opcode and a variable, then its second
+operand from bit 7 (a variable), bit 6 (a word) or neither (a byte), and compares
+on the low three bits: 0 `==`, 1 `!=`, 2 `>`, 3 `>=`, 4 `<`, 5 `<=`, and 6 or 7
+warn and fall through. **Signed comparison throughout** - both operands are
+`int16_t` - which on the Z80 means the overflow-aware form, not `sbc hl,de` and a
+carry test. `cmp_signed` from Phase C already exists.
+
+`resetThread` (`vm.cpp:217-245`) reads a first thread, a last thread masked to
+`& 63`, and an action. If `last < first` it warns and does nothing. Action 2 writes
+`0xFFFE` into `REQUESTED_PC` for the inclusive range - which
+`checkThreadRequests` turns into "inactive". Action 0 or 1 writes that value into
+`REQUESTED_STATE` for the range, pausing or resuming. Action 3 and above does
+nothing at all, silently.
+
+`drawString` needs the engine's own string table: **140 English strings, 2,202 text
+bytes plus a 560-byte (id, offset) index, 2,762 bytes total**, ids from 0x0001 to
+0x0265 (`staticres.cpp`). It is code, not game data, so it ships in the binary
+under GPLv2 like the 768-byte font already does.
+
+**Why C is still the right answer.** Worst gameplay frame is 509 opcodes. At the
+measured 400 T of dispatch that is 203,600 T, **9% of a four-slice pause**. Even a
+fourfold miss on compiled C fits. Nothing in this table wants assembly.
+
+### D4. Loading, over esxDOS
+
+Flat files from `make assets`, one per resource, plus the memlist as a table.
+Per part: four resources, worst case 154,971 bytes; per `updateMemList`, one
+resource, worst case 41,506 bytes (sound 0x69). Load order in the reference is by
+descending `rankNum` (`resource.cpp:170-181`), which our flat loader can ignore -
+it only mattered for packing a single heap.
+
+Two traps are already paid for on the other project and cost nothing to avoid here:
+
+- **esxDOS pages itself over the bottom 16K during a file call**, so nothing in
+  slots 0 or 1 may be the code doing the reading, and Layer 2 write-through has to
+  be off across it.
+- **esxDOS takes a machine-code caller's buffer in IX**, not HL - HL is the BASIC
+  caller's. wolf3d-next's `fs_*` set both after CSpect wrote a filename over the
+  code following it.
+
+**Unmeasured, and the first thing D4 should measure:** the read rate. A 155,000-byte
+part load at an unknown rate is the only number in Phase D with no evidence behind
+it. `make check-load` - open, read a part's four resources into their pages, time it
+with the frame counter - answers it before any of the rest is built, because if a
+part load takes four seconds that is a loading-screen design decision, not an
+implementation detail.
+
+### D5. Gate D
+
+`make check-boot`, in four claims, each of which fails loudly on its own:
+
+1. **The thread table matches `initForPart` exactly.** Thread 0's PC is 0, all 63
+   others are `0xFFFF`, every `REQUESTED_PC` is `0xFFFF`, both channel-state arrays
+   are entirely zero, and `vmVariables` holds `0x54 = 0x81`, `0xE4 = 0x14` and the
+   four bypass values. Read back over ZRCP.
+2. **A frame advances.** Thread 0's PC differs between two reads, and the
+   `pauseThread` count is non-zero - a VM that never yields would also "advance".
+3. **The opcode trace matches the host.** Extend the host probe to log
+   (thread, pc, opcode) for the first N frames, log the same on the machine into a
+   ring in a spare page, and compare. This is the gate that matters: it catches a
+   wrong operand length at the opcode that has it, rather than as a wrong picture
+   4,000 opcodes later. It is the VM's equivalent of Gate C's bisect, and for the
+   same reason - **a whole-image comparison only ever says that something is
+   wrong**.
+4. **Then the intro renders**, and `check-ref`'s page comparison can be run against
+   the machine rather than against the Python reference.
+
+Gate D3 is a prerequisite for D4 being meaningful, and C4 (the reader) is a
+prerequisite for D4 rendering anything.
+
+---
+
+## Phase E - pacing, input, sound
+
+### E1. Pacing
+
+`op_blitFramebuffer` (`vm.cpp:274-296`) is the frame boundary and does four things:
+handles the special keys, sleeps for `vmVariables[0xFF] * 20` ms **minus the time
+already elapsed since the last blit**, zeroes `vmVariables[0xF7]`, and updates the
+display.
+
+The subtraction is the part worth copying exactly: the pause is a deadline, not a
+delay, so a frame that took 60 ms of a 80 ms budget sleeps 20 and the game keeps
+time. A port that sleeps the full 80 runs at two thirds speed and looks correct
+while doing it.
+
+Our clock is the 50 Hz frame interrupt, so the arithmetic is in refreshes rather
+than milliseconds: `slices * 1` refresh each, wait until the counter reaches the
+deadline, and **if it has already passed, do not wait** - that is how the 0.73% of
+overrunning frames degrade, by losing time rather than by dropping out of sync.
+
+`updateDisplay` (`video.cpp:567-589`) takes a page id, with `0xFE` meaning "no
+change" and `0xFF` meaning "swap the two display pages", and applies a pending
+palette change **before** presenting. On our hardware presenting is `NextReg $12`
+and the palette is already resident in one of the two 256-entry Layer 2 palettes,
+so both are register writes and the order between them is what matters: palette
+first, then the flip, or one frame shows new pixels in the old palette.
+
+### E2. Input
+
+`inp_updatePlayer` (`vm.cpp:501-537`) maps a direction mask and one button into six
+variables, and the mapping has two quirks worth reading off the source rather than
+inferring:
+
+| variable | meaning |
+|---|---|
+| 0xE5 | up/down, where **up is checked twice** - once to set -1, once to set the jump |
+| 0xFB | jump/down: down is 1, up is -1 |
+| 0xFC | left/right: right 1, left -1 |
+| 0xFD | a bitmask: right 1, left 2, down 4, up 8 |
+| 0xFA | the action button, 0 or 1 |
+| 0xFE | the same mask plus 0x80 for the button |
+
+Left and right both set their value, so pressing both gives left. `0xE5` is
+assigned `ud` and then **overwritten** by -1 if up is held, which is not the same
+as `0xFB`.
+
+`inp_handleSpecialKeys` (`vm.cpp:539-566`) is pause, which is refused during parts
+1 and 2, and the code screen, which requests the password part - the game's own
+level select. Both worth having; neither is on the path to the intro rendering.
+
+Part 0x3E89, the password screen, also consumes typed characters into
+`vmVariables[0xDA]`, uppercased by `& ~0x20` (`vm.cpp:488-495`).
+
+### E3. Sound
+
+**This is no longer unscoped, and it is bigger than it looked.** Sound is live
+98.3% of the intro at a mean of 2.83 voices; see *Structure, heap and voices*. It
+is a permanent cost, not an occasional one.
+
+**What the engine does.** Four channels of 8-bit signed PCM
+(`mixer.cpp:96-146`). Each channel holds a sample pointer, a 24.8 fixed-point
+position, an increment of `(freq << 8) / outputRate`, a volume of 0 to 0x3F, and an
+optional loop point. Per output sample the mixer linearly interpolates between two
+adjacent sample bytes by the fractional part, scales by `volume / 0x40`, sums into
+the buffer and clamps to int8. A non-looping sample deactivates its channel at the
+end; a looping one wraps to `loopPos` and plays forever.
+
+Sound effects come from `op_playSound` with a frequency **index** into a 40-entry
+table running 0x0CFF to 0x7BBD - 3,327 to 31,677 Hz (`staticres.cpp:61-67`) - and
+a resource whose first eight bytes are a header: length and loop length, both in
+words (`vm.cpp:668-694`).
+
+Music is a four-channel tracker (`sfxplayer.cpp`): a module of 15 instruments,
+a 128-entry order table and 1,024-byte patterns, stepped by a timer whose period is
+`delay * 60 / 7050` ms, four bytes per channel per row. A row can set a volume with
+effect 5 or 6, stop a channel with note `0xFFFE`, or write
+`vmVariables[0xF4]` with note `0xFFFD` - **the music drives a VM variable**
+(`sfxplayer.cpp:183`, wired in `vm.cpp:48`), which is how the game synchronises to
+the score. Note periods convert as `7159092 / (period * 2)`, straight Amiga
+arithmetic.
+
+That last one is a coupling, not a detail: the sound tick writes into the VM's
+input, so the mixer cannot be a wholly separate subsystem that runs when there is
+time spare. It has to tick on schedule whether the renderer is busy or not - which
+is what the ring-and-interrupt design gives, and what a "mix at the end of the
+frame" design would not.
+
+**The hardware, and why most of this is already built.** wolf3d-next has a proven,
+measured digitised-sample path that is the same shape: zxnDMA in burst mode
+streaming a 2K ring buffer to the DAC on port `$DF` with auto-restart, at a rate
+set by the prescalar, while a tick asks the DMA where it is and mixes ahead of it.
+It cost 2 to 7% of the machine there for one to four voices. Its `docs/sound.md` is
+the reference, and it depends on the same three local ZEsarUX patches this project
+already carries.
+
+Three things Another World adds:
+
+1. **Per-voice resampling.** Wolf3D's samples all play at one rate; these span
+   3,327 to 25,031 Hz and each channel has its own. So each voice needs the 24.8
+   accumulator, which is three bytes of add and a page-crossing fetch per output
+   sample.
+2. **64 volume levels**, against Wolf3D's nine fixed attenuation tables. Either a
+   64 x 256 table, which is 16,384 bytes and so exactly two 8K pages, or Z80N's
+   `MUL D,E` on the magnitude with a conditional negate. Measure both; the table is
+   probably one `ld a,(hl)` and the multiply is 8 T plus the sign handling.
+3. **Loops**, which Wolf3D has none of. A looping voice never ends on its own, which
+   is why occupancy is what it is.
+
+**The output rate is the one real decision**, and it is a trade with no correct
+answer available from the source:
+
+| rate | cost at 4 voices | what it loses |
+|---|---|---|
+| 22,050, as the reference | ~22% of the machine | nothing |
+| 15,625, one per scanline | ~16% | decimates above 15.6 kHz |
+| 11,025 | ~11% | decimates the top third of the frequency table |
+
+Those percentages are scaled from wolf3d-next's measured mixer and are the least
+evidenced numbers in this document. Measure before choosing. Against a mean
+rasteriser load of 24.8%, even the expensive option leaves half the machine idle,
+so the answer is probably 22,050 - but say so after measuring, not before.
+
+**Drop the linear interpolation**, at least at first: it doubles the fetches and
+adds a multiply per voice per sample, and its purpose is to soften the aliasing of
+an Amiga sample played at the wrong rate. Whether it is audible here is a listening
+question, and the honest way to answer it is to build both and compare recordings.
+
+**What cannot be a byte-exact gate.** Every other gate here compares against the
+real engine byte for byte. Sound cannot: we choose a different output rate, so the
+samples differ by construction. So the specification has to be a **host reference
+mixer at our chosen rate** - the same role `tools/refvideo.py` plays for the
+rasteriser, and the same discipline. `sound.txt` is already the event trace it
+needs to consume.
+
+### E4. Gate E
+
+1. `make check-pace` - a script asking four slices produces frames 80 ms apart,
+   measured from the recording, and a deliberately overlong frame loses time rather
+   than drifting out of step.
+2. `make check-input` - each key sets the six variables to the values the table
+   above says, including both-directions-at-once and the double assignment to 0xE5.
+3. `make check-mix` - the machine's ring, read back, matches a host mixer fed the
+   same event trace at the same rate, sample for sample; then the recording carries
+   each voice at the right rate through its overlap, as wolf3d-next's `check-digi`
+   does.
+
+---
+
+## Phase F - the rest of the game
+
+Scoped, not specified, and it is honest to say which parts are genuinely unknown.
+
+**F1. The parts beyond the intro.** Everything measured here is parts 2 and 3 of
+ten. The remaining parts are bigger in bytecode - part 5 is 62,683 bytes against
+the intro's 9,871 - and the bit-6 opcode form with a real zoom and the
+`_segVideo2` buffer is a gameplay path the intro never takes. The cheap experiment
+is the probe's own password screen: `inp_handleSpecialKeys` requests part 0x3E89 on
+the code key, so a probe that types a known level code reaches later parts without
+playing through them.
+
+**F2. The full-screen bitmap path, which no gate covers.** `RT_POLY_ANIM`
+resources - 12 of them, 32,000 bytes each - are loaded into a staging buffer and
+deplaned into page 0 by `Video::copyPage(const uint8_t *)` (`video.cpp:523-549`).
+**Zero were loaded in 72,000 frames**, so Gate A's byte-exactness says nothing
+about this path, and `tools/mkassets.py` has a host port of the deplaner that has
+never been checked against the engine.
+
+Its shape on the Next is pleasant: the four bit planes are 8,000 bytes each, so
+**one plane per 8K page**, and the deplaner reads one byte from each of four pages
+and writes eight pixels. Planes in slots 2 to 5, the destination band in slot 6,
+code in slot 7, ROM in 0 and 1 - it fits exactly. It also needs the same
+nearest-neighbour resample as the palette bitmaps, since 320x200 has to become
+256x192.
+
+Find where they are used first: `grep` the decoded resource types for which parts
+reference them, and if it is only the ending, it is an ending-sized problem.
+
+**F3. Save and load.** The reference serialises the VM, the resource heap pointers
+and the mixer (`serializer.cpp`). Ours has a page-counter allocator instead of a
+heap, so a save file is the variable array, the thread tables, the part id and the
+mixer's channel state - a few hundred bytes, not a memory image. Not required for
+the game to be playable.
+
+**F4. The palette question, still David's.** Nine palette resources, 32 palettes,
+RGB444 to RGB333: 44.4% of palettes lose nothing, 35.1% lose one colour, and the
+worst loses five of sixteen. A quantiser that nudged colliding entries apart would
+trade hue for separation at no run-time cost. Same class of call as coarse detail
+and pixel doubling on the other project.
+
+**F5. The 320x256 mode**, decided against in decision 1 and worth re-reading once
+the game runs, since the game's own 320x200 maps into it without horizontal
+resampling at all. The cost is five banks of stride-256 columns and a rasteriser
+that writes down columns rather than along rows, which is a different program, not
+a flag.
+
+---
+
+## What is next, and what gates what
+
+The order is forced by measurement, not by preference. Each step below is
+unblocked only once the one it names has produced a number.
+
+| # | do this | because | gate |
+|---|---|---|---|
+| 1 | **price the mixer's inner loop** for one voice | it is the largest unpriced cost in the project, and it decides the output rate | a fitted T-per-output-sample, as `check-span` fitted T-per-byte |
+| 2 | **measure the per-polygon setup cost** by fitting `check-poly` over several polygon limits | gameplay spends its time there and every budget number carries it as a guess | a fitted T-per-polygon |
+| 3 | **C4, the polygon reader** | nothing renders a real scene without it | the Gate C vector, redrawn from the autoplay trace so bit-6 records with real zooms are covered |
+| 4 | **C6, the segment window** | a 65,230-byte segment cannot be mapped flat | a read of the last byte of the largest cinematic segment |
+| 5 | **D4's read rate**, before any of D is built | a four-second part load is a design decision, not a detail | `make check-load` |
+| 6 | **D2 and D3, the scheduler and opcodes** | the rest of the port hangs off them | Gate D, and D3's opcode trace before D4's picture |
+| 7 | **E1 and E2, pacing and input** | the game is unplayable without them and they are small | `check-pace`, `check-input` |
+| 8 | **E3, sound** | priced at step 1, and the ring is already proven on the other project | `check-mix` against a host reference mixer |
+| 9 | **F1, a later part** | everything so far is two parts of ten | the same reports, over part 5 |
+
+Steps 1 and 2 are measurements, not code, and they are first because both of them
+can still change what gets built. Steps 3 and 4 are the remainder of Phase C and
+can proceed in parallel with them.
+
+**The one thing that would change the plan wholesale** is step 1 coming back at
+more than about 35% of the machine for four voices. In that case sound moves from
+"a tick that mixes ahead of a ring" to something that gives up fidelity on
+purpose - fewer voices, a lower rate, or the nearest-sample shortcut - and that is
+a conversation to have with a number in hand, not a decision to take now.
 
 ---
 
 ## Risks, worst first
 
-1. **The worst frame clears its budget by about 4%.** 4,004 spans at 672 T is 4.81
-   refreshes against a five-slice pause. That 4,004 came from one run over two
-   parts with no player input, so a busier frame elsewhere would not fit. Both
-   known optimisations are measured techniques rather than guesses. Separately,
-   extend the host probe with scripted input to find a genuinely worst frame.
-2. **Sound is entirely unscoped.** 103 sound effects and three music resources
-   against three AY chips and a DAC. No estimate, no design, no measurement. It is
-   the easiest thing to postpone, which is how it comes to be underestimated.
-   Cheapest first step: decode one music resource and one effect on the host and
-   look at what they actually are, before assuming wolf3d-next's mixer transfers.
-3. **32K may not hold the C image.** `actors.c` was 5K of code and 10K with data,
-   for one state machine. The fallback is the banked-call plumbing this port hoped
-   to avoid. Read the size off the build, which reports it for nothing.
-4. **Hardware divergence from the emulator**, deliberately minimised rather than
+Reordered on 2026-09-13. What had been risk 1 is now risk 7, and what had been
+risk 2 is now risk 1 - which is the ordinary consequence of measuring two things
+that had been estimated.
+
+1. **The mixer is a permanent cost and its budget is the least evidenced number
+   here.** Sound is live 98.3% of the intro at a mean of 2.83 voices, so the
+   mixer runs essentially always, and the three output-rate options are costed by
+   scaling wolf3d-next's measurement rather than by measuring this mixer. If
+   22,050 Hz with four voices costs 35% rather than the estimated 22%, sound and
+   rasteriser together are most of the machine. **Cheapest experiment:** port the
+   inner mix loop for one voice, benchmark it with `check-span`'s harness - a null
+   mode and a settable length, so the loop subtracts itself - and multiply by
+   four. A day's work that prices the whole phase.
+2. **Everything is measured on two parts out of ten.** Parts 2 and 3 are all the
+   probe reaches. The hierarchy depth of 4, the fan-out of 119, the 83-byte
+   record, the heap peak of 241,363 and every frame-cost percentile are properties
+   of those two parts. **Cheapest experiment:** the probe types a level code at the
+   password screen, which `inp_handleSpecialKeys` already reaches, and the same
+   reports run over a later part.
+3. **The per-polygon setup cost has never been measured**, and gameplay spends its
+   time there rather than in the span fill - 956 polygons at 3.8 spans each in the
+   heaviest frame. Every frame-budget number above carries it as a swept parameter
+   instead. The conclusion survives 1,500 to 4,500 T, but a setup cost of 15,000 T
+   would change it. **Cheapest experiment:** `check-poly` already takes a polygon
+   limit; time several limits and fit, exactly as `check-span` fitted cost per byte.
+4. **The full-screen bitmap path is unverified and its host port unchecked.** Zero
+   `RT_POLY_ANIM` loads in 72,000 frames, so Gate A's byte-exactness covers none of
+   it, and `mkassets.py`'s deplaner has never been compared against
+   `Video::copyPage`. **Cheapest experiment:** deplane one such resource on the host
+   both ways and compare - no machine involved.
+5. **32K may not hold the C image.** `actors.c` was 5K of code and 10K with data,
+   for one state machine. The VM adds 256 int16 variables, two 64-entry word
+   tables, two 64-byte state arrays, a 256-entry call stack and a 2,762-byte string
+   table - about 3.5K of data before any code. The fallback is the banked-call
+   plumbing this port hoped to avoid. Read the size off the build, which reports it
+   for nothing.
+6. **IY under `-clib=sdcc_iy` against esxDOS calls.** The library reserves IY and
+   DOS calls may destroy it. Never exercised, because no preflight program has
+   opened a file - and Phase D opens files as its first act. One C program that
+   opens a file through the assembly loader and then reads a global settles it; the
+   fix is `sdcc_ix` or saving IY.
+7. **The frame budget, now the mildest of these.** 0.73% of gameplay frames
+   overrun the pause their own script asked for, at a mean load of 24.8%. Room
+   entries are where it happens, and a long frame there reads as a load. Both known
+   optimisations remain available and measured. Listed at all because the previous
+   version of this list had it first, on a comparison against a one-slice pause the
+   scripts almost never request.
+8. **Hardware divergence from the emulator**, deliberately minimised rather than
    solved. The MMU window means nothing depends on whether the DMA honours
    `$123B`; dropping the DMA span path means nothing depends on the suspect 1.87
-   T/byte. Only the once-a-frame page copy still touches it. `make check-dma` on
-   the KS3 when it arrives.
-5. **IY under `-clib=sdcc_iy` against esxDOS calls.** The library reserves IY and
-   DOS calls may destroy it. Never exercised, because no preflight program has
-   opened a file. One C program that opens a file through the assembly loader and
-   then reads a global settles it; the fix is `sdcc_ix` or saving IY.
-6. **Dependence on an upstream image tag** for z88dk. Mitigated by pinning the
+   T/byte. Sound puts some of that back, because the ring rests on all three local
+   ZEsarUX patches. `make check-dma` on the KS3 when it arrives.
+9. **Dependence on an upstream image tag** for z88dk. Mitigated by pinning the
    digest as well as the dated tag, and by a proven from-source fallback.
 
 ---
@@ -693,3 +1321,20 @@ Method, which cost more than the code did:
 - **Vary both operands in a unit test.** Zero agrees with corruption.
 - **Read the evidence before changing the thing under test.** One of six faults
   was in the reference, and the machine had been right.
+- **A harness that does nothing measures nothing.** The host probe's `addTimer`
+  was a stub returning a token, so the music player never ticked, no note ever
+  reached the mixer, and voice concurrency read as 1.60 voices instead of 2.83.
+  Every stub in a measurement harness is a claim that the thing it replaces does
+  not matter.
+- **An interactive program left alone measures its idle screen.** 57,386 of
+  60,000 frames drew nothing because nobody pressed fire. The numbers were not
+  wrong; they were answers to a question nobody had asked.
+- **Check the denominator before optimising the numerator.** Weeks of a budget
+  argument rested on "a frame is 20 ms". The scripts ask for 80. The measurement
+  cost four lines in the blit opcode and reversed the conclusion.
+- **Two runs, two output files, one name.** `sound.txt` and `frames.txt` are
+  rewritten on every probe run; a gameplay analysis silently described the intro
+  until the timestamps did not add up. Copy the outputs before re-running.
+- **A trace-window analysis cannot answer a whole-run question.** Voice
+  concurrency needed the entire run, so the sound log deliberately ignores the
+  traced window that everything else respects.

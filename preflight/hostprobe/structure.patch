@@ -1,0 +1,119 @@
+--- a/vm.cpp
++++ b/vm.cpp
+@@ -277,6 +277,8 @@
+ 	uint8_t pageId = _scriptPtr.fetchByte();
+ 	debug(DBG_VM, "VirtualMachine::op_blitFramebuffer(%d)", pageId);
+ 	inp_handleSpecialKeys();
++
++  instrPace(vmVariables[VM_VARIABLE_PAUSE_SLICES]);
+ 
+   int32_t delay = sys->getTimeStamp() - lastTimeStamp;
+   int32_t timeToSleep = vmVariables[VM_VARIABLE_PAUSE_SLICES] * 20 - delay;
+@@ -681,6 +683,7 @@
+ 
+ 	
+ 	if (vol == 0) {
++		instrSound(resNum, 0, 0, channel & 3, 0, 0);
+ 		mixer->stopChannel(channel);
+ 	} else {
+ 		MixerChunk mc;
+@@ -692,6 +695,7 @@
+ 			mc.loopPos = mc.len;
+ 		}
+ 		assert(freq < 40);
++		instrSound(resNum, freq, MIN(vol, 0x3F), channel & 3, mc.len, mc.loopLen);
+ 		mixer->playChannel(channel & 3, &mc, frequenceTable[freq], MIN(vol, 0x3F));
+ 	}
+ 	
+@@ -701,6 +705,7 @@
+ 
+ 	debug(DBG_SND, "snd_playMusic(0x%X, %d, %d)", resNum, delay, pos);
+ 
++	instrMusic(resNum, delay, pos);
+ 	if (resNum != 0) {
+ 		player->loadSfxModule(resNum, delay, pos);
+ 		player->start();
+--- a/video.cpp
++++ b/video.cpp
+@@ -83,6 +83,10 @@
+ 	 This is a recursive function. */
+ void Video::readAndDrawPolygon(uint8_t color, uint16_t zoom, const Point &pt) {
+ 
++	static int instrDepth = 0;
++	++instrDepth;
++	instrPolyDepth(instrDepth, (int)(_pData.pc - _dataBuf));
++
+ 	uint8_t i = _pData.fetchByte();
+ 
+ 	//This is 
+@@ -96,6 +100,8 @@
+ 		// pc is misleading here since we are not reading bytecode but only
+ 		// vertices informations.
+ 		polygon.readVertices(_pData.pc, zoom);
++
++		instrPolyRecord(polygon.numPoints, zoom);
+ 
+ 		fillPolygon(color, zoom, pt);
+ 
+@@ -113,7 +119,7 @@
+ 		}
+ 	}
+ 
+-
++	--instrDepth;
+ 
+ }
+ 
+@@ -219,6 +225,7 @@
+ 	pt.y -= _pData.fetchByte() * zoom / 64;
+ 
+ 	int16_t childs = _pData.fetchByte();
++	instrPolyHier(childs);
+ 	debug(DBG_VIDEO, "Video::readAndDrawPolygonHierarchy childs=%d", childs);
+ 
+ 	for ( ; childs >= 0; --childs) {
+@@ -541,6 +548,7 @@
+ 
+ void Video::copyPage(const uint8_t *src) {
+ 	debug(DBG_VIDEO, "Video::copyPage()");
++	instrBitmap();
+ 	uint8_t *dst = _pages[0];
+ 	int h = 200;
+ 	while (h--) {
+--- a/resource.cpp
++++ b/resource.cpp
+@@ -215,6 +215,8 @@
+ 				me->bufPtr = loadDestination;
+ 				me->state = MEMENTRY_STATE_LOADED;
+ 				_scriptCurPtr += me->size;
++				instrHeap((unsigned)(_scriptCurPtr - _memPtrStart),
++				          me->type, me->size);
+ 			}
+ 		}
+ 
+--- a/sfxplayer.cpp
++++ b/sfxplayer.cpp
+@@ -21,6 +21,7 @@
+ #include "resource.h"
+ #include "serializer.h"
+ #include "sys.h"
++#include "instr.h"
+ 
+ 
+ SfxPlayer::SfxPlayer(Mixer *mix, Resource *res, System *stub)
+@@ -183,6 +184,7 @@
+ 		*_markVar = pat.note_2;
+ 	} else if (pat.note_1 != 0) {
+ 		if (pat.note_1 == 0xFFFE) {
++			instrNote(channel, 0, 0, 0, 0);
+ 			mixer->stopChannel(channel);
+ 		} else if (pat.sampleBuffer != 0) {
+ 			MixerChunk mc;
+@@ -194,6 +196,7 @@
+ 			assert(pat.note_1 >= 0x37 && pat.note_1 < 0x1000);
+ 			// convert amiga period value to hz
+ 			uint16_t freq = 7159092 / (pat.note_1 * 2);
++			instrNote(channel, freq, pat.sampleVolume, mc.len, mc.loopLen);
+ 			debug(DBG_SND, "SfxPlayer::handlePattern() adding sample freq = 0x%X", freq);
+ 			mixer->playChannel(channel, &mc, freq, pat.sampleVolume);
+ 		}

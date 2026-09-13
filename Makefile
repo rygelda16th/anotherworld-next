@@ -24,7 +24,8 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
                    --nosplash --noconfigfile
 
 .PHONY: help certs image doctor shell asm cc emu clean distclean \
-        assets check-data check-ref check-span check-cc check-poly toolchain-diff
+        assets check-data check-ref frame-load voices check-span check-cc \
+        check-poly toolchain-diff
 
 help:
 	@echo "make certs          extract the corporate TLS-inspection CA for the image"
@@ -33,6 +34,8 @@ help:
 	@echo "make assets         convert the player's data to Next form (host only)"
 	@echo "make check-data     Gate A: every resource decodes and its CRC cancels"
 	@echo "make check-ref      Gate A: the reference matches the engine byte for byte"
+	@echo "make frame-load     model every frame against the pause the script asked for"
+	@echo "make voices         how many mixer voices are live, and at what rates"
 	@echo "make cc             compile the C to a raw binary + .exp"
 	@echo "make asm            assemble src/ -> $(BUILD)/*.nex"
 	@echo "make check-span     Step 0: what one polygon span costs, measured"
@@ -88,6 +91,17 @@ PROBE ?= preflight/hostprobe/probe
 check-ref:
 	python3 tools/checkref.py $(PROBE)/trace.bin $(PROBE)/page0.bin \
 		$(PROBE)/page1.bin $(PROBE)/page2.bin $(PROBE)/page3.bin
+
+# The probe's own two reports. frames.txt and sound.txt are overwritten on every
+# run, so an autoplay run and an intro run must be kept in separate files - see
+# the README. FRAMES and VOICES can point at either.
+FRAMES ?= $(PROBE)/frames.txt
+VOICES ?= $(PROBE)/sound.txt
+frame-load:
+	python3 tools/frameload.py $(FRAMES)
+
+voices:
+	python3 tools/voices.py $(VOICES)
 
 # ---- the C step -------------------------------------------------------------
 # z88dk runs from ITS OWN pinned image, not the one built by this Dockerfile. It

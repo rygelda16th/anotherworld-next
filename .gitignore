@@ -8,6 +8,13 @@ certs/
 trace.bin
 page?.bin
 font.bin
+sound.txt
+frames.txt
+# The reference engine is cloned at a pinned commit and patched, never vendored -
+# see preflight/hostprobe/README.md. Both trees are build products.
+preflight/hostprobe/awbi/
+preflight/hostprobe/probe/
+preflight/hostprobe/base/
 __pycache__/
 *.lis
 *.lst

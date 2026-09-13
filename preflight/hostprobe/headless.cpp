@@ -69,39 +69,136 @@ void instrOp(int kind, int a, int b, int c) {
     else                { w8(a); }
 }
 
+/* ---- second round -------------------------------------------------------
+ * Structure, heap and sound. The sound events go to a text file covering the
+ * WHOLE run rather than into trace.bin's traced window, because voice
+ * concurrency is a property of minutes of play, not of the first few frames.
+ */
+uint32_t gPolyDepth, gPolyPts, gPolyChilds, gPolyLeaves, gPolyHiers;
+uint32_t gBitmaps, gHeapPeak;
+static FILE *gSnd = NULL;
+static uint32_t gNow = 0;           /* the virtual clock, in ms */
+
+void instrTick(unsigned ms) { gNow = ms; }
+
+void instrPolyDepth(int depth, int offset) {
+    (void)offset;
+    if ((uint32_t)depth > gPolyDepth) gPolyDepth = depth;
+}
+
+void instrPolyRecord(int npoints, int zoom) {
+    (void)zoom;
+    ++gPolyLeaves;
+    if ((uint32_t)npoints > gPolyPts) gPolyPts = npoints;
+}
+
+void instrPolyHier(int childs) {
+    ++gPolyHiers;
+    if ((uint32_t)childs + 1 > gPolyChilds) gPolyChilds = childs + 1;
+}
+
+void instrBitmap(void) { ++gBitmaps; }
+
+void instrHeap(unsigned used, int type, int size) {
+    if (used > gHeapPeak) gHeapPeak = used;
+    if (gSnd) fprintf(gSnd, "load %u %u %d %d %u\n", gNow, gFrameNo, type, size, used);
+}
+
+void instrSound(int resNum, int freqIndex, int vol, int chan,
+                int len, int loopLen) {
+    if (gSnd) fprintf(gSnd, "sfx %u %u %d %d %d %d %d %d\n", gNow, gFrameNo,
+                      resNum, freqIndex, vol, chan, len, loopLen);
+}
+
+void instrNote(int chan, int hz, int vol, int len, int loopLen) {
+    if (gSnd) fprintf(gSnd, "note %u %u %d %d %d %d %d\n", gNow, gFrameNo,
+                      chan, hz, vol, len, loopLen);
+}
+
+void instrMusic(int resNum, int delay, int pos) {
+    if (gSnd) fprintf(gSnd, "music %u %u %d %d %d\n", gNow, gFrameNo,
+                      resNum, delay, pos);
+}
+
 uint32_t gOpTable, gOpPoly7, gOpPoly6, gThreads, gPolys;
 uint32_t gSpanN, gSpanBlend, gSpanP, gFillPage, gCopyPage;
 uint32_t gSpanHist[336];
 uint16_t gPart = 0;
 
-struct Rec { uint16_t part; uint32_t tbl, p7, p6, th, poly, sN, sB, sP, fp, cp; };
+uint32_t gPaceHist[16];
+uint32_t gPace = 0;
+void instrPace(int slices) {
+    gPace = (unsigned)slices;
+    if (slices >= 0 && slices < 16) ++gPaceHist[slices];
+}
+
+struct Rec { uint16_t part; uint32_t tbl, p7, p6, th, poly, sN, sB, sP, fp, cp, pace; };
 static std::vector<Rec> gRecs;
 static uint32_t gFrameCap = 4000;
+static int gAutoplay = 0;
 
 void instrFrame(void) {
     ++gFrameNo;          /* here, not in the stub: see instrPages */
     Rec r; r.part=gPart; r.tbl=gOpTable; r.p7=gOpPoly7; r.p6=gOpPoly6; r.th=gThreads;
-    r.poly=gPolys; r.sN=gSpanN; r.sB=gSpanBlend; r.sP=gSpanP; r.fp=gFillPage; r.cp=gCopyPage;
+    r.pace=gPace; r.poly=gPolys; r.sN=gSpanN; r.sB=gSpanBlend; r.sP=gSpanP; r.fp=gFillPage; r.cp=gCopyPage;
     gRecs.push_back(r);
     gOpTable=gOpPoly7=gOpPoly6=gThreads=gPolys=gSpanN=gSpanBlend=gSpanP=gFillPage=gCopyPage=0;
 }
 
 struct Headless : System {
     uint32_t _now = 0;
+    TimerCallback _tcb = NULL;
+    void *_tparam = NULL;
+    uint32_t _tiv = 0, _tnext = 0;
     void init(const char *) {}
     void destroy() {}
     void setPalette(const uint8_t *) {}
     void updateDisplay(const uint8_t *) {
         if (gRecs.size() >= gFrameCap) input.quit = true;
     }
-    void processEvents() {}
-    void sleep(uint32_t d) { _now += d; }
+    /* Synthetic input. Without it the intro reaches its "press fire" prompt
+     * and the run stalls there forever: 57,386 of 60,000 frames drew nothing,
+     * so every number came from the protection screen and the intro, and the
+     * player/enemy polygon segment and the full-screen bitmap path were never
+     * exercised at all. This walks right, jumps, and fires, which is enough to
+     * get into the game and to keep dying in it - and a death restarts the
+     * part, which is exactly the drawing we want to weigh. */
+    void processEvents() {
+        if (!gAutoplay) return;
+        uint32_t f = gFrameNo;
+        input.dirMask = 0;
+        if (f % 400 < 260)      input.dirMask |= PlayerInput::DIR_RIGHT;
+        else if (f % 400 < 300) input.dirMask |= PlayerInput::DIR_UP;
+        else if (f % 400 < 330) input.dirMask |= PlayerInput::DIR_LEFT;
+        input.button = (f % 47) < 6;
+    }
+    /* SDL_AddTimer semantics against the virtual clock. Without this the
+     * music player never ticks, so no note ever reaches the mixer and the
+     * voice count reads as "sound effects only" - which is wrong by a factor
+     * of four for most of the game. The callback's return value is the next
+     * interval, exactly as SDL treats it. */
+    void sleep(uint32_t d) {
+        uint32_t end = _now + d;
+        while (_tcb && _tnext <= end) {
+            _now = _tnext;
+            instrTick(_now);
+            uint32_t iv = _tcb(_tiv, _tparam);
+            if (!_tcb) break;                  /* removed from inside */
+            _tiv = iv ? iv : 1;
+            _tnext = _now + _tiv;
+        }
+        _now = end;
+        instrTick(_now);
+    }
     uint32_t getTimeStamp() { return _now; }
     void startAudio(AudioCallback, void *) {}
     void stopAudio() {}
     uint32_t getOutputSampleRate() { return 22050; }
-    int addTimer(uint32_t, TimerCallback, void *) { return 1; }
-    void removeTimer(int) {}
+    int addTimer(uint32_t iv, TimerCallback cb, void *p) {
+        _tiv = iv ? iv : 1; _tcb = cb; _tparam = p; _tnext = _now + _tiv;
+        return 1;
+    }
+    void removeTimer(int) { _tcb = NULL; }
     void *createMutex() { return (void *)1; }
     void destroyMutex(void *) {}
     void lockMutex(void *) {}
@@ -143,6 +240,20 @@ static void report() {
     for (size_t a=0; a<8 && a<idx.size(); ++a) { const Rec &r=gRecs[idx[a]];
         printf("  %-7zu %-5u %8u %8u %8u %8u %8u\n", idx[a], r.part-0x3E80,
                r.tbl+r.p7+r.p6, r.poly, r.sN+r.sB+r.sP, r.fp, r.cp); }
+    /* Worst by SPANS as well as by opcodes. They are not the same frame, and
+     * the rasteriser's budget is set by the span count, so reporting only the
+     * opcode ranking understates the frame that actually has to fit. */
+    printf("\nworst frames by spans drawn:\n");
+    std::vector<size_t> sx; for (size_t k=0;k<gRecs.size();++k) sx.push_back(k);
+    for (size_t a=0;a<sx.size();++a) { for (size_t b=a+1;b<sx.size();++b) {
+        const Rec &A=gRecs[sx[a]], &B=gRecs[sx[b]];
+        if (B.sN+B.sB+B.sP > A.sN+A.sB+A.sP) { size_t t=sx[a]; sx[a]=sx[b]; sx[b]=t; }
+    } if (a>=8) break; }
+    printf("  %-7s %-5s %8s %8s %8s %8s %8s\n","frame","part","ops","polys","spans","fill","copy");
+    for (size_t a=0; a<8 && a<sx.size(); ++a) { const Rec &r=gRecs[sx[a]];
+        printf("  %-7zu %-5u %8u %8u %8u %8u %8u\n", sx[a], r.part-0x3E80,
+               r.tbl+r.p7+r.p6, r.poly, r.sN+r.sB+r.sP, r.fp, r.cp); }
+
     // span histogram
     uint64_t tot=0; for (int k=0;k<336;++k) tot+=gSpanHist[k];
     printf("\nspan lengths (pixels at 320 wide; bytes at 256 wide = x0.8), n=%llu\n",
@@ -161,23 +272,72 @@ static void report() {
     printf("  spans below the 111-byte crossover    : %5.1f%%\n", tot?100.0*under2/tot:0);
 }
 
+/* What the second round measured. Each line is here because it decides a
+ * design question rather than merely describing the engine. */
+static void reportStructure(void) {
+    printf("\nstructure, heap and sound over the whole run\n");
+    printf("  polygon records drawn        %10u\n", gPolyLeaves);
+    printf("  hierarchy records walked     %10u\n", gPolyHiers);
+    printf("  deepest nesting              %10u   (1 = a leaf reached directly)\n",
+           gPolyDepth);
+    printf("  widest fan-out               %10u   children in one record\n",
+           gPolyChilds);
+    printf("  most vertices in one record  %10u   -> %u-byte record\n",
+           gPolyPts, 3 + 2 * gPolyPts);
+    printf("  full-screen bitmaps loaded   %10u   (never in the video trace)\n",
+           gBitmaps);
+    printf("  peak script-heap use         %10u bytes of %u\n",
+           gHeapPeak, 600 * 1024 - 0x800 * 16);
+    printf("  sound.txt written for the whole run\n");
+    /* The budget's denominator. A frame is allowed pause_slices * 20 ms, and
+     * the received wisdom is "the scripts use 1 to 5"; this is what they
+     * actually use. */
+    { uint64_t n = 0; for (int k = 0; k < 16; ++k) n += gPaceHist[k];
+      printf("  pause slices asked for, over %llu blits:\n",
+             (unsigned long long)n);
+      for (int k = 0; k < 16; ++k) if (gPaceHist[k])
+          printf("      %2d slices (%3d ms) %10u  %5.1f%%\n", k, k * 20,
+                 gPaceHist[k], n ? 100.0 * gPaceHist[k] / n : 0.0); }
+
+    /* Every frame's counts, so the T-state model can be fitted and its
+     * percentiles taken on the host with the per-polygon cost as a free
+     * parameter. The worst frame alone decides nothing: a room entry is
+     * allowed to be slow, a walking frame is not. */
+    FILE *f = fopen("frames.txt", "w");
+    if (f) {
+        fprintf(f, "# part ops polys spans fill copy pause_slices\n");
+        for (size_t k = 0; k < gRecs.size(); ++k) {
+            const Rec &r = gRecs[k];
+            fprintf(f, "%u %u %u %u %u %u %u\n", r.part - 0x3E80,
+                    r.tbl + r.p7 + r.p6, r.poly, r.sN + r.sB + r.sP,
+                    r.fp, r.cp, r.pace);
+        }
+        fclose(f);
+        printf("  frames.txt written: %zu frames\n", gRecs.size());
+    }
+}
+
 int main(int argc, char **argv) {
     const char *data = (argc>1)? argv[1] : ".";
     if (argc>2) gFrameCap = atoi(argv[2]);
-    if (argc>3) {
+    if (argc>4) gAutoplay = atoi(argv[4]);
+    if (argc>3 && atoi(argv[3])) {
         gTraceFrames = atoi(argv[3]); gTrace = fopen("trace.bin","wb");
         /* Dump the font rather than transcribe it: 96 glyphs of 8 bytes from
          * ' ', which the reference reads back verbatim. */
         FILE *ff = fopen("font.bin","wb");
         if (ff) { fwrite(Video::_font, 1, 768, ff); fclose(ff); }
     }
+    gSnd = fopen("sound.txt", "w");
     Engine *e = new Engine(stub, data, "/tmp");
     e->init();
     e->run();
+    if (gSnd) { fclose(gSnd); gSnd = NULL; }
     if (gTrace) {
         fclose(gTrace);
         printf("trace.bin written for the first %u frames\n", gTraceFrames);
     }
     report();
+    reportStructure();
     return 0;
 }
