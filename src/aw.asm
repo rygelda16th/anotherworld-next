@@ -76,8 +76,42 @@ L2_BASE_BANK    EQU 12                  ; page 0 = banks 12,13,14
 BANDS           EQU 6                   ; 8K pages of 32 scanlines each
 DWIN            EQU $E000
 NR_DWIN_MMU     EQU $57
-SWIN            EQU $4000
-NR_SWIN_MMU     EQU $52
+; The polygon/cinematic segment's sliding window: $4000-$7FFF, MMU2 and MMU3. polytest
+; puts it over $0000 through MMU0/MMU1, which it has spare; the game cannot, because
+; that is its BYTECODE window and the VM is mid-opcode whenever the reader runs. This
+; is the third slot conflict integration has turned up, and it is why check-map's proof
+; that $4000-$7FFF is ours mattered: without it there is nowhere for this to go.
+SEG_WIN         EQU $4000
+NR_SEG_MMU_LO   EQU $52
+NR_SEG_MMU_HI   EQU $53
+
+; THE SOURCE BAND FOR A COPY-MODE FILL IS THE AWKWARD ONE, and it is worth writing
+; down before aw_draw_poly is wired, because it decides how that routine is built.
+;
+; The rasteriser's copy fill reads its colour from page 0 (video.cpp:352,
+; `colb = *(_pages[0] + off)`), so a copy-mode POLYGON needs a source band mapped while
+; it draws - at the same time as the bytecode window, the segment window, the resident
+; code, the ring and the destination band. That is eight slots for eight slots, with
+; nothing spare.
+;
+; So the source band borrows MMU0 and aw_draw_poly must put back what was there. The
+; VM's own window pointer survives that only because the borrow is returned before the
+; C runs another instruction - the same discipline the reader already uses for rd_page,
+; which had to be learned the hard way when a parent's pointer addressed a child's
+; pages. Nothing is at risk today: aw_draw_poly still only counts.
+SWIN            EQU $0000
+NR_SWIN_MMU     EQU $50
+
+; AND copyVideoPage GETS ITS OWN SLOT, which is not that one.
+;
+; The first version pointed the page copy's source at MMU0 as well, and check-aw failed
+; within 2,067 records with "an invalid opcode": forty-five page copies had each mapped
+; a Layer 2 band over the BYTECODE WINDOW and never put it back, so the VM was
+; dispatching framebuffer. The rasteriser's copy-fill borrow and a whole-page copy are
+; different problems - a copy happens BETWEEN draws, when the segment window is idle, so
+; it can have MMU2 outright. seg_map remaps on every draw, so nothing needs restoring.
+CPWIN           EQU $4000
+NR_CPWIN_MMU    EQU $52
 NR_L2_BANK      EQU $12
 NR_L2_CFG       EQU $70
 L2_PORT         EQU $123B
@@ -601,7 +635,7 @@ aw_copy_page:
         ld      a, c
         call    resolve_page
         call    page_to_p0
-        ld      (src_p0), a
+        ld      (cp_src), a
         ld      a, b
         call    resolve_page
         call    page_to_p0
@@ -609,14 +643,14 @@ aw_copy_page:
         ld      d, BANDS
         ld      e, 0
 .cband:
-        ld      a, (src_p0)
+        ld      a, (cp_src)
         add     a, e
-        nextreg NR_SWIN_MMU, a
+        nextreg NR_CPWIN_MMU, a
         ld      a, (cp_dst)
         add     a, e
         nextreg NR_DWIN_MMU, a
         push    de
-        ld      hl, SWIN
+        ld      hl, CPWIN
         ld      de, DWIN
         ld      bc, $2000
         ldir
@@ -751,6 +785,7 @@ pg_ptr2:    db 1                        ; the page being displayed - video.cpp:5
         EXPORT pg_ptr3
 pg_ptr3:    db 2                        ; the other display page
 fill_col:   db 0
+cp_src:     db 0
 cp_dst:     db 0
         EXPORT cp_unimpl
 cp_unimpl:  db 0                        ; a scrolled copy was asked for: I2 remainder

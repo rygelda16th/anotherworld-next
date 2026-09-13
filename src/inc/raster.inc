@@ -9,6 +9,8 @@
 ; THE INCLUDER MUST DEFINE the two Layer 2 windows, and that is the whole reason this
 ; is parameterised:
 ;
+;   SEG_WIN      where the polygon segment's sliding window appears, with
+;                NR_SEG_MMU_LO and NR_SEG_MMU_HI as its two slots
 ;   DWIN         where the destination band is mapped, and NR_DWIN_MMU its slot
 ;   SWIN         where the source band is mapped for a page copy, and NR_SWIN_MMU
 ;
@@ -441,7 +443,6 @@ poly_draw:
 ; with more ways to be wrong. rd_depth refuses past 8 and counts it.
 ;-----------------------------------------------------------------------------
 
-SEG_WIN         EQU $0000               ; MMU0 + MMU1: 16K of the polygon segment
 X_MUL           EQU 205
 Y_MUL           EQU 246
 
@@ -457,9 +458,14 @@ seg_map:
         ld      a, (seg_base)
         add     a, e
         ld      (rd_page), a            ; remembered, so a parent can restore it
-        nextreg NR_MMU0, a
+        ; THE SLOT PAIR IS THE INCLUDER'S. polytest maps the polygon segment over
+        ; $0000 through MMU0 and MMU1, which it has spare. The game cannot: that is
+        ; its BYTECODE window, and the VM is mid-opcode when the reader runs. The game
+        ; maps the segment at $4000 through MMU2 and MMU3 instead - the region this
+        ; project had written off - which is the third slot conflict integration found.
+        nextreg NR_SEG_MMU_LO, a
         inc     a
-        nextreg NR_MMU1, a              ; the next page too
+        nextreg NR_SEG_MMU_HI, a        ; the next page too
         ld      a, h
         and     $1F
         add     a, SEG_WIN >> 8
