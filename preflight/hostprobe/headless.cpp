@@ -61,6 +61,37 @@ void instrChar(int ch, int x, int y, int colour, int page) {
     w8(6); w8(ch); w8(x); w16(y); w8(colour); w8(page);
 }
 
+/* kind 7: one top-level polygon draw, as the bytecode asked for it. The record
+ * is what the reader needs and nothing else: which segment, the byte offset into
+ * it, and the three parameters the two opcode forms compute. */
+void instrDraw(int useVideo2, int off, int colour, int zoom, int x, int y) {
+    if (!gTrace || gFrameNo >= gTraceFrames) return;
+    w8(7); w8(useVideo2); w16(off); w16(colour); w16(zoom); w16(x); w16(y);
+}
+
+/* The segments themselves, written once a part. Without these the kind 7 records
+ * are offsets into nothing. */
+static int gSegDump = 0;
+void instrSegments(const unsigned char *cine, int cineSize,
+                   const unsigned char *v2, int v2Size) {
+    if (!gTraceFrames) return;
+    char nm[48];
+    snprintf(nm, sizeof nm, "seg_cine_%d.bin", gSegDump);
+    FILE *f = fopen(nm, "wb");
+    if (f) { fwrite(cine, 1, cineSize, f); fclose(f); }
+    if (v2 && v2Size) {
+        snprintf(nm, sizeof nm, "seg_video2_%d.bin", gSegDump);
+        f = fopen(nm, "wb");
+        if (f) { fwrite(v2, 1, v2Size, f); fclose(f); }
+    }
+    printf("dumped segments for part index %d: cinematic %d bytes, video2 %d\n",
+           gSegDump, cineSize, v2Size);
+    /* And a marker IN the trace, because a kind 7 offset means nothing without
+     * knowing which segment it indexes and the part changes mid-trace. */
+    if (gTrace) { w8(8); w8(gSegDump); }
+    ++gSegDump;
+}
+
 void instrOp(int kind, int a, int b, int c) {
     if (!gTrace || gFrameNo >= gTraceFrames) return;
     w8(kind);

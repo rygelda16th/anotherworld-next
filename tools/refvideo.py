@@ -268,6 +268,89 @@ class RefVideo:
         dy = (p2[1] - p1[1]) & 0xFFFF
         return _s32((p2[0] - p1[0]) * INTERP[dy & 0x3FF] * 4), dy
 
+    # ---- the polygon reader -------------------------------------------------
+    # Video::readAndDrawPolygon (video.cpp:83-115), readAndDrawPolygonHierarchy
+    # (video.cpp:206-243) and Polygon::readVertices (video.cpp:25-37).
+    #
+    # This works in the original's 320x200 space and emits exactly the
+    # fillPolygon calls the engine emits, which is what makes it checkable: the
+    # host probe logs both the top-level draw calls and the resulting fillPolygon
+    # calls, so the two sequences can be compared record for record. Our own
+    # 256x192 scale is deliberately NOT here - RefVideo8 applies it in the fill,
+    # so the reader is one thing under test.
+
+    @staticmethod
+    def zoomed(v, zoom):
+        """`(*p++) * zoom / 64` - an unsigned byte times zoom, truncated.
+
+        Both operands are non-negative here, so C's truncation towards zero and
+        a floor division agree. That is NOT true of the 256x192 scale, which
+        takes signed offsets and rounds magnitude-then-sign.
+        """
+        return v * zoom // 64
+
+    def _draw_polygon(self, colour, ptx, pty, bbw, bbh, points):
+        """What a leaf record ends in. RefVideo8 overrides to apply its scale."""
+        self.fill_polygon(colour, ptx, pty, bbw, bbh, points)
+
+    def read_vertices(self, buf, off, zoom):
+        bbw = self.zoomed(buf[off], zoom)
+        bbh = self.zoomed(buf[off + 1], zoom)
+        n = buf[off + 2]
+        off += 3
+        pts = []
+        for _ in range(n):
+            pts.append((self.zoomed(buf[off], zoom),
+                        self.zoomed(buf[off + 1], zoom)))
+            off += 2
+        return bbw, bbh, pts
+
+    def read_and_draw_polygon(self, buf, off, colour, zoom, ptx, pty, depth=1):
+        self.n_reader_depth = max(getattr(self, "n_reader_depth", 0), depth)
+        i = buf[off]
+        off += 1
+        if i >= 0xC0:
+            # A leaf. If the incoming colour has bit 7 set the record supplies
+            # its own, which is how the bit-7 opcode form - which passes 0xFF -
+            # lets the data choose.
+            if colour & 0x80:
+                colour = i & 0x3F
+            bbw, bbh, pts = self.read_vertices(buf, off, zoom)
+            self._draw_polygon(colour, ptx, pty, bbw, bbh, pts)
+        else:
+            i &= 0x3F
+            if i == 2:
+                self.read_and_draw_polygon_hierarchy(buf, off, zoom, ptx, pty,
+                                                     depth + 1)
+            else:
+                # The engine warns and draws nothing. Count it rather than
+                # ignoring it: a reader that silently does nothing looks like a
+                # reader that works.
+                self.n_reader_bad = getattr(self, "n_reader_bad", 0) + 1
+
+    def read_and_draw_polygon_hierarchy(self, buf, off, zoom, pgcx, pgcy, depth):
+        ptx = pgcx - self.zoomed(buf[off], zoom)
+        pty = pgcy - self.zoomed(buf[off + 1], zoom)
+        # A count MINUS ONE, read as an unsigned byte and widened to signed, then
+        # looped while >= 0 (video.cpp:210-215). 0 means one child; 255 means 256.
+        childs = buf[off + 2]
+        off += 3
+        for _ in range(childs + 1):
+            o = (buf[off] << 8) | buf[off + 1]      # big-endian, Ptr::fetchWord
+            off += 2
+            pox = ptx + self.zoomed(buf[off], zoom)
+            poy = pty + self.zoomed(buf[off + 1], zoom)
+            off += 2
+            colour = 0xFF
+            if o & 0x8000:
+                # The colour byte is read WITHOUT advancing past it, and then the
+                # pointer moves two (video.cpp:226-230).
+                colour = buf[off] & 0x7F
+                off += 2
+            # The target is an offset from the SEGMENT BASE, not from here.
+            self.read_and_draw_polygon(buf, (o & 0x7FFF) * 2, colour, zoom,
+                                       pox, poy, depth)
+
     def fill_polygon(self, colour, ptx, pty, bbw, bbh, points):
         n = len(points)
         self.n_polys += 1
@@ -346,7 +429,7 @@ class RefVideo:
 # --- the trace format the instrumented host engine writes ------------------
 
 def read_trace(path):
-    """Yield ('poly'|'fill'|'copy'|'select'|'blit', payload) in order."""
+    """Yield ('poly'|'fill'|'copy'|'select'|'blit'|'char'|'draw'|'part', payload)."""
     b = open(path, "rb").read()
     o = 0
     while o < len(b):
@@ -386,6 +469,20 @@ def read_trace(path):
             colour, page = b[o + 4], b[o + 5]
             o += 6
             yield ("char", dict(ch=ch, cx=cx, y=y, colour=colour, page=page))
+        elif kind == 7:
+            # One top-level polygon draw, as the bytecode asked for it: which
+            # segment, the byte offset into it, and the three parameters the two
+            # opcode forms compute.
+            useV2 = b[o]
+            off = struct.unpack_from("<H", b, o + 1)[0]
+            colour, zoom = struct.unpack_from("<HH", b, o + 3)
+            x, y = struct.unpack_from("<hh", b, o + 7)
+            o += 11
+            yield ("draw", dict(video2=useV2, off=off, colour=colour,
+                                zoom=zoom, x=x, y=y))
+        elif kind == 8:
+            yield ("part", dict(index=b[o]))
+            o += 1
         else:
             raise ValueError(f"unknown trace record {kind} at offset {o-1}")
 

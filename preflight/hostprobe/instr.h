@@ -32,6 +32,19 @@ extern void instrSound(int resNum, int freqIndex, int vol, int chan,
                        int len, int loopLen);
 extern void instrNote(int chan, int hz, int vol, int len, int loopLen);
 extern void instrMusic(int resNum, int delay, int pos);
+
+/* ---- third round: the polygon reader ------------------------------------
+ * Gate C proved the rasteriser against geometry the probe recorded AFTER
+ * readVertices had applied the zoom, which was right - it left one thing under
+ * test - but it means the reader, the zoom multiply and the record structure are
+ * outside every gate so far. These log the TOP-LEVEL draw calls, the two opcode
+ * forms in vm.cpp, and dump the raw polygon segments they index into, so a
+ * reference reader can be proved to emit exactly the same fillPolygon calls the
+ * engine does.
+ */
+extern void instrDraw(int useVideo2, int off, int colour, int zoom, int x, int y);
+extern void instrSegments(const unsigned char *cine, int cineSize,
+                          const unsigned char *v2, int v2Size);
 extern void instrPace(int slices);   /* vmVariables[0xFF] at each blit */
 extern void instrTick(unsigned ms);   /* the virtual clock, for sound.txt */
 #endif

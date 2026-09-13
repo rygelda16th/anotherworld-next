@@ -48,6 +48,7 @@ are now optional. See *What has been measured*.
     make check-span    step 0: what one polygon span costs
     make check-cc      Gate B: C calls assembly at a fixed address and returns
     make check-poly    Gate C: the rasteriser, pixel-exact vs the reference
+    make check-reader  Gate C4: the reference reader IS the engine's reader
     make check-mix     step 1: what one output sample of the mixer costs
     make check-polycost step 2: T a polygon and T a span, measured apart
     make frame-load    every frame against the pause its own script asked for
@@ -843,6 +844,19 @@ attempt rather than hopeful.
 `video.cpp:206-243` for the hierarchy, `vm.cpp:485-580` for the two opcode forms
 that enter it.
 
+**The reference half is built and gated.** `make check-reader` replays every
+top-level draw the host probe logged through the reference's reader and compares
+the `fillPolygon` calls it emits against the ones the engine emitted, record for
+record and field for field: **10,700 draws, 64,897 calls, no faults, first run.**
+It confirms the deepest nesting at 4 independently. Comparing pictures would have
+said only that something was wrong; comparing the call sequence says which record,
+at which offset, with which field wrong - the same reason Gate D's opcode trace
+comes before its picture.
+
+**The machine half is blocked on something Gate C never exercised**, and finding it
+is what building the reader was for. See *The geometry is 8-bit and the game is
+not*, below.
+
 A record's first byte decides everything:
 
 | first byte | meaning |
@@ -904,6 +918,39 @@ means the zoom multiply and the vertex scale need a check of their own, in the
 shape of `mkcsteps`: enumerate byte against zoom over the real range, compute both
 truncations on the host, compare on the machine. Exhaustive is 256 x 340 = 87,040
 cases - a table too large to ship, a loop small enough to run.
+
+**C5a. The geometry is 8-bit and the game is not.**
+
+`src/polytest.asm` holds a polygon's bounding box and its vertex offsets in
+**bytes**, and `calc_step` multiplies an 8-bit `dx` by the 16-bit interpolation
+value. Over the whole 64,897-polygon trace the post-zoom values reach:
+
+    bounding box    bbw <= 529, bbh <= 503     (320x200 space)
+    vertex offsets  0..529 in x, 0..503 in y
+    after our scale bbw <= 423, bbh <= 483
+
+**Gate C never caught it because the 57-polygon vector tops out at 204.**
+`tools/mkpolytest.py` picks for fill mode, clipping edge, vertex count and size -
+not for a box wider than the screen - and every value it picked fits a byte, so
+`db` never truncated and `srl a` never halved a value it could not hold. A
+differently-picked vector would have broken silently.
+
+It is legitimate data: a 423-wide box is wider than the 256-pixel screen, and the
+polygon is simply clipped. The original is `int16_t` throughout.
+
+**What the fix touches**, in dependency order:
+
+1. `tools/mkpolytest.py`: `dw` for `bbw`, `bbh` and every vertex pair, the record
+   size in the offset table, and **a new `wide` bucket** so the vector covers a box
+   over 255 - without which the gate would go on not covering it.
+2. `poly_draw`'s record parse and its box halving: `srl h` / `rr l`, not `srl a`.
+3. `point_x` and `point_y`: index times four, returning HL rather than A.
+4. `calc_step`: `dx` becomes a 16-bit difference, so the 8x16 product becomes
+   16x16, and `dy` likewise. Its 648-case unit test regenerates with word cases.
+
+Item 4 is the real work and it is the one place where the 648-case test earns its
+keep: a 16x16 signed multiply assembled out of four `MUL D,E`s is exactly the kind
+of code that is plausible and wrong.
 
 **C6. The segment window.** A thread's program counter and a polygon offset are
 both 16-bit offsets from a segment base, and the largest cinematic segment is
@@ -1364,7 +1411,8 @@ unblocked only once the one it names has produced a number.
 | 1 | ~~price the mixer's inner loop~~ **DONE** | it was the largest unpriced cost, and it decided the output rate | `make check-mix`: **295 T a sample for four voices**, 23.2% of the machine at the reference's own 22,050 Hz |
 | 2 | ~~measure the per-polygon setup cost~~ **DONE** | gameplay spends its time there, and every budget number carried it as a guess | `make check-polycost`: **2,974 T a polygon**, and it found the span cost had been understated threefold |
 | 2a | ~~the rasteriser optimisations~~ **DONE** | one gameplay frame in eight was overrunning its own deadline | fused row loop and unrolled fills: **1,296 T a span, 0.94% overrunning** against a 0.73% floor, Gate C still 49,152/49,152 |
-| 3 | **C4, the polygon reader** | nothing renders a real scene without it | the Gate C vector, redrawn from the autoplay trace so bit-6 records with real zooms are covered |
+| 3 | **C4, the polygon reader** - reference half **DONE** | nothing renders a real scene without it | `make check-reader`: 10,700 draws, 64,897 fills, field for field |
+| 3a | **C5a, widen the geometry to 16 bits** | the machine reader is blocked on it: the trace reaches 483 and the rasteriser holds bytes | Gate C with a `wide` bucket in the vector, and `calc_step`'s 648 cases regenerated as words |
 | 4 | **C6, the segment window** | a 65,230-byte segment cannot be mapped flat | a read of the last byte of the largest cinematic segment |
 | 5 | **D4's read rate**, before any of D is built | a four-second part load is a design decision, not a detail | `make check-load` |
 | 6 | **D2 and D3, the scheduler and opcodes** | the rest of the port hangs off them | Gate D, and D3's opcode trace before D4's picture |
@@ -1406,13 +1454,21 @@ that had been estimated.
    prices the *mixer*, not the *player*: the tick that decides which voices are
    live, splits blocks at page and loop boundaries, and reads the DMA's position is
    unwritten, and wolf3d-next's equivalent cost seven faults to get right.
-2. **Everything is measured on two parts out of ten.** Parts 2 and 3 are all the
+2. **The rasteriser's geometry is 8-bit and the game reaches 483.** Found by
+   building the polygon reader, which cannot be written on top of it. Gate C's
+   57-polygon vector tops out at 204, so nothing caught it: `mkpolytest.py` picks
+   for fill mode, clipping and vertex count, never for a bounding box wider than
+   the screen. The fix is mechanical except for `calc_step`, whose 8x16 product
+   becomes 16x16. **Cheapest experiment:** add a `wide` bucket to the vector and
+   watch Gate C fail before fixing anything, so the gate is known to cover it.
+
+3. **Everything is measured on two parts out of ten.** Parts 2 and 3 are all the
    probe reaches. The hierarchy depth of 4, the fan-out of 119, the 83-byte
    record, the heap peak of 241,363 and every frame-cost percentile are properties
    of those two parts. **Cheapest experiment:** the probe types a level code at the
    password screen, which `inp_handleSpecialKeys` already reaches, and the same
    reports run over a later part.
-3. ~~**The per-polygon setup cost has never been measured.**~~ **Closed, and it
+4. ~~**The per-polygon setup cost has never been measured.**~~ **Closed, and it
    opened a bigger one.** `make check-polycost` measures 2,974 T a polygon, inside
    the swept range. But decomposing the rasteriser to get it showed that **the
    plan's 672 T a span was step 0's purpose-built span row, not this code**, which
@@ -1423,34 +1479,34 @@ that had been estimated.
    question. **The residual risk is that they do not reach their measured
    targets in the real rasteriser**, where the accumulators are shared with the
    trapezoid walk rather than being a benchmark's four words.
-4. **The full-screen bitmap path is unverified and its host port unchecked.** Zero
+5. **The full-screen bitmap path is unverified and its host port unchecked.** Zero
    `RT_POLY_ANIM` loads in 72,000 frames, so Gate A's byte-exactness covers none of
    it, and `mkassets.py`'s deplaner has never been compared against
    `Video::copyPage`. **Cheapest experiment:** deplane one such resource on the host
    both ways and compare - no machine involved.
-5. **32K may not hold the C image.** `actors.c` was 5K of code and 10K with data,
+6. **32K may not hold the C image.** `actors.c` was 5K of code and 10K with data,
    for one state machine. The VM adds 256 int16 variables, two 64-entry word
    tables, two 64-byte state arrays, a 256-entry call stack and a 2,762-byte string
    table - about 3.5K of data before any code. The fallback is the banked-call
    plumbing this port hoped to avoid. Read the size off the build, which reports it
    for nothing.
-6. **IY under `-clib=sdcc_iy` against esxDOS calls.** The library reserves IY and
+7. **IY under `-clib=sdcc_iy` against esxDOS calls.** The library reserves IY and
    DOS calls may destroy it. Never exercised, because no preflight program has
    opened a file - and Phase D opens files as its first act. One C program that
    opens a file through the assembly loader and then reads a global settles it; the
    fix is `sdcc_ix` or saving IY.
-7. **The frame budget, now the mildest of these.** 0.73% of gameplay frames
+8. **The frame budget, now the mildest of these.** 0.73% of gameplay frames
    overrun the pause their own script asked for, at a mean load of 24.8%. Room
    entries are where it happens, and a long frame there reads as a load. Both known
    optimisations remain available and measured. Listed at all because the previous
    version of this list had it first, on a comparison against a one-slice pause the
    scripts almost never request.
-8. **Hardware divergence from the emulator**, deliberately minimised rather than
+9. **Hardware divergence from the emulator**, deliberately minimised rather than
    solved. The MMU window means nothing depends on whether the DMA honours
    `$123B`; dropping the DMA span path means nothing depends on the suspect 1.87
    T/byte. Sound puts some of that back, because the ring rests on all three local
    ZEsarUX patches. `make check-dma` on the KS3 when it arrives.
-9. **Dependence on an upstream image tag** for z88dk. Mitigated by pinning the
+10. **Dependence on an upstream image tag** for z88dk. Mitigated by pinning the
    digest as well as the dated tag, and by a proven from-source fallback.
 
 ---
