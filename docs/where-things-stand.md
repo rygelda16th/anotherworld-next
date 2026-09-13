@@ -26,13 +26,24 @@ measurement that is the **only** thing that needs to be.
 | D - the virtual machine | **done**, Gate D passed, 763 records identical, repeatably |
 | E - pacing, input, sound | **built and gated** |
 | F - the rest of the game | **scoped**, three known gaps |
+| **integration - a playable game** | **not started.** Chain 2, eleven steps |
 
-**All nine gates pass.** Gate D closed on 2026-09-13: the virtual machine dispatches
-exactly what the engine dispatches - all 763 records of the reference, thread by
-thread and opcode by opcode - and it does it three runs in a row with the same
-numbers, which is the part that had been missing. The comparison now happens ON the
-machine, against the engine's own stream shipped in the .nex, so what crosses the
-boundary is a 32-byte verdict rather than eight kilobytes of trace.
+**The end goal is a fully playable Another World with sound**, and the state of that
+is: **nothing is playable yet.** Every `.nex` in `build/` is a single-purpose test
+harness. The VM's video callbacks increment counters; four opcodes consume their
+operands and do nothing; nothing loads a resource at runtime; there is no text, no
+part transition, no save, no code screen. What *is* true is that every expensive
+uncertainty has been turned into a number, which is what the nine gates were for.
+See **What "done" means** for the definition and **Chain 2** for the plan to reach it.
+
+**All nine gates of Chain 1 pass**, and that is a statement about risk rather than
+about progress: it means nothing remains that we know of that could stop this
+working. Gate D closed on 2026-09-13: the virtual machine dispatches exactly what
+the engine dispatches - all 763 records of the reference, thread by thread and opcode
+by opcode - three runs in a row with the same numbers, which is the part that had
+been missing. The comparison now happens ON the machine, against the engine's own
+stream shipped in the .nex, so what crosses the boundary is a 32-byte verdict rather
+than eight kilobytes of trace.
 
 What had been wrong was not the VM. z88dk's exit path is `im 1 / ei / ret`, and `EI`
 delays interrupt acceptance by exactly one instruction - the `RET` - so the interrupt
@@ -1914,10 +1925,47 @@ a flag.
 
 ---
 
-## What is next, and what gates what
+## What "done" means
 
-The order is forced by measurement, not by preference. Each step below is
-unblocked only once the one it names has produced a number.
+The end goal is **a fully playable Another World with sound**: a person starts it,
+plays from the first screen to the ending, and hears what they should hear. Nothing
+in this document is finished until that playthrough happens.
+
+That needs saying because the chain below it was never a plan to build the game. It
+was a plan to find out whether the game was POSSIBLE, and it answered that. Reading
+"nine of nine gates pass" as "nearly done" is the mistake it invites: what it
+actually means is *nothing remains that we know of that could stop this working*.
+Distance to a playable game is Chain 2, and Chain 2 has not been started.
+
+**The definition, agreed 2026-09-13:**
+
+| | |
+|---|---|
+| plays through | the first screen to the ending, every part, unaided |
+| input | keyboard **and** joystick |
+| picture | polygons, full-screen bitmaps, text, palettes, page flips, scrolling |
+| sound | the four-voice mixer for SFX **and** the music player |
+| codes | the code-wheel screen implemented, **and** a build flag that bypasses it |
+| state | save and load |
+| time | every frame inside its own deadline, or an overrun rate measured and stated |
+| the last gate | a full playthrough under the patched ZEsarUX |
+
+**Real hardware is a named follow-on, not part of this.** The final gate is the
+emulator deliberately: the three local ZEsarUX patches (`prescalar`, `readback`,
+`autorestart`) are not upstream, so every number here reproduces only in our own
+container, and the KS3 has not arrived. Card boot, the real joystick wiring and
+timing on metal are **H1** at the end of Chain 2, and they are the one part of this
+plan whose gate cannot be run yet.
+
+---
+
+## Chain 1 - the risk chain. COMPLETE.
+
+Nine steps, each an experiment that could have changed or stopped the build. **The
+order was forced by measurement, not by preference:** each step was unblocked only
+once the one it names had produced a number. Integration was deliberately absent -
+integration cannot kill a project, it is only work - which is why finishing this
+chain is not the same as having a game.
 
 | # | do this | because | gate |
 |---|---|---|---|
@@ -1949,6 +1997,116 @@ describes step 0's purpose-built span row rather than the rasteriser, which char
 than optional and which measurement says are sufficient: they take the gameplay
 mean from 48.4% of its pause to 22.6% and the overrun rate from one frame in eight
 to one in 137.
+
+**What this chain bought.** A span costs what it costs and the rasteriser is
+pixel-exact; the mixer fits at the reference's own rate; the VM dispatches what the
+engine dispatches; the DMA empties the ring at rate; input and pacing are the
+reference's; six of seven parts are measured and the budget holds at 74% of the
+machine in the worst of them. Every expensive uncertainty is now a number.
+
+**What it did not buy.** Anything that runs. Every `.nex` in `build/` is a
+single-purpose harness. The VM's six video callbacks increment counters and return;
+`op_updateMemList`, `op_drawString`, `op_playSound` and `op_playMusic` consume their
+operands and do nothing; nothing loads a resource at runtime; there are no part
+transitions, no text, no save, no code screen. The parts are proven and the seams
+between them are untouched.
+
+---
+
+## Chain 2 - integration, to a playable game
+
+Same discipline, different question. Chain 1 asked *can this be done*. This asks
+*what order builds it*, and it is ordered on two rules:
+
+1. **The thing that could force a redesign goes first.** Only one candidate is left
+   and it is memory residency, so that is I1.
+2. **Every step after it leaves something that RUNS.** No step is allowed to end
+   with a component that only a checker can see. From I2 onward there is always a
+   `.nex` a person can boot, and it does more than the one before it.
+
+Every step names its gate, and where a step carries real risk it names the cheapest
+experiment that would kill it early - the habit that has paid for itself repeatedly
+here, most recently when an opcode budget of zero found in two runs what breakpoints
+had failed to find in dozens.
+
+| # | do this | because | gate |
+|---|---|---|---|
+| **I1** | **one program, and the memory map that lets it exist** | the last thing that could force a redesign | everything resident at once and a frame runs: Gate D re-run *inside* the integrated program, with the frame interrupt and the sound interrupt both live, for 60 seconds |
+| **I2** | **the VM draws** - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
+| **I3** | **resources arrive at runtime** - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
+| **I4** | **text** - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
+| **I5** | **sound in the game** - `op_playSound` and `op_playMusic` reach the gated player | the gate in Chain 1 proved the player, not the wiring | SFX and music events fire at the same frames as the engine's `sound.txt`, and the mixer output stays byte-exact |
+| **I6** | **part transitions** - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
+| **I7** | **the full-screen bitmap path** | 70 of them load in the arena and no gate covers the machine half | the arena's bitmaps, on the machine, against the engine's pages |
+| **I8** | **the code screen, and its bypass** | "fully playable" includes it, and the bypass keeps the gates comparable to the reference build | the screen renders and accepts a correct code; with the flag set the sequence is skipped exactly as `BYPASS_PROTECTION` skips it |
+| **I9** | **save and load** | in the definition of done, and the reference has a format to match | save mid-part, reload, and both the VM state and the opcode stream from that point match a run that never saved |
+| **I10** | **playable to the end** - every part, real input | this is the goal | **a full playthrough under the patched ZEsarUX**, recorded, with the per-frame budget re-measured on the real thing against the per-part table |
+| **H1** | **real hardware** - card boot, joystick wiring, timing on metal | follow-on; its gate cannot be run until the KS3 arrives | it boots from a card and plays, and the timings hold without the three local emulator patches |
+
+### I1 is the one with teeth, so it gets its own account
+
+Eight harnesses each chose absolute addresses and MMU slots for their own
+convenience. The integrated program cannot keep all those choices, and the question
+underneath is not tidiness - it is whether all of this can be **resident at the same
+time**:
+
+- the bytecode window, a 16K sliding view over a segment up to 65,230 bytes
+- the polygon/cinematic segment window, a **second** 16K sliding view over another
+  segment - and I2 needs both live at once, which no harness has ever needed
+- the C virtual machine, 7,683 bytes of code plus its data
+- the rasteriser, the polygon reader and the interpolation tables
+- the Layer 2 pages the engine's page model needs
+- the mixer, the volume table, the ring the zxnDMA drains, and the samples
+- the music player and its instruments
+- the resource heap - the reference's script-heap high-water mark is **305,919
+  bytes** across the parts measured
+- the stack; the ZX system variables esxDOS needs at `$5B00`; and the ROM, which has
+  to be back at `$0000` for `RST $08`
+
+The memory map in `src/vmtest.asm` was learned the hard way and is the starting
+point, but it was settled for a program with **one** window and no sound.
+
+**The cheapest experiment that would kill I1 early**, and it should be run before a
+line of the integrated program is written: a paper slot map, then a thirty-line
+program that pages every region named above in turn and reads a signature back out
+of each. If two of them cannot coexist, that is known in an hour instead of after a
+week of integration - and it is exactly the shape of experiment that has worked
+here before.
+
+### Three gates are narrower than they sound, and must be re-run before I10
+
+Every gate in Chain 1 that used bytecode used **the intro's** bytecode. The intro is
+a cinematic: it draws polygons, blits, and pauses. It does not exercise what gameplay
+exercises.
+
+- **Gate D** proved 763 records of the intro's stream. Later parts dispatch
+  thousands of opcodes a frame, and `check-parts` showed four of the five numbers
+  that rested on two parts move when a fifth is measured.
+- **Gate C and the reader gates** drew from the intro's trace. The `wide` bucket
+  reaches 303 and the widest fan-out across all parts is 99 children in one record.
+- **I4's and I5's gates** will cover the intro's strings and the intro's sound
+  events only.
+
+So I2, I4, I5 and Gate D itself each get a second run against a **gameplay** part
+before I10 is allowed to pass. That is cheap - the reference length is a parameter
+now - and it is the difference between "the intro works" and "the game works".
+
+### What could still stop this, worst first
+
+1. **Memory residency (I1).** The only redesign risk left. Two sliding windows, the
+   sound player and a 305,919-byte heap have never been asked to coexist.
+2. **The budget in the jail: 74% of the machine** with the mixer on top, as the
+   rasteriser stands - 52% at the floor. The two deferred rasteriser optimisations
+   are what the headroom is for, and integration adds cost that has not been
+   measured. If they are spent and a gameplay part still overruns, there is no third
+   optimisation identified.
+3. **The arena's bitmap path (I7).** Wholly new work, not wiring, and the frames it
+   lands in are the ones already doing 70 loads.
+4. **In-frame resource loads.** `op_updateMemList` loads one resource inside a frame
+   and the largest is 65,230 bytes. At any rate above 100 KB/s a held frame covers
+   it; below that it becomes a design decision, and **step 5 established the
+   emulator cannot time it**, so this stays open until H1.
+
 
 ---
 
