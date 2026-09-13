@@ -56,6 +56,7 @@ are now optional. See *What has been measured*.
     make check-readmachine  Gate C4: the Z80N reader, pixel-exact
     make check-load    step 5: esxDOS reads correctly; its speed needs hardware
     make check-pace    Gate E: the input mapping, and pacing to its deadline
+    make check-snd     Gate E: four voices byte-exact, and the DMA's output rate
     make check-mix     step 1: what one output sample of the mixer costs
     make check-polycost step 2: T a polygon and T a span, measured apart
     make frame-load    every frame against the pause its own script asked for
@@ -1572,6 +1573,45 @@ reads the last table byte and one past the end. The first version also placed th
 table at `$8100` and filled 256 bytes over this program's own instructions, which
 presented as the machine simply never finishing.
 
+### E3 - built, and Gate E's third claim passed
+
+`make check-snd`. The architecture is wolf3d-next's, which is proven and measured
+there: zxnDMA in burst mode streams a 2K ring to the DAC on port `$DF` with WR5
+auto-restart, round and round, while a tick asks the DMA where it is and mixes into
+the bytes ahead of that. What this port adds is everything Another World's mixer
+does that Wolf3D's does not - per-voice resampling, 64 volume levels through a
+table, and loops - and that is what is under test.
+
+**The mixer's bytes are exact.** Four voices at four real rates from the trace -
+10,559, 25,031, 3,327 and 14,915 Hz, so increments of 0.958, 2.270, 0.302 and
+1.353 - mixed into the real ring at three block lengths, and **every byte matches a
+host model of the reference's own arithmetic**. The first active voice stores and
+biases; the rest add a signed delta to an unsigned accumulator and saturate.
+
+**The block splitting is the design, and it is why the inner loop has no tests in
+it.** A voice's page boundary, its sample end and its loop point are all resolved
+before the loop runs by cutting the block short - O(1) a block instead of 18 T a
+voice a sample.
+
+**The DMA empties the ring and wraps.** Its port A address sampled every 20 ms over
+0.78 s: **9 wraps, nothing outside the ring**, so auto-restart is reloading the
+address as the patch intends.
+
+**The rate reads 10% high, and that is worth stating rather than hiding.** Prescalar
+40 should give 875 kHz / 40 = 21,875 bytes a second, and the fit over those samples
+says 24,079 - 482 bytes a 20 ms tick rather than 437, so about 1,162 T a byte where
+1,280 is intended. The likely cause is the emulator's own accounting rather than the
+programme: the local patch derives the per-byte delay as four T-states times the
+turbo multiplier, and the frame interrupt is 50.08 Hz rather than 50. This is the
+same territory as wolf3d-next's "what the recording can and cannot say" - a
+sampled address is a coarse instrument, and the accurate check there was a
+frequency fit against a recording. **Carried as a hardware-readiness item, not as a
+passing number.**
+
+Everything here rests on the **three local ZEsarUX patches**. Upstream the
+prescalar is read and used as a boolean, a read of the DMA port returns zero, and a
+block stops at its end whatever WR5 says - so none of it is reproducible there.
+
 ### E4. Gate E
 
 1. `make check-pace` - a script asking four slices produces frames 80 ms apart,
@@ -1651,7 +1691,7 @@ unblocked only once the one it names has produced a number.
 | 5 | ~~D4's read rate~~ **DONE, and the answer is "not here"** | a four-second part load is a design decision, not a detail | `make check-load`: the path works and every byte arrives; the rate is r = -0.518 against size, so the emulator cannot time it |
 | 6 | **D2 and D3, the scheduler and opcodes** | the rest of the port hangs off them | Gate D, and D3's opcode trace before D4's picture |
 | 7 | ~~E1 and E2, pacing and input~~ **DONE** | the game is unplayable without them and they are small | `make check-pace`: all 32 input combinations, and a 4-slice frame doing 6 refreshes of work comes out at 6 |
-| 8 | **E3, sound** | priced at step 1, and the ring is already proven on the other project | `check-mix` against a host reference mixer |
+| 8 | ~~E3, sound~~ **DONE** | priced at step 1, and the ring proven on the other project | `make check-snd`: four voices byte-exact at three block lengths, 9 ring wraps, nothing outside it |
 | 9 | **F1, a later part** | everything so far is two parts of ten | the same reports, over part 5 |
 
 Steps 1 and 2 are measurements, not code, and they are first because both of them
