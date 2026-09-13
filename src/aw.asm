@@ -157,6 +157,11 @@ NR_DWIN_MMU     EQU $57
 ; that is its BYTECODE window and the VM is mid-opcode whenever the reader runs. This
 ; is the third slot conflict integration has turned up, and it is why check-map's proof
 ; that $4000-$7FFF is ours mattered: without it there is nowhere for this to go.
+; A voice's sample page, borrowed into MMU7 by the mixer. MMU7 is also the Layer 2 draw band,
+; so the interrupt that mixes has to put back what it found - see the ISR.
+SAMP_WIN        EQU $E000
+NR_SAMP_MMU     EQU $57
+
 SEG_WIN         EQU $4000
 NR_SEG_MMU_LO   EQU $52
 NR_SEG_MMU_HI   EQU $53
@@ -1613,10 +1618,6 @@ probe_walk:
         djnz    .tick
         ret
 
-        DISPLAY "> music code ends at ", /H, $
-        ASSERT $ < $BF00
-        ORG     resident_end
-
 ;-----------------------------------------------------------------------------
 ; I4. drawString, video.cpp:267, and drawChar, video.cpp:299.
 ;
@@ -1813,6 +1814,10 @@ draw_char6:
         dec     b
         jp      nz, .row
         ret
+
+        DISPLAY "> the upper block ends at ", /H, $
+        ASSERT $ < $BF00
+        ORG     resident_end
 
         INCLUDE "src/inc/vmhost.inc"
         INCLUDE "src/inc/input.inc"

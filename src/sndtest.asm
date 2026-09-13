@@ -32,6 +32,8 @@ NR_MMU1         EQU $51
 RING_PAGE       EQU 60                  ; clear of everything else here
 RING_WIN        EQU $0000               ; MMU0: the ring, where the DMA reads it
 SAMP_PAGE       EQU 62                  ; the sample, two pages at MMU1... see below
+SAMP_WIN        EQU $2000               ; MMU1: where a sample page appears
+NR_SAMP_MMU     EQU $51
 
 ; 875 kHz / prescalar is the byte rate, so 22,050 Hz wants 39.7 and 40 gives
 ; 21,875 - a tenth of a semitone flat, and the closest the divider allows.

@@ -28,6 +28,7 @@
 ;                    page and nothing else - and must put back what was there, since
 ;                    the loader stages through the same slot.
 ;   blocklen         byte: how many output samples this block is
+;   NR_SAMP_MMU      the slot SND_MAP_PAGES maps a sample page into, if it does
 ;   mix_dst          word: where in the ring this block starts
 ;   voice0           four V_SIZE records
 ;   voltab           256 bytes, page-aligned; V_VOL holds its page
@@ -50,7 +51,19 @@ V_VOL           EQU 6                   ; the volume table's page
 V_END           EQU 7                   ; word: one past the last sample byte
 V_LOOP          EQU 9                   ; word: where to go back to, 0 for none
 V_ACTIVE        EQU 11
-V_SIZE          EQU 12
+; WHICH 8K PAGE THIS VOICE'S SAMPLE IS IN. I1 recorded that the gated mixer maps ONE sample
+; page for all four voices - sndtest hard-codes it - and that the game needs four. Real samples
+; are up to 41,506 bytes, six pages, so the window slides within a sample as well as between
+; voices. sndtest's sample is resident, so its SND_MAP_PAGES ignores this and check-snd is
+; unaffected; the game's maps it.
+V_PAGE          EQU 12
+; BYTES STILL TO COME AFTER THE WINDOW'S END. A sample can be 41,506 bytes - six pages - and
+; the window is one 8K page, so V_END marks the end of what is REACHABLE now and V_LEFT says
+; whether there is more behind it. When the window runs out and V_LEFT is not zero, the page
+; advances and V_POS goes back to the window's base. sndtest's sample is 1,024 bytes in one
+; resident page, so its V_LEFT is zero and nothing about it changes.
+V_LEFT          EQU 13                  ; word
+V_SIZE          EQU 15
 
 ; The ring's DMA programme, from wolf3d-next's ringtest.asm, which measured it
 ; against a recording: port A the ring in memory and incrementing, port B the DAC
@@ -173,6 +186,54 @@ voice_save:
 ; which UNDER-estimates because the fraction also advances - safe, and it only means the
 ; caller loops again.
 ;-----------------------------------------------------------------------------
+; voice_advance - the window has run out for this voice. If there is more sample behind it,
+; step to the next page and rewind V_POS to the window's base; otherwise loop or stop.
+; The pages a sample occupies are CONSECUTIVE because aw_load_res allocates them that way,
+; so stepping is an increment and not a lookup.
+voice_advance:
+        ld      l, (ix + V_LEFT)
+        ld      h, (ix + V_LEFT + 1)
+        ld      a, h
+        or      l
+        jr      z, .no_more
+        ; another page: up to 8K of it becomes reachable
+        inc     (ix + V_PAGE)
+        ld      (ix + V_POS), SAMP_WIN & $FF
+        ld      (ix + V_POS + 1), SAMP_WIN >> 8
+        ld      de, $2000
+        or      a
+        sbc     hl, de
+        jr      nc, .full_page
+        ; less than a page left: the end lands inside the window
+        add     hl, de
+        ld      de, SAMP_WIN
+        add     hl, de
+        ld      (ix + V_END), l
+        ld      (ix + V_END + 1), h
+        ld      (ix + V_LEFT), 0
+        ld      (ix + V_LEFT + 1), 0
+        ret
+.full_page:
+        ld      (ix + V_LEFT), l
+        ld      (ix + V_LEFT + 1), h
+        ld      (ix + V_END), (SAMP_WIN + $2000) & $FF
+        ld      (ix + V_END + 1), (SAMP_WIN + $2000) >> 8
+        ret
+.no_more:
+        ; the sample is finished: loop if it has a loop point, otherwise go quiet
+        ld      l, (ix + V_LOOP)
+        ld      h, (ix + V_LOOP + 1)
+        ld      a, h
+        or      l
+        jr      z, .stop
+        ld      (ix + V_POS), l
+        ld      (ix + V_POS + 1), h
+        ld      (ix + V_FRAC), 0
+        ret
+.stop:
+        ld      (ix + V_ACTIVE), 0
+        ret
+
 voice_run:
         ld      l, (ix + V_POS)
         ld      h, (ix + V_POS + 1)
