@@ -133,6 +133,12 @@ def main():
         samples += len(chunk)
     n_video2 = int.from_bytes(read(z, sym["n_video2"], 2), "little")
     cp_unimpl = read(z, sym["cp_unimpl"], 1)[0]
+    # The palette: did the file arrive, and did a blit apply one? pal=2 in the counters
+    # only says op_setPalette was reached, which is not the same as sixteen colours
+    # reaching Layer 2.
+    pal_file = read(z, 0xCD00, 64)
+    pal_now = read(z, sym["pal_now"], 1)[0]
+    pal_req = read(z, sym["pal_req"], 1)[0]
 
     print(f"\nbefore the VM was let go: {t1 - t0} ticks in half a second "
           f"(50 a second is {25} in half)")
@@ -208,6 +214,15 @@ def main():
         print(f"  {n_video2} draws wanted the video2 segment, which is not loaded yet")
     if cp_unimpl:
         print(f"  a scrolled page copy was asked for and skipped")
+    print(f"  palettes loaded: {len(set(pal_file))} distinct bytes in the first 64; "
+          f"applied palette {pal_now if pal_now != 0xFF else 'none'}, "
+          f"{'none' if pal_req == 0xFF else pal_req} still requested")
+    if len(set(pal_file)) < 3:
+        bad.append(f"PAL17.BIN did not load: the first 64 bytes hold "
+                   f"{sorted(set(pal_file))}")
+    if counts["n_pal"] and pal_now == 0xFF:
+        bad.append(f"op_setPalette was reached {counts['n_pal']} times and no palette "
+                   f"ever reached Layer 2 - the blit is not applying the request")
     if len(seen) < 2:
         bad.append(f"the page the VM drew into holds one value ({sorted(seen)}) - the "
                    f"reader is reached {counts['n_poly']} times and draws nothing")

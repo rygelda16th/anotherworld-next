@@ -64,6 +64,14 @@ DST_WIN         EQU $E000               ; the loader's staging, MMU7
 
 CTL             EQU $C000
 INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
+PAL_BASE        EQU $CD00               ; 32 palettes x 16 entries x 2 bytes = 1,024
+NR_PAL_CTRL     EQU $43
+NR_PAL_INDEX    EQU $40
+NR_PAL_VALUE    EQU $44
+; $43 selects which palette the index and value registers address. %0001_0000 is
+; "Layer 2, first palette", with auto-increment left ON - which is what makes two
+; writes per entry work, and it is the layout mkassets.py already emits.
+PAL_SEL_L2      EQU %00010000
 RING_ADDR       EQU $D400               ; permanently mapped; see the header
 VOLTAB          EQU $DC00
 VOICES          EQU $DD00
@@ -221,6 +229,15 @@ start:
         call    load_code
         ld      a, CODE_PAGE
         ld      (ld_page), a            ; put it back for anything that follows
+
+        ; and the part's palettes, 1,024 bytes at a fixed address
+        ld      hl, pal_name
+        ld      de, fname
+        ld      bc, 10
+        ldir
+        ld      de, PAL_BASE
+        ld      bc, 1024
+        call    load_flat
 .loaded:
         ei
         ld      a, (err)
@@ -742,9 +759,78 @@ aw_set_palette:
 ; The 512 Layer 2 palette entries are already resident as two 256-entry banks, so a
 ; palette change is a bank select rather than a transfer: 32 palettes of 16 across the
 ; two banks, which is exactly what mkassets.py lays out.
+; changePal, video.cpp:587. The reference copies sixteen 2-byte colours into the host's
+; palette; ours writes them into Layer 2's first palette, which is the same operation on
+; different hardware. mkassets.py has already converted every colour to the two bytes
+; NextReg $44 wants - RRRGGGBB then the low bit of blue - and laid the part's 32 palettes
+; out in order, so this is an index write and 32 value writes with auto-increment doing
+; the rest.
+;
+; It is NOT a bank select, which is what this comment used to claim. Two 256-entry
+; palettes do hold all 512 entries, but Layer 2 indexes its palette from the pixel byte
+; with no offset to add, so a part's sixteen live colours have to BE entries 0-15. The
+; second palette is for a double-buffered palette change, not for holding palette 17.
 apply_palette:
         ld      (pal_now), a
-        ret                             ; I2 remainder: select the entries
+        ld      l, a
+        ld      h, 0
+        add     hl, hl                  ; * 32: sixteen entries of two bytes
+        add     hl, hl
+        add     hl, hl
+        add     hl, hl
+        add     hl, hl
+        ld      de, PAL_BASE
+        add     hl, de                  ; HL = this palette's first byte
+        nextreg NR_PAL_CTRL, PAL_SEL_L2
+        nextreg NR_PAL_INDEX, 0
+        ld      b, 32
+.one:
+        ld      a, (hl)
+        inc     hl
+        nextreg NR_PAL_VALUE, a
+        djnz    .one
+        ret
+
+;-----------------------------------------------------------------------------
+; load_flat - (fname) straight into memory at DE, BC bytes, no paging.
+;
+; The banked loader stages through a window and walks eight pages; a palette is 1,024
+; bytes and belongs at a fixed address, so it gets its own three calls rather than a
+; special case inside the other one.
+;-----------------------------------------------------------------------------
+load_flat:
+        ld      (lf_dst), de
+        ld      (lf_len), bc
+        ld      a, ESX_DRIVE
+        ld      ix, fname
+        ld      hl, fname
+        ld      b, FA_READ
+        rst     $08
+        db      F_OPEN
+        jr      nc, .opened
+        ld      (err), a
+        ret
+.opened:
+        ld      (handle), a
+        ; esxDOS takes the buffer in IX for a machine-code caller and HL for a BASIC
+        ; one, so both are set - the trap wolf3d-next paid for when CSpect wrote a
+        ; filename over the code that followed it.
+        ld      ix, (lf_dst)
+        ld      hl, (lf_dst)
+        ld      bc, (lf_len)
+        ld      a, (handle)
+        rst     $08
+        db      F_READ
+        jr      nc, .read
+        ld      (err), a
+.read:
+        ld      a, (handle)
+        rst     $08
+        db      F_CLOSE
+        ret
+
+lf_dst:     dw 0
+lf_len:     dw 0
 
 ; readAndDrawPolygon / readAndDrawPolygonHierarchy, video.cpp:85 and :222. The C has
 ; already computed the six parameters the two opcode forms produce and left them in
@@ -865,6 +951,7 @@ pal_req:    db $FF                      ; $FF = no palette change requested
         EXPORT pal_now
 pal_now:    db $FF
 poly_name:  db "RES19.BIN", 0
+pal_name:   db "PAL17.BIN", 0
 rd_log:     ds 8 * 8                    ; the reader's leaf log, small: nothing reads it
 
         DISPLAY "> resident code and data end at ", /H, $
