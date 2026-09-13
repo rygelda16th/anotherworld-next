@@ -1,0 +1,14 @@
+data/
+build/
+certs/
+*.nex
+*.exp
+*.lst
+# Traces and page dumps are derived from the game data, so they stay out too.
+trace.bin
+page?.bin
+font.bin
+__pycache__/
+*.lis
+*.lst
+*.map

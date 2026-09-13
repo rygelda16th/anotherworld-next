@@ -1,0 +1,16 @@
+# Copied from wolf3d-next @5a870c8; see the Dockerfile header for why this is a
+# duplicate rather than a share, and `make toolchain-diff` for drift.
+#
+# The workspace is bind-mounted at /work, so sources are edited natively on the
+# Mac and only compilation/measurement crosses into the container.
+services:
+  tools:
+    build: .
+    image: aw-next-tools
+    working_dir: /work
+    volumes:
+      - .:/work
+    # ZRCP (ZEsarUX remote command protocol) for scripted timing runs.
+    ports:
+      - "127.0.0.1:10000:10000"
+    tty: true

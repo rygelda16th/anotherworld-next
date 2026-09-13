@@ -1,0 +1,147 @@
+--- a/vm.cpp	2026-09-12 23:06:00
++++ b/vm.cpp	2026-09-12 19:13:00
+@@ -21,6 +21,7 @@
+ #include "mixer.h"
+ #include "resource.h"
+ #include "video.h"
++#include "instr.h"
+ #include "serializer.h"
+ #include "sfxplayer.h"
+ #include "sys.h"
+@@ -458,6 +459,7 @@
+ 
+ 			gotoNextThread = false;
+ 			debug(DBG_VM, "VirtualMachine::hostFrame() i=0x%02X n=0x%02X *p=0x%02X", threadId, n, *_scriptPtr.pc);
++			++gThreads;
+ 			executeThread();
+ 
+ 			//Since .pc is going to be modified by this next loop iteration, we need to save it.
+@@ -485,6 +487,7 @@
+ 		// 1000 0000 is set
+ 		if (opcode & 0x80) 
+ 		{
++			++gOpPoly7;
+ 			uint16_t off = ((opcode << 8) | _scriptPtr.fetchByte()) * 2;
+ 			res->_useSegVideo2 = false;
+ 			int16_t x = _scriptPtr.fetchByte();
+@@ -507,6 +510,7 @@
+ 		// 0100 0000 is set
+ 		if (opcode & 0x40) 
+ 		{
++			++gOpPoly6;
+ 			int16_t x, y;
+ 			uint16_t off = _scriptPtr.fetchWord() * 2;
+ 			x = _scriptPtr.fetchByte();
+@@ -577,6 +581,7 @@
+ 		} 
+ 		else 
+ 		{
++			++gOpTable;
+ 			(this->*opcodeTable[opcode])();
+ 		}
+ 		
+--- a/video.cpp	2026-09-12 23:06:00
++++ b/video.cpp	2026-09-12 23:05:14
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include "video.h"
++#include "instr.h"
+ #include "resource.h"
+ #include "serializer.h"
+ #include "sys.h"
+@@ -117,6 +118,14 @@
+ }
+ 
+ void Video::fillPolygon(uint16_t color, uint16_t zoom, const Point &pt) {
++	++gPolys;
++	// Trace BEFORE the walk: the loop below decrements polygon.numPoints to
++	// zero, so recording afterwards would capture nothing.
++	instrPolygon(color, zoom, pt.x, pt.y, polygon.bbw, polygon.bbh,
++	             polygon.numPoints, &polygon.points[0].x,
++	             (_curPagePtr1 == _pages[0]) ? 0 :
++	             (_curPagePtr1 == _pages[1]) ? 1 :
++	             (_curPagePtr1 == _pages[2]) ? 2 : 3);
+ 
+ 	if (polygon.bbw == 0 && polygon.bbh == 1 && polygon.numPoints == 4) {
+ 		drawPoint(color, pt.x, pt.y);
+@@ -281,6 +290,9 @@
+ 
+ void Video::drawChar(uint8_t character, uint16_t x, uint16_t y, uint8_t color, uint8_t *buf) {
+ 	if (x <= 39 && y <= 192) {
++		instrChar(character, x, y, color,
++		          (buf == _pages[0]) ? 0 : (buf == _pages[1]) ? 1 :
++		          (buf == _pages[2]) ? 2 : 3);
+ 		
+ 		const uint8_t *ft = _font + (character - ' ') * 8;
+ 
+@@ -339,6 +351,7 @@
+ /* Blend a line in the current framebuffer (_curPagePtr1)
+ */
+ void Video::drawLineBlend(int16_t x1, int16_t x2, uint8_t color) {
++	++gSpanBlend; { int L=(x1<x2?x2-x1:x1-x2)+1; if(L>335)L=335; ++gSpanHist[L]; }
+ 	debug(DBG_VIDEO, "drawLineBlend(%d, %d, %d)", x1, x2, color);
+ 	int16_t xmax = MAX(x1, x2);
+ 	int16_t xmin = MIN(x1, x2);
+@@ -373,6 +386,7 @@
+ }
+ 
+ void Video::drawLineN(int16_t x1, int16_t x2, uint8_t color) {
++	++gSpanN; { int L=(x1<x2?x2-x1:x1-x2)+1; if(L>335)L=335; ++gSpanHist[L]; }
+ 	debug(DBG_VIDEO, "drawLineN(%d, %d, %d)", x1, x2, color);
+ 	int16_t xmax = MAX(x1, x2);
+ 	int16_t xmin = MIN(x1, x2);
+@@ -407,6 +421,7 @@
+ }
+ 
+ void Video::drawLineP(int16_t x1, int16_t x2, uint8_t color) {
++	++gSpanP; { int L=(x1<x2?x2-x1:x1-x2)+1; if(L>335)L=335; ++gSpanHist[L]; }
+ 	debug(DBG_VIDEO, "drawLineP(%d, %d, %d)", x1, x2, color);
+ 	int16_t xmax = MAX(x1, x2);
+ 	int16_t xmin = MIN(x1, x2);
+@@ -473,6 +488,8 @@
+ 
+ 
+ void Video::fillPage(uint8_t pageId, uint8_t color) {
++	++gFillPage;
++	instrOp(2, pageId, color, 0);
+ 	debug(DBG_VIDEO, "Video::fillPage(%d, %d)", pageId, color);
+ 	uint8_t *p = getPage(pageId);
+ 
+@@ -486,6 +503,8 @@
+ /*  This opcode is used once the background of a scene has been drawn in one of the framebuffer:
+ 	   it is copied in the current framebuffer at the start of a new frame in order to improve performances. */
+ void Video::copyPage(uint8_t srcPageId, uint8_t dstPageId, int16_t vscroll) {
++	++gCopyPage;
++	instrOp(3, srcPageId, dstPageId, vscroll);
+ 
+ 	debug(DBG_VIDEO, "Video::copyPage(%d, %d)", srcPageId, dstPageId);
+ 
+@@ -585,6 +604,9 @@
+ 	//Q: Why 160 ?
+ 	//A: Because one byte gives two palette indices so
+ 	//   we only need to move 320/2 per line.
++  instrOp(5, pageId, 0, 0);
++  instrFrame();
++  instrPages(_pages[0], _pages[1], _pages[2], _pages[3]);
+   sys->updateDisplay(_curPagePtr2);
+ }
+ 
+--- a/resource.cpp	2026-09-12 23:06:00
++++ b/resource.cpp	2026-09-12 19:14:19
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include "resource.h"
++#include "instr.h"
+ #include "bank.h"
+ #include "file.h"
+ #include "serializer.h"
+@@ -328,6 +329,7 @@
+ 
+ 
+ 	currentPartId = partId;
++	gPart = partId;
+ 	
+ 
+ 	// _scriptCurPtr is changed in this->load();
