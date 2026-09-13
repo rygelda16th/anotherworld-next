@@ -29,7 +29,7 @@ NEX = "build/vmtest.nex"
 EXP_ASM, EXP_C = "build/vmtest.exp", "build/vm_c.exp"
 PROBE = "preflight/hostprobe/probe"
 CODE_FILE = "RES18.BIN"         # the intro cinematic's bytecode, 9,871 bytes
-FRAMES = 40                     # as many as the host logged
+FRAMES = int(os.environ.get("AW_FRAMES", "40"))   # the host logged 40
 
 
 def symbols(*paths):
@@ -82,7 +82,7 @@ def main():
     poke16("aw_frames", FRAMES)
     z.cmd(f"write-memory {sym['go']} 1")
 
-    for _ in range(600):
+    for _ in range(4000):
         if z.cmd(f"read-memory {sym['done']} 1").strip().upper() == "5A":
             break
         time.sleep(0.05)
@@ -168,7 +168,7 @@ def main():
     poke16("aw_seed", seed)
     poke16("aw_frames", FRAMES)
     z.cmd(f"write-memory {sym['go']} 1")
-    for _ in range(600):
+    for _ in range(4000):
         if z.cmd(f"read-memory {sym['done']} 1").strip().upper() == "5A":
             break
         time.sleep(0.05)

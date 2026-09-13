@@ -127,11 +127,13 @@ voices:
 CC_IMAGE   ?= z88dk/z88dk:20260907
 CFLAGS_ZXN := +zxn -vn -SO3 -clib=sdcc_iy -m --list
 CC_ORG     ?= 0xA000
-# Told to the CRT as well, not just set by the assembly before it calls in. The VM
-# carries about 1,400 bytes of data - 256 variables, four 64-entry thread tables
-# and a 256-deep call stack - and left to itself the runtime put its stack where
-# that data lives, so globals were corrupted intermittently: a trace counter read
-# 129 when nineteen records had been written.
+# REGISTER_SP, not CRT_STACK_ADDRESS: this is the stack pointer the C runtime sets
+# on entry, and left to its default it put the stack inside $0000-$3FFF - which is
+# where the bytecode window is mapped. Every push then wrote into the bytecode, and
+# a RET eventually jumped into it: the machine was found executing at $0068 with
+# its trace counter reading 129 when nineteen records had been written, and the
+# bytecode's own second byte altered. The assembly sets SP before calling in, and
+# this makes the runtime agree rather than overrule it.
 CC_STACK   ?= 0xBF00
 CC_RUN     := docker run --rm -v "$(CURDIR):/work" -w /work $(CC_IMAGE)
 
@@ -152,7 +154,7 @@ cc: | $(BUILD)
 	@set -e; for f in src/aw/*.c; do \
 		[ -e "$$f" ] || continue; b=$$(basename "$$f" .c); echo "  CC  $$f"; \
 		$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(CC_ORG) \
-		    -pragma-define:CRT_STACK_ADDRESS=$(CC_STACK) \
+		    -pragma-define:REGISTER_SP=$(CC_STACK) \
 		    -o $(BUILD)/$$b "$$f" src/aw/jumptab.asm; \
 		python3 tools/mkexp.py $(BUILD)/$$b.map $(BUILD)/$${b}_c.exp; \
 	done

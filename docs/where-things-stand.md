@@ -1284,11 +1284,38 @@ The seed is taken from the host's own run, because the reference sets variable
 `0x3C` from `time(0)` and the two streams would diverge the first time the
 bytecode read it.
 
-#### Gate D: nineteen records, and a corrupted counter
+#### The stack was in the bytecode window, and that is worth the whole section
 
-After the nineteenth record the machine stops logging, and three C globals read
-back wrong. This is the open fault in Phase D. The evidence, because it narrows
-the search a great deal:
+The symptom was that after nineteen records the machine stopped logging and the
+four highest C globals read back wrong. The cause is one line of build
+configuration: **z88dk's runtime sets its own stack pointer on entry, and left to
+its default it put the stack inside `$0000-$3FFF` - which is exactly where the
+bytecode window is mapped.**
+
+So every push wrote into the bytecode, and a `RET` eventually jumped into it. The
+machine was found executing at `$0068`, which is not an address in this program at
+all. It also explains two things that had looked like separate faults earlier in
+the session: the bytecode's own second byte reading `0x19` where the file has
+`0x00`, and the trace counter reading 129 when nineteen records had been written.
+
+The fix is `-pragma-define:REGISTER_SP=0xBF00`. **Not `CRT_STACK_ADDRESS`**, which
+was tried first and changed nothing: that pragma sizes the stack for some targets
+rather than placing it. The assembly already set SP before calling in; this makes
+the runtime agree instead of overrule it.
+
+**What found it was a memory write breakpoint**, the first time this project has
+needed one. Reasoning had already ruled out the addresses being wrong, the fault
+being progressive with frame count, and the globals the checker pokes being
+unreadable - and was going nowhere. The breakpoint gave the program counter, and
+`$0068` named the cause immediately.
+
+**Carry this forward.** Any C on this machine that maps a window over the bottom
+16K has to be told where its stack is, and the symptom will not look like a stack
+problem: it looks like corrupted data a long way from the stack, because the stack
+is somewhere data is not.
+
+The evidence, kept because it is what a stack in the wrong place looks like from
+the outside:
 
 | symbol | address | reads | should be |
 |---|---|---|---|
@@ -1307,17 +1334,11 @@ the search a great deal:
   order down from the stack at `$BF00`, and the C's data ends at about `$BBD6`.
   That is 810 bytes of gap, and the pattern is what a stack growing into its own
   data looks like.
-- **Pinning `CRT_STACK_ADDRESS` to `$BF00` changed nothing**, so either the runtime
-  was already using that stack or the pragma is not the lever.
-- `0x81` is a value this VM writes - `vmVariables[0x54]` - which suggests
-  something copying rather than the stack, but `aw_vars` is at `$B61F` and 512
-  bytes long, nowhere near.
-
-**The fault is in the diagnostic, not in the machine**: what has been proved is
-that the VM dispatches exactly what the engine dispatches for as long as it can
-say so. The next step is to find where those four bytes are written, and the
-cheapest experiment is a ZEsarUX memory breakpoint on `$BBCD` rather than any more
-reasoning - which is the tool this project has not needed until now.
+- **Pinning `CRT_STACK_ADDRESS` to `$BF00` changed nothing**, which was the clue
+  that the pragma was the wrong lever rather than the diagnosis being wrong.
+- `0x81` is a value this VM writes into `vmVariables[0x54]`, which looked like
+  something copying rather than a stack - and was in fact just whatever that
+  address held when the stack walked over it.
 
 ### D5a. Gate D, the rest of it
 
