@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-map check-aw check-input check-draw check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
+        check-map check-aw check-input check-draw check-res check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
         toolchain-diff
 
 help:
@@ -165,13 +165,13 @@ CC_RUN     := docker run --rm -v "$(CURDIR):/work" -w /work $(CC_IMAGE)
 # record buffer for the same reason - the verdict is what matters and it is 32 bytes.
 AW_CTL       ?= 0xC000
 AW_EXP       ?= 0        # the game compares PICTURES, not streams: see src/aw.asm
-AW_LOG_RECS  ?= 256
+AW_LOG_RECS  ?= 32       # the game's trace buffer: small on purpose, see RES_TABLE_AT
 AW_IN        ?= 0xD300
 AW_DRAW      ?= 0xD310
 
 # The game's C sits HIGHER than the harness's, because the rasteriser and the reader
 # are resident alongside it: see the CC_ORG comment in src/aw.asm.
-AW_VM_ORG    ?= 0x9900
+AW_VM_ORG    ?= 0x9A00
 
 cc-game: | $(BUILD)
 	@echo "  CC  src/aw/vm.c -> the game"
@@ -261,6 +261,13 @@ check-aw: cc-game
 	$(MAKE) asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkaw.py'
+
+# I3: the resources the bytecode asks for arrive, byte for byte against the card.
+check-res: cc-game
+	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
+	$(MAKE) asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkres.py'
 
 # Which record first draws wrongly. The companion to check-draw: it says the pages
 # differ, this says which draw did it, by halving.

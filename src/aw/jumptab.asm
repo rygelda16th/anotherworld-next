@@ -20,6 +20,8 @@
         PUBLIC  _aw_blit
         PUBLIC  _aw_set_palette
         PUBLIC  _aw_frame_sync
+        PUBLIC  _aw_load_res
+        PUBLIC  _aw_inval_res
 
         defc    _aw_code_window = 0x8000
         defc    _aw_draw_poly   = 0x8003
@@ -29,6 +31,8 @@
         defc    _aw_blit        = 0x800F
         defc    _aw_set_palette = 0x8012
         defc    _aw_frame_sync  = 0x8015
+        defc    _aw_load_res    = 0x8018
+        defc    _aw_inval_res   = 0x801B
 ; aw_frame_sync is the frame boundary, and it is the one slot the harness does not
 ; use for its own sake: vmtest.asm returns immediately from it, while src/aw.asm
 ; waits for the frame interrupt's tick and tops the sound ring up. That is how the

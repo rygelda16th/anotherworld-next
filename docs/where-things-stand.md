@@ -2034,7 +2034,7 @@ had failed to find in dozens.
 | ~~**I1**~~ | ~~one program, and the memory map that lets it exist~~ **DONE**, `make check-map` and `make check-aw` | the last thing that could force a redesign | **PASSED**: all 763 records of the engine's stream with the frame interrupt pacing the VM, the DMA streaming, and the mixer refilling from inside the interrupt | everything resident at once and a frame runs: Gate D re-run *inside* the integrated program, with the frame interrupt and the sound interrupt both live, for 60 seconds |
 | ~~**I1a**~~ | ~~read a real keyboard~~ **DONE**, `make check-input` | nothing in this project read input at all; `petest.asm` is handed a poked byte | **PASSED**: all 32 combinations from the emulator's own keys, through `read_keys` and the reference's mapping, to the VM's own variables |
 | ~~**I2**~~ | ~~the VM draws~~ **DONE**, `make check-draw` - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
-| **I3** | **resources arrive at runtime** - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
+| ~~**I3**~~ | ~~resources arrive at runtime~~ **PARTLY DONE**, `make check-res` - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
 | **I4** | **text** - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
 | **I5** | **sound in the game** - `op_playSound` and `op_playMusic` reach the gated player, **and the music module is parsed** | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | SFX and music events fire at the same frames as the engine's `sound.txt`, the mixer output stays byte-exact **on real sound resources**, and the module's order table and patterns match `sfxplayer.cpp`'s reading of them |
 | **I6** | **part transitions** - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
@@ -2477,6 +2477,34 @@ measured and reported.
 **The thing to measure, not assume:** `op_updateMemList` loads one resource inside a
 frame and the largest is 65,230 bytes. Step 5 established that the emulator cannot
 time esxDOS, so this frame's cost is unknown until H1 - report it, do not model it.
+
+#### I3 loads, and two of its three claims hold
+
+`make check-res`. `op_updateMemList` now does what `loadPartsOrMemoryEntry` does
+(`resource.cpp:258`): zero invalidates, an id above the memory list requests a part,
+anything else loads. Over the intro's 45 frames the machine loads **23 resources** and
+**every one is byte-for-byte against the card**, read back off the machine rather than
+trusted. The heap sits at **33 of its 40 reserved pages**.
+
+`tools/mkreslist.py` generates the table it loads by, from MEMLIST: 146 resources, four
+bytes each - type, unpacked size, page count. The name is derived rather than stored,
+`PAL`/`BMP`/`RES` by type, which is what `mkassets.py` writes.
+
+**The tables went into MMU6's page, not the resident region**, and the trace buffer paid
+for it: 730 bytes of table against 951 bytes of stack left if it went below the C. The
+game's trace buffer dropped from 256 records to 32, which costs nothing real - `check-boot`
+gates the opcode stream at 763 in the harness, so the game's copy is a post-mortem
+convenience.
+
+**CLAIM 2 IS NOT CHECKED AND THE CHECKER SAYS SO.** "It asked for the same resources the
+engine did" needs the probe to log resource **ids**, and its sound log is keyed by time and
+type. **A port that silently skipped a load would pass the other two claims.** Closing it
+means an `instrOp` in `loadPartsOrMemoryEntry`; until then the count is reported, not
+verified.
+
+**And 33 of 40 pages is tighter than it looks.** That is the intro alone, and the
+reference's measured high-water across the parts is 38 pages - so the reservation has
+seven pages of headroom for parts that load more than the intro does. I6 will find out.
 
 #### I4. Text
 

@@ -34,6 +34,9 @@ extern void aw_set_palette(uint8_t id) __z88dk_fastcall;
  * frame loop that Gate D checks, and the game still gets its pacing and its sound,
  * without two frame loops that can disagree. */
 extern void aw_frame_sync(void);
+/* I3. The harness's are `ret`s; the game's load a resource and forget them all. */
+extern void aw_load_res(uint16_t id) __z88dk_fastcall;
+extern void aw_inval_res(void);
 /* The two shared regions are named by PLAIN ADDRESS CONSTANTS, not by extern
  * symbols declared with defc. That is the third arrangement tried and the first
  * that is unambiguous.
@@ -471,11 +474,26 @@ static void op_playSound(void)
     fetch_byte();                   /* channel */
 }
 
+/* loadPartsOrMemoryEntry, resource.cpp:258, through op_updateMemList, vm.cpp:366.
+ *
+ * Three branches and the reference's order: zero stops the sound and invalidates, an id
+ * above the memory list is a PART request, anything else loads. 150 rather than the real
+ * count of 146 because part ids start at $3E80 and nothing lies between - the reference
+ * compares against _numMemList, which it reads from the file, and this is the one place
+ * the port keeps a constant where the engine keeps data.
+ *
+ * The player and mixer stops that belong on the zero branch are I5's: there is nothing
+ * playing yet to stop. */
 static void op_updateMemList(void)
 {
     uint16_t res = fetch_word();
-    if (res > 150)                  /* above the mem list: a part request */
+    if (res == 0) {
+        aw_inval_res();
+    } else if (res > 150) {
         aw_part_req = res;
+    } else {
+        aw_load_res(res);
+    }
 }
 
 static void op_playMusic(void)

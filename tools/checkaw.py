@@ -114,7 +114,7 @@ def main():
     ring_run = read(z, RING, 64)
     counts = {n: int.from_bytes(read(z, sym[n], 2), "little")
               for n in ("n_poly", "n_select", "n_fill", "n_copy", "n_blit", "n_pal")}
-    n_cmp = min(256, len(want))
+    n_cmp = min(32, len(want))   # the game's buffer; check-boot gates 763 in the harness
     rec_raw = read(z, CTL + 0x20, n_cmp * 4)
 
     # DID ANYTHING ACTUALLY GET DRAWN? The reader being wired is not the reader working,

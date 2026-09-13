@@ -48,7 +48,7 @@
 ; C's stack is the number to watch: $BF00 down to the end of its image. Gate D needed
 ; more than 779 bytes and was given 4,500; this is less, and if it is not enough the
 ; symptom is now a known one.
-CC_ORG          EQU $9900               ; must match VM_ORG in the Makefile
+CC_ORG          EQU $9A00               ; must match VM_ORG in the Makefile
 NR_TURBO        EQU $07
 NR_MMU0         EQU $50
 NR_MMU1         EQU $51
@@ -60,10 +60,21 @@ NR_MMU7         EQU $57
 CODE_WIN        EQU $0000               ; what vmhost.inc slides the bytecode through
 CODE_PAGE       EQU 48                  ; eight 8K pages for the bytecode segment
 POLY_PAGE       EQU 56                  ; and eight for the cinematic segment
+; I3's heap: resources the bytecode asks for at runtime, allocated a page at a time.
+; The reference's own high-water mark across the parts measured is 305,919 bytes - 38
+; pages - so 40 is the reservation, and running past it is a fault rather than a wrap.
+RES_FIRST_PAGE  EQU 72
+RES_MAX_PAGES   EQU 40
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
 
 CTL             EQU $C000
 INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
+; I3's tables, in MMU6's page rather than the resident region, which the rasteriser and
+; the C had already filled: 584 bytes of resource table and 146 of load state is 730, and
+; putting it below $9900 left the VM 951 bytes of stack. The room comes from the trace
+; buffer, which dropped from 256 records to 32 - check-boot gates the opcode stream at 763
+; in the harness, so the game's copy of it is a post-mortem convenience and not a claim.
+RES_TABLE_AT    EQU $C0A0
 PAL_BASE        EQU $CD00               ; 32 palettes x 16 entries x 2 bytes = 1,024
 NR_PAL_CTRL     EQU $43
 NR_PAL_INDEX    EQU $40
@@ -195,7 +206,9 @@ jump_table:
         jp      aw_blit                 ; $800F
         jp      aw_set_palette          ; $8012
         jp      aw_frame_sync           ; $8015
-        ASSERT $ - jump_table == 24
+        jp      aw_load_res             ; $8018  void aw_load_res(uint16_t id)
+        jp      aw_inval_res            ; $801B  void aw_inval_res(void)
+        ASSERT $ - jump_table == 30
 
 start:
         di
@@ -440,6 +453,152 @@ mix_block:
 .store:
         add     hl, de
         ld      (ring_wr), hl
+        ret
+
+;-----------------------------------------------------------------------------
+; I3. loadPartsOrMemoryEntry, resource.cpp:258, for the part of it that loads.
+;
+; The reference keeps two allocation zones in one block and walks a memList whose state
+; bytes say what is wanted. Ours is simpler and has to be: a resource goes into whole 8K
+; pages taken from a cursor, and res_page remembers where each one went so a second
+; request for the same id is free - which the reference gets from its state byte.
+;
+; What it does NOT do is unload. invalidateRes resets the cursor wholesale, which is what
+; the reference's own comment describes it as doing to everything not permanent. Keeping
+; individual resources alive across an invalidate is I6's problem, when parts change.
+;-----------------------------------------------------------------------------
+aw_load_res:
+        ld      (jt_arg), hl
+        ld      a, h
+        or      a
+        ret     nz                      ; ids are bytes; anything larger is not ours
+        ld      a, l
+        cp      RES_COUNT
+        ret     nc
+        ; already loaded? res_page holds the first page, or zero
+        ld      h, 0
+        ld      l, a
+        ld      de, res_page
+        add     hl, de
+        ld      a, (hl)
+        or      a
+        ret     nz                      ; the reference's LOADED state, in one byte
+
+        ; look the entry up: four bytes each, type, size as a word, pages
+        ld      a, (jt_arg)
+        ld      h, 0
+        ld      l, a
+        add     hl, hl
+        add     hl, hl
+        ld      de, res_table
+        add     hl, de
+        ld      a, (hl)
+        ld      (res_type), a
+        inc     hl
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        ld      (res_size), de
+        inc     hl
+        ld      a, (hl)
+        ld      (res_pages), a
+        or      a
+        ret     z                       ; a zero-length entry: nothing to fetch
+
+        ; is there room? running out is a fault, not a wrap onto something else
+        ld      hl, next_page
+        add     a, (hl)
+        sub     RES_FIRST_PAGE
+        cp      RES_MAX_PAGES + 1
+        jr      c, .room
+        ld      a, 1
+        ld      (res_full), a
+        ret
+.room:
+        ; the name: PAL for a palette, BMP for a full-screen bitmap, RES for the rest,
+        ; which is exactly what mkassets.py writes
+        ld      hl, nm_res
+        ld      a, (res_type)
+        cp      3
+        jr      nz, .not_pal
+        ld      hl, nm_pal
+.not_pal:
+        ld      a, (res_type)
+        cp      2
+        jr      nz, .not_bmp
+        ld      hl, nm_bmp
+.not_bmp:
+        ld      de, fname
+        ld      bc, 4
+        ldir                            ; the three letters and the first hex digit slot
+        ld      a, (jt_arg)
+        rrca
+        rrca
+        rrca
+        rrca
+        call    hex_digit
+        ld      (fname + 3), a
+        ld      a, (jt_arg)
+        call    hex_digit
+        ld      (fname + 4), a
+        ld      hl, nm_tail
+        ld      de, fname + 5
+        ld      bc, 5
+        ldir                            ; ".BIN" and the terminator
+
+        ld      a, (next_page)
+        ld      (ld_page), a
+        di                              ; esxDOS wants the interrupt off: see load_code
+        call    load_code
+        ei
+        ld      a, CODE_PAGE
+        ld      (ld_page), a
+
+        ld      a, (err)
+        or      a
+        jr      z, .loaded
+        ld      (res_err), a
+        ret
+.loaded:
+        ld      a, (jt_arg)
+        ld      h, 0
+        ld      l, a
+        ld      de, res_page
+        add     hl, de
+        ld      a, (next_page)
+        ld      (hl), a                 ; where it went
+        ld      hl, next_page
+        ld      a, (res_pages)
+        add     a, (hl)
+        ld      (hl), a                 ; and the cursor past it
+        ld      hl, (n_load)
+        inc     hl
+        ld      (n_load), hl
+        ret
+
+; invalidateRes, resource.cpp:229. The reference marks everything not permanent as
+; absent; ours forgets the lot and rewinds the cursor.
+aw_inval_res:
+        ld      hl, res_page
+        ld      de, res_page + 1
+        ld      bc, RES_COUNT - 1
+        ld      (hl), 0
+        ldir
+        ld      a, RES_FIRST_PAGE
+        ld      (next_page), a
+        ld      hl, (n_inval)
+        inc     hl
+        ld      (n_inval), hl
+        ret
+
+; A = low nibble in, the ASCII hex digit out. Uppercase, because that is what
+; mkassets.py wrote and esxDOS on a FAT card does not have to be case-blind.
+hex_digit:
+        and     $0F
+        add     a, '0'
+        cp      '9' + 1
+        ret     c
+        add     a, 'A' - '0' - 10
         ret
 
 ;-----------------------------------------------------------------------------
@@ -1108,6 +1267,24 @@ pal_req:    db $FF                      ; $FF = no palette change requested
         EXPORT pal_now
 pal_now:    db $FF
 poly_name:  db "RES19.BIN", 0
+nm_res:     db "RES", 0
+nm_pal:     db "PAL", 0
+nm_bmp:     db "BMP", 0
+nm_tail:    db ".BIN", 0
+res_type:   db 0
+res_size:   dw 0
+res_pages:  db 0
+        EXPORT res_err
+res_err:    db 0
+        EXPORT res_full
+res_full:   db 0            ; the heap reservation was exceeded
+        EXPORT next_page
+next_page:  db RES_FIRST_PAGE
+        EXPORT n_load
+n_load:     dw 0
+        EXPORT n_inval
+n_inval:    dw 0
+
 pal_name:   db "PAL17.BIN", 0
 rd_log:     ds 8 * 8                    ; the reader's leaf log, small: nothing reads it
 
@@ -1128,6 +1305,14 @@ ctl:        ds 32 + 256 * 4             ; the control block, then 256 records
         ; the engine, which is a stronger claim than the stream anyway: a wrong opcode
         ; that does not change what is drawn is not interesting, and one that does shows
         ; up here.
+        ; I3's tables, after the trace buffer's 32 records
+        ORG RES_TABLE_AT
+        EXPORT res_page
+res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
+        INCLUDE "build/reslist.inc"
+        DISPLAY "> resource tables end at ", /H, $
+        ASSERT $ <= PAL_BASE
+
         ORG INTERP_AT
         ALIGN 2
         INCLUDE "build/interp.inc"

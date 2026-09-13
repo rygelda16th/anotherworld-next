@@ -67,7 +67,9 @@ jump_table:
         jp      aw_blit                 ; $800F  void aw_blit(uint8_t)
         jp      aw_set_palette          ; $8012  void aw_set_palette(uint8_t)
         jp      aw_frame_sync           ; $8015  void aw_frame_sync(void)
-        ASSERT $ - jump_table == 24
+        jp      aw_load_res             ; $8018  I3: the game loads; this counts
+        jp      aw_inval_res            ; $801B
+        ASSERT $ - jump_table == 30
 
 VM_STACK        EQU $BF00               ; what SAVENEX declares; see the Makefile
 
@@ -215,6 +217,19 @@ aw_blit:
 aw_frame_sync:
         ret
 
+; I3's two, counted rather than done: Gate D is about the opcode stream and a harness that
+; actually loaded resources would need the whole allocator to say anything new.
+aw_load_res:
+        ld      hl, (n_load)
+        inc     hl
+        ld      (n_load), hl
+        ret
+aw_inval_res:
+        ld      hl, (n_inval)
+        inc     hl
+        ld      (n_inval), hl
+        ret
+
 aw_set_palette:
         ld      a, l
         ld      (last_pal), a
@@ -308,6 +323,10 @@ n_copy:         dw 0
 n_blit:         dw 0
         EXPORT n_pal
 n_pal:          dw 0
+        EXPORT n_load
+n_load:         dw 0
+        EXPORT n_inval
+n_inval:        dw 0
 last_select:    db 0
 last_fill:      dw 0
 last_copy:      dw 0
