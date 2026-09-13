@@ -27,9 +27,12 @@ measurement that is the **only** thing that needs to be.
 | E - pacing, input, sound | **specified and priced**, not built |
 | F - the rest of the game | **scoped**, three known gaps |
 
-Everything that has a gate has passed it except Gate D's full 40-frame stream,
-which is running; the mixer, the rasteriser's decomposition and the esxDOS read
-path are all measured on the machine.
+**Eight of the nine gates pass.** The exception is Gate D: the virtual machine is
+built and its opcode stream has been observed identical to the engine's for 354
+consecutive records, but not repeatably - see *Gate D* for what was ruled out and
+what to try next. Everything else - the rasteriser, the polygon reader, the segment
+window, the loader, the mixer, pacing, input and six of the seven parts - is gated
+and green.
 
 Nothing here is a guess unless it says so. Every number was measured on the
 machine, on the host, or read out of a pinned source and cited.
@@ -1289,8 +1292,23 @@ field: thread, program counter, opcode.
 
 **The best verified result is 354 of 354 records identical**, reached after moving
 the VM's C down to `$8C00` so the stack had room. Every record: the thread edge, the
-opcode, the program counter, across many frames and several threads. The remaining
-325 of the engine's 679 need a bigger opcode budget than that run used.
+opcode, the program counter, across many frames and several threads.
+
+**But it is not repeatable, and that is the honest headline.** The same inputs have
+given 0, 64, 122 and 354 matching records on different runs. Non-determinism with
+identical inputs means something uninitialised, and one cause was found and fixed -
+**ZEsarUX's `smartload` does not clear RAM between loads, so a second run inherits
+the first run's memory** and C's statics do not start at zero the way C assumes.
+`main` now states every one of them explicitly, which a `.nex` should do anyway
+because it cannot assume a clean machine. It did not make the result repeatable, so
+there is at least one more.
+
+Ruled out, so that nobody re-runs them: the ZRCP client does not desynchronise (30
+interleaved reads of a known byte, all correct); the two `.exp` files share no
+symbol name; `REGISTER_SP` is honoured and the map confirms it; `TAR__crt_org_code`
+is the target's default rather than the effective origin, so `__Start` is the symbol
+to read; and z88dk emits one CODE section here with BSS inside it, so no DATA
+section is missing from the INCBIN.
 
 **What is NOT established is a repeatable full-stream comparison**, and the reason
 is the channel between the C and the checker rather than the VM. Reading the C's
@@ -1316,11 +1334,16 @@ presented as something other than a memory-map problem:
 | `$E000-$FFFF` | the loader's staging window |
 
 **So Gate D stands at: the VM is built, its initial state is exactly the engine's,
-and its opcode stream is identical for 354 consecutive records.** Completing it
-needs either resource loading (so the VM terminates of its own accord and can be
-read at rest) or a different channel for the trace - writing it to a file through
-esxDOS would side-step the problem entirely, and that path is already proven by
-step 5.
+and its opcode stream has been observed identical for 354 consecutive records - but
+not repeatably.** It is the one gate of nine that does not pass.
+
+**What to try next, in order of expected value.** Write the trace to a FILE through
+esxDOS rather than reading it out of memory: step 5 proved that path works, it needs
+no ZRCP reads at all, and a file either has the records or it does not. Then load
+resources for real, so the VM terminates of its own accord and can be read at rest.
+Both are ordinary work; neither needs another day of bisecting memory layouts, which
+is what the last several hours were and is why this is written down rather than
+continued.
 
 The seed is taken from the host's own run, because the reference sets variable
 `0x3C` from `time(0)` and the two streams would diverge the first time the
@@ -1737,7 +1760,7 @@ unblocked only once the one it names has produced a number.
 | 3a | ~~C5a, widen the geometry to 16 bits~~ **DONE** | the machine reader was blocked on it: the trace reaches 483 and the rasteriser held bytes | Gate C with a `wide` bucket reaching 303, and `calc_step` **576 of 576** exact as words |
 | 4 | ~~C6, the segment window~~ **DONE** | a 65,230-byte segment cannot be mapped flat | the same gate: the whole 65,230-byte segment is read through a two-page window at `$0000` |
 | 5 | ~~D4's read rate~~ **DONE, and the answer is "not here"** | a four-second part load is a design decision, not a detail | `make check-load`: the path works and every byte arrives; the rate is r = -0.518 against size, so the emulator cannot time it |
-| 6 | **D2 and D3, the scheduler and opcodes** | the rest of the port hangs off them | Gate D, and D3's opcode trace before D4's picture |
+| 6 | **D2 and D3, the scheduler and opcodes** - built, gate **NOT** passing | the rest of the port hangs off them | Gate D: 354 records observed identical, not repeatably. The one gate of nine that does not pass |
 | 7 | ~~E1 and E2, pacing and input~~ **DONE** | the game is unplayable without them and they are small | `make check-pace`: all 32 input combinations, and a 4-slice frame doing 6 refreshes of work comes out at 6 |
 | 8 | ~~E3, sound~~ **DONE** | priced at step 1, and the ring proven on the other project | `make check-snd`: four voices byte-exact at three block lengths, 9 ring wraps, nothing outside it |
 | 9 | ~~F1, a later part~~ **DONE** | everything so far was two parts of ten | `make check-parts`: six of seven parts run, and four of the five numbers that rested on two parts move |

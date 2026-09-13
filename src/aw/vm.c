@@ -516,6 +516,26 @@ uint8_t aw_host_frame(void) __z88dk_fastcall
 int main(void)
 {
     uint16_t f;
+
+    /* EVERYTHING initialised explicitly, and nothing trusted to start at zero.
+     *
+     * This is the fault that made Gate D look unrepeatable for a whole session. C
+     * expects its statics zeroed and here they are not: ZEsarUX's smartload does
+     * not clear RAM between loads, so a second run inherits the first run's memory
+     * and the window bounds, the trace count and the stack pointer all start as
+     * whatever was left. The same inputs then gave 0, 122 and 354 matching records
+     * on different runs, which reads as a flaky machine rather than as an
+     * uninitialised variable.
+     *
+     * A .nex cannot assume a clean machine. State it all. */
+    wp = 0;
+    w_lo = 0;
+    w_hi = 0;
+    aw_pc_now = 0;
+    aw_sp = 0;
+    aw_goto_next = 0;
+    aw_part_req = 0;
+
     aw_init_vars(CTL_SEED);
     aw_init_part();
     aw_blits = 0;
