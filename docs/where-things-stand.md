@@ -49,6 +49,7 @@ are now optional. See *What has been measured*.
     make check-cc      Gate B: C calls assembly at a fixed address and returns
     make check-poly    Gate C: the rasteriser, pixel-exact vs the reference
     make check-reader  Gate C4: the reference reader IS the engine's reader
+    make check-readmachine  Gate C4: the Z80N reader, pixel-exact
     make check-mix     step 1: what one output sample of the mixer costs
     make check-polycost step 2: T a polygon and T a span, measured apart
     make frame-load    every frame against the pause its own script asked for
@@ -866,9 +867,15 @@ said only that something was wrong; comparing the call sequence says which recor
 at which offset, with which field wrong - the same reason Gate D's opcode trace
 comes before its picture.
 
-**The machine half is blocked on something Gate C never exercised**, and finding it
-is what building the reader was for. See *The geometry is 8-bit and the game is
-not*, below.
+**And the machine half is done.** `make check-readmachine` pokes the intro's
+65,230-byte cinematic segment into banked pages, hands the machine 64 top-level
+draws chosen for **zoom coverage rather than trace order** - 55 distinct zooms, 61
+of them not the identity - and compares the page: **49,152 of 49,152 pixels, over
+771 polygons the reader found for itself**, nesting to depth 3.
+
+Choosing the draws for zoom is the point. 97.4% of the intro's polygons are at
+zoom 0x40, so a vector taken in order would have left the zoom multiply and its
+two truncations essentially untested.
 
 A record's first byte decides everything:
 
@@ -990,7 +997,20 @@ Item 4 is the real work and it is the one place where the 648-case test earns it
 keep: a 16x16 signed multiply assembled out of four `MUL D,E`s is exactly the kind
 of code that is plausible and wrong.
 
-**C6. The segment window.** A thread's program counter and a polygon offset are
+**C6. The segment window - DONE.** Built as part of C4 and exercised by the same
+gate. Two 8K pages at MMU0 and MMU1, `$0000-$3FFF`, which is the only 16K the
+program does not otherwise use: code is at `$8000`, the generated tables at
+`$C000`, and the Layer 2 windows at `$4000` and `$6000`.
+
+**A recursive reader has to save the window, not just its pointer.** A child can
+live in a different pair of pages, and mapping it moves the window, so the
+parent's saved read pointer becomes an address into whatever the child mapped. The
+page number is pushed alongside it now. Before that the machine found 31 malformed
+records where the reference finds none.
+
+The original text follows, and the arithmetic in it is what was built.
+
+A thread's program counter and a polygon offset are
 both 16-bit offsets from a segment base, and the largest cinematic segment is
 **65,230 bytes** - 306 bytes short of everything 16 bits can address. A segment
 therefore cannot be mapped linearly into a 64K space that also holds code, and
@@ -1449,9 +1469,9 @@ unblocked only once the one it names has produced a number.
 | 1 | ~~price the mixer's inner loop~~ **DONE** | it was the largest unpriced cost, and it decided the output rate | `make check-mix`: **295 T a sample for four voices**, 23.2% of the machine at the reference's own 22,050 Hz |
 | 2 | ~~measure the per-polygon setup cost~~ **DONE** | gameplay spends its time there, and every budget number carried it as a guess | `make check-polycost`: **2,974 T a polygon**, and it found the span cost had been understated threefold |
 | 2a | ~~the rasteriser optimisations~~ **DONE** | one gameplay frame in eight was overrunning its own deadline | fused row loop and unrolled fills: **1,296 T a span, 0.94% overrunning** against a 0.73% floor, Gate C still 49,152/49,152 |
-| 3 | **C4, the polygon reader** - reference half **DONE** | nothing renders a real scene without it | `make check-reader`: 10,700 draws, 64,897 fills, field for field |
+| 3 | ~~C4, the polygon reader~~ **DONE, both halves** | nothing renders a real scene without it | `check-reader`: 10,700 draws, 64,897 fills, field for field. `check-readmachine`: **49,152/49,152 pixels** over 771 polygons at 55 distinct zooms |
 | 3a | ~~C5a, widen the geometry to 16 bits~~ **DONE** | the machine reader was blocked on it: the trace reaches 483 and the rasteriser held bytes | Gate C with a `wide` bucket reaching 303, and `calc_step` **576 of 576** exact as words |
-| 4 | **C6, the segment window** | a 65,230-byte segment cannot be mapped flat | a read of the last byte of the largest cinematic segment |
+| 4 | ~~C6, the segment window~~ **DONE** | a 65,230-byte segment cannot be mapped flat | the same gate: the whole 65,230-byte segment is read through a two-page window at `$0000` |
 | 5 | **D4's read rate**, before any of D is built | a four-second part load is a design decision, not a detail | `make check-load` |
 | 6 | **D2 and D3, the scheduler and opcodes** | the rest of the port hangs off them | Gate D, and D3's opcode trace before D4's picture |
 | 7 | **E1 and E2, pacing and input** | the game is unplayable without them and they are small | `check-pace`, `check-input` |

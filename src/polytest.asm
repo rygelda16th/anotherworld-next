@@ -127,6 +127,60 @@ start:
         ld      a, DST_P0
         call    fill_page
 
+        ; C4's driver. In read mode the checker has poked a polygon segment into
+        ; banked pages and a list of top-level draws, each one exactly what a
+        ; bit-7 or bit-6 opcode computes, and the reader is what turns them into
+        ; polygons. The vector path below is untouched, so Gate C still runs.
+        ld      a, (read_mode)
+        or      a
+        jp      z, .draw_all
+        ld      hl, (rd_count)
+        ld      a, h
+        or      l
+        jp      z, .drawn
+        ld      (rd_left), hl
+        ld      hl, rd_list
+        ld      (rd_next), hl
+.read_each:
+        ld      hl, (rd_next)
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        inc     hl
+        ld      (rd_off), de
+        ld      a, (hl)
+        inc     hl
+        ld      (rd_col), a
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        inc     hl
+        ld      (rd_zoom), de
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        inc     hl
+        ld      (rd_ptx), de
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        inc     hl
+        ld      (rd_pty), de
+        ld      (rd_next), hl
+        xor     a
+        ld      (rd_depth), a
+        call    poly_read
+        ld      a, (rd_stop)
+        or      a
+        jp      nz, .drawn
+        ld      hl, (rd_left)
+        dec     hl
+        ld      (rd_left), hl
+        ld      a, h
+        or      l
+        jp      nz, .read_each
+        jp      .drawn
+
         ; Draw them all.
         ;
         ; Step 2 needs a WINDOW, not just a prefix. Taking prefixes alone leaves
@@ -571,6 +625,453 @@ poly_draw:
         jp      .trapezoid
 .ret:
         ret
+
+
+
+;-----------------------------------------------------------------------------
+; C4 / C6: the polygon reader, and the sliding window it reads through.
+;
+; Video::readAndDrawPolygon (video.cpp:83-115) and readAndDrawPolygonHierarchy
+; (video.cpp:206-243). The reference half is proved against the engine call for
+; call by `make check-reader` - 10,700 draws, 64,897 fills, every field - so what
+; is under test here is this assembly.
+;
+; THE WINDOW. A segment is addressed by a flat 16-bit byte offset and the largest
+; cinematic segment in the game is 65,230 bytes, 306 short of everything 16 bits
+; can address, so it cannot be mapped linearly into a 64K space that also holds
+; code. Two 8K pages are mapped at MMU0 and MMU1 - $0000-$3FFF, the only 16K this
+; program does not otherwise use - so any record starting in the low half can be
+; read to its end without a remap. The longest leaf measured is 83 bytes and the
+; widest hierarchy record 717.
+;
+; WHERE THE SCALE GOES, which is the one thing here that is easy to get wrong.
+; The reference does all of the hierarchy's arithmetic in the original's 320x200
+; space and scales only when it fills, so the centre is scaled ONCE, at the leaf.
+; Scaling at each step instead would compute scale(a) - scale(b) where the
+; reference computes scale(a - b), and two truncations do not distribute over a
+; subtraction. The box and the vertex offsets ARE scaled individually, because
+; that is what the reference does with them.
+;
+; RECURSION, not an explicit stack. The measured depth is 4 and the reference is
+; recursive; the CPU stack has room, and a saved-offset array is the same thing
+; with more ways to be wrong. rd_depth refuses past 8 and counts it.
+;-----------------------------------------------------------------------------
+
+SEG_WIN         EQU $0000               ; MMU0 + MMU1: 16K of the polygon segment
+NR_MMU0         EQU $50
+NR_MMU1         EQU $51
+X_MUL           EQU 205
+Y_MUL           EQU 246
+
+; seg_map - HL = a byte offset into the segment. Maps the two 8K pages covering
+; it and returns HL as an address inside SEG_WIN.
+seg_map:
+        ld      a, h
+        rlca
+        rlca
+        rlca
+        and     7                       ; H >> 5 = off >> 13, the 8K page
+        ld      e, a
+        ld      a, (seg_base)
+        add     a, e
+        ld      (rd_page), a            ; remembered, so a parent can restore it
+        nextreg NR_MMU0, a
+        inc     a
+        nextreg NR_MMU1, a              ; the next page too
+        ld      a, h
+        and     $1F
+        add     a, SEG_WIN >> 8
+        ld      h, a
+        ret
+
+; zoom_byte - A = a raw byte from the segment; returns HL = A * zoom / 64.
+; Twenty-four bits on the way: a zoom of 339, which the trace contains, times 255
+; is 86,445, and that does not fit a word.
+zoom_byte:
+        ld      hl, (rd_zoom)
+        ld      d, a
+        ld      e, l
+        mul     d, e
+        push    de
+        ld      d, a
+        ld      e, h
+        mul     d, e
+        pop     hl
+        ld      b, 0
+        ld      a, h
+        add     a, e
+        ld      h, a
+        ld      a, b
+        adc     a, d
+        ld      b, a                    ; B:HL = byte * zoom
+        ld      c, 6
+zb_shr: srl     b
+        rr      h
+        rr      l
+        dec     c
+        jr      nz, zb_shr
+        ret
+
+; mul_hl_a - HL unsigned times A, >> 8. The >> 8 is a byte shuffle, not a shift.
+mul_hl_a:
+        ld      (sc_mul), a
+        ld      d, a
+        ld      e, l
+        mul     d, e
+        push    de
+        ld      a, (sc_mul)
+        ld      d, a
+        ld      e, h
+        mul     d, e
+        pop     hl
+        ld      b, 0
+        ld      a, h
+        add     a, e
+        ld      h, a
+        ld      a, b
+        adc     a, d
+        ld      b, a
+        ld      l, h
+        ld      h, b
+        ret
+
+scale_ux:
+        ld      a, X_MUL
+        jp      mul_hl_a
+scale_uy:
+        ld      a, Y_MUL
+        jp      mul_hl_a
+
+; scale_sx / scale_sy - HL signed. Magnitude then sign: the reference negates,
+; scales and negates back, which rounds differently from an arithmetic shift on
+; every negative odd value.
+scale_sx:
+        ld      a, X_MUL
+        jr      scale_s
+scale_sy:
+        ld      a, Y_MUL
+scale_s:
+        ld      (sc_mul2), a
+        bit     7, h
+        jr      nz, scale_s_neg
+        ld      a, (sc_mul2)
+        jp      mul_hl_a
+scale_s_neg:
+        xor     a
+        sub     l
+        ld      l, a
+        sbc     a, a
+        sub     h
+        ld      h, a                    ; HL = -HL
+        ld      a, (sc_mul2)
+        call    mul_hl_a
+        xor     a
+        sub     l
+        ld      l, a
+        sbc     a, a
+        sub     h
+        ld      h, a
+        ret
+
+;-----------------------------------------------------------------------------
+; poly_read - one record, recursive. All of its state is in memory because of
+; that; the values are pushed and popped around the recursive call.
+;   (rd_off)   the record's byte offset within the segment
+;   (rd_col)   the incoming colour; bit 7 set means the record may supply its own
+;   (rd_zoom)  the zoom
+;   (rd_ptx) (rd_pty)  the centre, in the original's 320x200 space
+;-----------------------------------------------------------------------------
+poly_read:
+        ld      a, (rd_stop)
+        or      a
+        ret     nz                      ; the limit was reached: unwind
+        ld      a, (rd_depth)
+        inc     a
+        ld      (rd_depth), a
+        cp      9
+        jp      nc, .too_deep
+
+        ld      hl, (rd_off)
+        call    seg_map
+        ld      a, (hl)
+        inc     hl
+        ld      (rd_src), hl            ; just past the first byte
+        cp      $C0
+        jp      c, .not_leaf
+
+        ; Log this leaf's INPUTS - offset, colour, centre - before anything is
+        ; computed from them. Comparing the built record says a field is wrong;
+        ; comparing the inputs says whether the reader reached the right record in
+        ; the first place, which is a different fault with a different cause.
+        push    af
+        ld      hl, (rd_log_at)
+        ld      de, (rd_off)
+        ld      (hl), e
+        inc     hl
+        ld      (hl), d
+        inc     hl
+        ld      a, (rd_col)
+        ld      (hl), a
+        inc     hl
+        ld      de, (rd_ptx)
+        ld      (hl), e
+        inc     hl
+        ld      (hl), d
+        inc     hl
+        ld      de, (rd_pty)
+        ld      (hl), e
+        inc     hl
+        ld      (hl), d
+        inc     hl
+        inc     hl                      ; eight bytes an entry
+        ld      de, rd_log + 8 * 32
+        ld      a, h
+        cp      d
+        jr      c, .log_ok
+        ld      hl, rd_log              ; wrap rather than run off the end
+.log_ok:
+        ld      (rd_log_at), hl
+        pop     af
+
+        ; ---- a leaf ----------------------------------------------------------
+        ld      d, a
+        ld      a, (rd_col)
+        bit     7, a
+        jr      z, .have_colour
+        ld      a, d
+        and     $3F
+.have_colour:
+        ld      (rd_record), a
+
+        ; the centre: scaled ONCE, here, after all the hierarchy arithmetic
+        ld      hl, (rd_ptx)
+        call    scale_sx
+        ld      (rd_record + 1), hl
+        ld      hl, (rd_pty)
+        call    scale_sy
+        ld      (rd_record + 3), hl
+
+        call    .next_byte
+        call    zoom_byte
+        call    scale_ux
+        ld      (rd_record + 5), hl     ; bbw
+        call    .next_byte
+        call    zoom_byte
+        call    scale_uy
+        ld      (rd_record + 7), hl     ; bbh
+
+        call    .next_byte
+        ld      (rd_record + 9), a      ; npoints
+        or      a
+        jp      z, .draw
+        ld      (rd_n), a
+        ld      hl, rd_record + 10
+        ld      (rd_dst), hl
+.each_pt:
+        call    .next_byte
+        call    zoom_byte
+        call    scale_ux
+        call    .store
+        call    .next_byte
+        call    zoom_byte
+        call    scale_uy
+        call    .store
+        ld      a, (rd_n)
+        dec     a
+        ld      (rd_n), a
+        jp      nz, .each_pt
+.draw:
+        ; A polygon limit across the whole run, so a failure can be bisected to
+        ; one polygon rather than one draw: a draw makes up to 256 of them and
+        ; comparing the page after a whole draw says only that one of them is
+        ; wrong. Gate C bisects the same way and for the same reason.
+        ld      hl, (rd_pcount)
+        inc     hl
+        ld      (rd_pcount), hl
+        ld      de, (rd_plimit)
+        ld      a, d
+        and     e
+        inc     a
+        jr      z, .do_draw             ; $FFFF means no limit, so zero can mean
+        or      a                       ; "build it but draw nothing" - which is
+        sbc     hl, de                  ; what a bisect needs at its first step
+        jr      c, .do_draw
+        ld      a, h
+        or      l
+        jr      z, .do_draw             ; EQUAL still draws. rd_pcount is bumped
+                                        ; before this test, so carry alone means
+                                        ; "draw plimit - 1 of them" and the whole
+                                        ; comparison came out one polygon adrift
+        ; At the limit. STOP the whole run rather than going on building records
+        ; nobody draws: there is one record buffer, so continuing left the LAST
+        ; polygon of the run in it and every field comparison was against the
+        ; wrong polygon - which sent a debugging session hunting rounding faults
+        ; in arithmetic that was right.
+        ld      a, 1
+        ld      (rd_stop), a
+        jp      .ret
+.do_draw:
+        ld      hl, rd_record
+        call    poly_draw
+        jp      .ret
+
+.next_byte:
+        ld      hl, (rd_src)
+        ld      a, (hl)
+        inc     hl
+        ld      (rd_src), hl
+        ret
+
+.store:
+        ld      de, (rd_dst)
+        ex      de, hl                  ; HL = destination, DE = the value
+        ld      (hl), e
+        inc     hl
+        ld      (hl), d
+        inc     hl
+        ld      (rd_dst), hl
+        ret
+
+        ; ---- a hierarchy record ---------------------------------------------
+.not_leaf:
+        and     $3F
+        cp      2
+        jp      nz, .bad
+
+        ; the centre moves, IN 320x200 SPACE
+        call    .next_byte
+        call    zoom_byte
+        ld      de, (rd_ptx)
+        ex      de, hl
+        or      a
+        sbc     hl, de
+        ld      (rd_ptx), hl
+        call    .next_byte
+        call    zoom_byte
+        ld      de, (rd_pty)
+        ex      de, hl
+        or      a
+        sbc     hl, de
+        ld      (rd_pty), hl
+
+        ; A count MINUS ONE: read as an unsigned byte and looped while >= 0, so 0
+        ; means one child and 255 means 256 (video.cpp:210-215). A WORD counter,
+        ; therefore: a byte one cannot hold 256, and the first draft's `inc a /
+        ; jr z` treated the 256-child case as none at all.
+        call    .next_byte
+        ld      l, a
+        ld      h, 0
+        inc     hl
+        ld      (rd_kids), hl
+.kid_loop:
+        ; every child is read relative to THIS record's centre, so both are saved
+        ld      hl, (rd_ptx)
+        push    hl
+        ld      hl, (rd_pty)
+        push    hl
+
+        ; The child's offset is BIG-endian, and .next_byte uses HL to walk the
+        ; segment - so `ld h,a` followed by another call loses the high byte
+        ; entirely. This is the same trap as point_x clobbering D, in a new place:
+        ; a helper's working registers are not yours to hold a value in.
+        call    .next_byte
+        ld      d, a
+        call    .next_byte
+        ld      e, a
+        push    de                      ; the offset; bit 15 decides the colour
+
+        call    .next_byte
+        call    zoom_byte
+        ld      de, (rd_ptx)
+        add     hl, de
+        ld      (rd_cptx), hl
+        call    .next_byte
+        call    zoom_byte
+        ld      de, (rd_pty)
+        add     hl, de
+        ld      (rd_cpty), hl
+
+        pop     hl                      ; the offset again
+        ld      a, $FF
+        ld      (rd_ccol), a
+        bit     7, h
+        jr      z, .no_colour
+        ; the colour byte is read WITHOUT advancing past it, then pc += 2
+        push    hl
+        ld      hl, (rd_src)
+        ld      a, (hl)
+        and     $7F
+        ld      (rd_ccol), a
+        ld      hl, (rd_src)
+        inc     hl
+        inc     hl
+        ld      (rd_src), hl
+        pop     hl
+.no_colour:
+        res     7, h                    ; offset &= 0x7FFF
+        add     hl, hl                  ; times two, from the SEGMENT BASE
+
+        ; Save what the recursion will overwrite - including THE WINDOW. A child
+        ; can live in a different pair of pages, and seg_map will have moved the
+        ; window to reach it, so the parent's saved rd_src is an address into
+        ; whatever the child mapped. That is what made the machine find 31
+        ; malformed records where the reference finds none.
+        ld      de, (rd_src)
+        push    de
+        ld      de, (rd_kids)
+        push    de
+        ld      a, (rd_page)
+        push    af
+
+        ld      (rd_off), hl
+        ld      a, (rd_ccol)
+        ld      (rd_col), a
+        ld      hl, (rd_cptx)
+        ld      (rd_ptx), hl
+        ld      hl, (rd_cpty)
+        ld      (rd_pty), hl
+        call    poly_read
+
+        pop     af
+        ld      (rd_page), a
+        nextreg NR_MMU0, a
+        inc     a
+        nextreg NR_MMU1, a              ; the parent's window, back again
+        pop     de
+        ld      (rd_kids), de
+        pop     de
+        ld      (rd_src), de
+        pop     hl
+        ld      (rd_pty), hl
+        pop     hl
+        ld      (rd_ptx), hl
+
+        ld      a, (rd_stop)
+        or      a
+        jp      nz, .ret
+        ld      hl, (rd_kids)
+        dec     hl
+        ld      (rd_kids), hl
+        ld      a, h
+        or      l
+        jp      nz, .kid_loop
+        jp      .ret
+
+.bad:
+        ld      hl, (rd_bad)
+        inc     hl
+        ld      (rd_bad), hl
+.ret:
+        ld      a, (rd_depth)
+        dec     a
+        ld      (rd_depth), a
+        ret
+
+.too_deep:
+        ld      hl, (rd_deep)
+        inc     hl
+        ld      (rd_deep), hl
+        jp      .ret
 
 ;-----------------------------------------------------------------------------
 ; The three fills. HL = the first pixel, DE = length 1..256, A = colour.
@@ -1041,6 +1542,48 @@ cs_left:        dw 0
 t_p1:           dw 0            ; p1's coordinate, in memory not in D
 m_a:            dw 0            ; the multiply's operands
 m_b:            dw 0
+sc_mul:         db 0
+sc_mul2:        db 0
+        EXPORT seg_base
+seg_base:       db 0            ; the first 8K page of the polygon segment
+        EXPORT rd_off
+rd_off:         dw 0
+        EXPORT rd_col
+rd_col:         db 0
+        EXPORT rd_zoom
+rd_zoom:        dw 64
+        EXPORT rd_ptx
+rd_ptx:         dw 0
+        EXPORT rd_pty
+rd_pty:         dw 0
+        EXPORT rd_bad
+rd_bad:         dw 0            ; records whose first byte was neither form
+        EXPORT rd_deep
+rd_deep:        dw 0            ; records refused for nesting past 8
+rd_depth:       db 0
+rd_src:         dw 0
+rd_dst:         dw 0
+rd_n:           db 0
+rd_kids:        dw 0
+rd_page:        db 0            ; the first of the two pages now in the window
+rd_cptx:        dw 0
+rd_cpty:        dw 0
+rd_ccol:        db 0
+        EXPORT read_mode
+read_mode:      db 0            ; 1 = drive the reader from rd_list
+        EXPORT rd_count
+rd_count:       dw 0
+        EXPORT rd_plimit
+rd_plimit:      dw $FFFF        ; $FFFF = no limit; 0 = draw none
+        EXPORT rd_pcount
+rd_pcount:      dw 0
+rd_log_at:      dw rd_log
+        EXPORT rd_stop
+rd_stop:        db 0
+rd_left:        dw 0
+rd_next:        dw 0
+        EXPORT rd_record
+rd_record:      ds 10 + 50 * 4  ; the record poly_draw parses, built here
 interp:         dw 0
 step_dy:        dw 0
 step_lo:        dw 0
@@ -1059,6 +1602,12 @@ step2:          dw 0, 0
 ; and MMU3.
         ORG     $C000
 cs_results:     ds CS_COUNT * 6         ; step (4 bytes) then dy (2) per case
+        ; The draw list the checker pokes: off, colour, zoom, x, y per entry,
+        ; nine bytes, which is exactly what the two opcode forms compute.
+        EXPORT rd_list
+rd_list:        ds 9 * 256
+        EXPORT rd_log
+rd_log:         ds 8 * 32       ; off, colour, ptx, pty per leaf, as read
         ALIGN 2
         INCLUDE "build/csteps.inc"
         INCLUDE "build/interp.inc"

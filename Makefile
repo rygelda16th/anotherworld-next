@@ -25,7 +25,8 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-poly check-mix check-polycost check-reader toolchain-diff
+        check-poly check-mix check-polycost check-reader check-readmachine \
+        toolchain-diff
 
 help:
 	@echo "make certs          extract the corporate TLS-inspection CA for the image"
@@ -44,6 +45,7 @@ help:
 	@echo "make check-mix      Step 1: what one output sample of the mixer costs"
 	@echo "make check-polycost Step 2: T a polygon and T a span, fitted apart"
 	@echo "make check-reader   Gate C4: the reference reader IS the engine's"
+	@echo "make check-readmachine  Gate C4: the Z80N reader, pixel-exact"
 	@echo "make toolchain-diff has the shared toolchain drifted from wolf3d-next?"
 
 certs:
@@ -175,6 +177,15 @@ check-polycost: | $(BUILD)
 	@$(MAKE) --no-print-directory asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkpolycost.py'
+
+# Gate C4 on the machine: the Z80N reader against the reference reader.
+check-readmachine: | $(BUILD)
+	python3 tools/mktables.py $(BUILD)/interp.inc
+	python3 tools/mkcsteps.py $(BUILD)/csteps.inc $(BUILD)/csteps.txt
+	python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest.inc $(BUILD)/expected.bin
+	@$(MAKE) --no-print-directory asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkreadmachine.py'
 
 # Gate C4: the reference reader against the engine's, call for call. Host only.
 check-reader:

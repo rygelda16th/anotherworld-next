@@ -289,8 +289,16 @@ class RefVideo:
         """
         return v * zoom // 64
 
+    # A limit across a whole run of draws, so a machine comparison can be
+    # bisected to one polygon. A draw makes up to 256 of them, and comparing the
+    # page after a whole draw says only that one of them is wrong.
+    reader_limit = 0            # 0 = no limit
+
     def _draw_polygon(self, colour, ptx, pty, bbw, bbh, points):
         """What a leaf record ends in. RefVideo8 overrides to apply its scale."""
+        self.n_reader_polys = getattr(self, "n_reader_polys", 0) + 1
+        if self.reader_limit and self.n_reader_polys > self.reader_limit:
+            return
         self.fill_polygon(colour, ptx, pty, bbw, bbh, points)
 
     def read_vertices(self, buf, off, zoom):
@@ -628,6 +636,20 @@ class RefVideo8(RefVideo):
             buf[off] = colour & 0x0F
 
     # --- scaled entry point ------------------------------------------------
+
+    def _draw_polygon(self, colour, ptx, pty, bbw, bbh, points):
+        """The reader's leaf, for the 256x192 geometry: scale, then fill.
+
+        Without this override the base class's version ran, which calls
+        fill_polygon directly - so the reader fed 320x200 coordinates into a
+        256x192 page unscaled, and a centre at x=314 was rejected as off-screen.
+        The machine was right and the reference was blank, which is the second
+        time in this project that the reference was the one at fault.
+        """
+        self.n_reader_polys = getattr(self, "n_reader_polys", 0) + 1
+        if self.reader_limit and self.n_reader_polys > self.reader_limit:
+            return
+        self.fill_polygon_scaled(colour, ptx, pty, bbw, bbh, points)
 
     def fill_polygon_scaled(self, colour, ptx, pty, bbw, bbh, points):
         """Scale a polygon out of 320x200 space and draw it."""
