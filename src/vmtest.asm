@@ -18,15 +18,32 @@
 
         DEVICE ZXSPECTRUMNEXT
 
-CC_ORG          EQU $A000               ; where z88dk puts the C
+; Where z88dk puts the VM's C - LOWER than Gate B's ctest, so the stack at $BF00
+; has room. Its image is 7,166 bytes and its data about 1.5K, so it ends near
+; $AE00. Must match VM_ORG in the Makefile.
+CC_ORG          EQU $8C00
 NR_TURBO        EQU $07
 NR_MMU0         EQU $50
 NR_MMU1         EQU $51
 CODE_WIN        EQU $0000               ; two 8K pages of bytecode
 CODE_PAGE       EQU 48                  ; clear of the 48K image and of Layer 2
-; The loader stages through $E000, NOT $C000. log_buf lives at $C000 - it is
-; exactly MMU6's 8K - so staging there wrote the log's page number over the log
-; and then the log wrote over the bytecode. Two buffers, one window.
+; THE MEMORY MAP, settled after several wrong turns, because every one of them
+; showed up as something other than a memory-map problem:
+;
+;   $0000-$3FFF  the bytecode window, MMU0 and MMU1. The ROM until first mapped,
+;                and esxDOS pages ITSELF here during a file call.
+;   $4000-$7FFF  NOT AVAILABLE. Bank 5 holds the ZX system variables from $5B00,
+;                which esxDOS needs: staging a read here loaded 68 bytes and then
+;                failed, because the second F_READ had no workspace left.
+;   $8000-$82xx  this file: the jump table at $8000, then code and data.
+;   $8C00-$AExx  the C, and its data. Low on purpose - at $A000 the data ended at
+;                $BBF5 and left the stack 779 bytes, and the four HIGHEST globals
+;                were the ones reading wrong.
+;   $BF00        the stack, growing down. What SAVENEX declares; moving it broke
+;                the load.
+;   $C000-$DFFF  the trace buffer, MMU6.
+;   $E000-$FFFF  the loader's staging window, MMU7. Free once the stack stayed at
+;                $BF00.
 DST_WIN         EQU $E000               ; the loader's staging window, MMU7
 NR_MMU7         EQU $57
 
@@ -49,9 +66,11 @@ jump_table:
         jp      aw_set_palette          ; $8012  void aw_set_palette(uint8_t)
         ASSERT $ - jump_table == 21
 
+VM_STACK        EQU $BF00               ; what SAVENEX declares; see the Makefile
+
 start:
         di
-        ld      sp, $BF00
+        ld      sp, VM_STACK
         nextreg NR_TURBO, 3
 
         ld      a, $5A
@@ -243,10 +262,14 @@ last_pal:       db 0
 
         ASSERT $ < CC_ORG
         ORG     $C000
+        ; log_buf fills MMU6 exactly, $C000-$DFFF, and the stack lives above it in
+        ; MMU7. Nothing pages either during the run.
 ; The C writes here directly - src/aw/jumptab.asm declares the address to it.
         EXPORT log_buf
 log_buf:        ds LOG_RECS * 4
 
+        ; log_buf sits ABOVE the stack, at $C000-$DFFF, which is fine: the stack
+        ; grows DOWN from $BF00. The bound here is the top of memory, not the stack.
         ASSERT $ < $FF00
         ORG     CC_ORG
         INCBIN  "build/vm_CODE.bin"

@@ -134,7 +134,17 @@ CC_ORG     ?= 0xA000
 # its trace counter reading 129 when nineteen records had been written, and the
 # bytecode's own second byte altered. The assembly sets SP before calling in, and
 # this makes the runtime agree rather than overrule it.
+#
+# The STACK stays at $BF00, which is what SAVENEX declares and what NEXLOAD
+# respects; moving it to $FF00 instead broke the load. Room for it is made by
+# loading the VM's C LOWER rather than by raising the stack: at CC_ORG the C's code
+# and data ended at $BBF5 and left 779 bytes, and the four HIGHEST globals were the
+# ones reading wrong, in address order downwards, which is what that looks like.
 CC_STACK   ?= 0xBF00
+# The VM's C loads here, not at CC_ORG: 7,166 bytes of image plus about 1.5K of
+# data, so it ends near $AE00 and leaves the stack four and a half kilobytes. Gate
+# B's ctest keeps CC_ORG, because changing it would change what that gate proved.
+VM_ORG     ?= 0x8C00
 CC_RUN     := docker run --rm -v "$(CURDIR):/work" -w /work $(CC_IMAGE)
 
 # Build order is C first, then assembly: the jump table the C calls sits at an
@@ -153,7 +163,7 @@ cc: | $(BUILD)
 	done
 	@set -e; for f in src/aw/*.c; do \
 		[ -e "$$f" ] || continue; b=$$(basename "$$f" .c); echo "  CC  $$f"; \
-		$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(CC_ORG) \
+		$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(VM_ORG) \
 		    -pragma-define:REGISTER_SP=$(CC_STACK) \
 		    -o $(BUILD)/$$b "$$f" src/aw/jumptab.asm; \
 		python3 tools/mkexp.py $(BUILD)/$$b.map $(BUILD)/$${b}_c.exp; \

@@ -29,14 +29,50 @@ extern void aw_fill_page(uint16_t packed) __z88dk_fastcall;   /* page | col<<8 *
 extern void aw_copy_page(uint16_t packed) __z88dk_fastcall;   /* src | dst<<8 */
 extern void aw_blit(uint8_t page) __z88dk_fastcall;
 extern void aw_set_palette(uint8_t id) __z88dk_fastcall;
-/* The trace log is written HERE, not through the jump table. It went through the
- * table first - one packed argument, then three separate entries - and both
- * versions mislabelled the first record and dropped the odd program counter. The
- * bug was never found, because the right move was to delete the mechanism: a
- * diagnostic whose whole job is to be trustworthy should not have a calling
- * convention in it. The assembly exports the buffer's address as a constant and
- * the C fills it in. */
-extern uint8_t aw_log_buf[];
+/* The two shared regions are named by PLAIN ADDRESS CONSTANTS, not by extern
+ * symbols declared with defc. That is the third arrangement tried and the first
+ * that is unambiguous.
+ *
+ * The trace log went through the jump table first, as one packed argument and then
+ * as three entries, and mislabelled its first record both times. Then both regions
+ * were declared `extern uint8_t x[]` against a `defc`, and the control block read
+ * back four different addresses as the same value - which is what happens if the
+ * compiler takes the symbol as a pointer VARIABLE living at that address rather
+ * than as the address itself.
+ *
+ * A cast integer constant cannot be read either way. It also needs no jumptab
+ * entry, no map lookup and no agreement between two assemblers - and the addresses
+ * are fixed by construction in src/vmtest.asm, which is the same guarantee the
+ * jump table at $8000 rests on.
+ *
+ * volatile, because the checker writes these while the machine is stopped and the
+ * compiler must not cache them across the frame loop.
+ */
+#define AW_LOG_BUF      ((volatile uint8_t *)0xC000)
+
+/* And the control values are ordinary C globals again, which is the arrangement
+ * that worked: 354 of 354 records identical to the engine's. Two attempts to move
+ * them into assembly-owned memory - an `extern uint8_t x[]` against a defc, then a
+ * cast address constant - both came back reading four different fields as the same
+ * value, and neither was worth more time than it had already taken. The checker
+ * finds them through z88dk's map, which it already parses for everything else. */
+uint16_t aw_seed;
+uint16_t aw_frames;
+uint16_t aw_budget;
+uint16_t aw_records;
+uint16_t aw_frames_done;
+uint8_t aw_finished;
+uint8_t aw_out_of_budget;
+uint8_t aw_bad_op;
+
+#define CTL_SEED          aw_seed
+#define CTL_FRAMES        aw_frames
+#define CTL_BUDGET        aw_budget
+#define CTL_RECORDS       aw_records
+#define CTL_FRAMES_DONE   aw_frames_done
+#define CTL_FINISHED      aw_finished
+#define CTL_OUT_OF_BUDGET aw_out_of_budget
+#define CTL_BAD_OP        aw_bad_op
 
 /* Parameters for aw_draw_poly, because a fastcall takes one argument. */
 uint16_t aw_draw_off;
@@ -69,10 +105,8 @@ uint16_t aw_call_stack[256];
 uint8_t aw_sp;
 
 uint8_t aw_goto_next;
-uint8_t aw_out_of_budget;
 uint16_t aw_blits;
 uint16_t aw_part_req;
-uint8_t aw_bad_op;              /* opcodes above 0x1A, which the engine errors on */
 
 /* ---- the bytecode window ------------------------------------------------- */
 static uint8_t *wp;             /* where the pc is, inside the window */
@@ -120,15 +154,16 @@ uint16_t aw_log_count;
  * the thread. Kind 1 is an opcode, kind 2 a thread edge. */
 static void aw_logrec(uint8_t kind, uint16_t pc, uint8_t v)
 {
-    uint8_t *p;
+    volatile uint8_t *p;
     if (aw_log_count >= LOG_RECS)
         return;
-    p = aw_log_buf + (aw_log_count << 2);
+    p = AW_LOG_BUF + (aw_log_count << 2);
     p[0] = kind;
     p[1] = (uint8_t)pc;
     p[2] = (uint8_t)(pc >> 8);
     p[3] = v;
     ++aw_log_count;
+    CTL_RECORDS = aw_log_count;
 }
 
 /* ---- the opcodes --------------------------------------------------------- */
@@ -404,7 +439,7 @@ void aw_init_part(void) __z88dk_fastcall
     }
     aw_pc[0] = 0;
     aw_part_req = 0;
-    aw_bad_op = 0;
+    CTL_BAD_OP = 0;
 }
 
 /* checkThreadRequests, vm.cpp:401-431. Three things, in order. */
@@ -426,19 +461,18 @@ void aw_check_requests(void) __z88dk_fastcall
  * loops without ever reaching pauseThread - and a checker cannot read a spinning
  * machine reliably, because the MMU is moving underneath it. A tracing harness
  * wants a bound on its own account. */
-uint16_t aw_budget;
 
 static void execute_thread(void)
 {
     uint8_t opcode;
     uint16_t pc_before;
     while (!aw_goto_next) {
-        if (aw_budget == 0) {
+        if (CTL_BUDGET == 0) {
             aw_goto_next = 1;
-            aw_out_of_budget = 1;
+            CTL_OUT_OF_BUDGET = 1;
             return;
         }
-        --aw_budget;
+        --CTL_BUDGET;
         pc_before = aw_pc_now;
         opcode = fetch_byte();
         aw_logrec(1, pc_before, opcode);
@@ -447,7 +481,7 @@ static void execute_thread(void)
         else if (opcode & 0x40)
             poly_bit6(opcode);
         else if (opcode > 0x1A)
-            aw_bad_op = opcode;         /* the engine calls error() here */
+            CTL_BAD_OP = opcode;        /* the engine calls error() here */
         else
             op_table[opcode]();
     }
@@ -458,7 +492,7 @@ uint8_t aw_host_frame(void) __z88dk_fastcall
 {
     uint8_t t, blitted = 0;
     for (t = 0; t < NUM_THREADS; ++t) {
-        if (aw_out_of_budget)
+        if (CTL_OUT_OF_BUDGET)
             break;
         if (aw_state[t])
             continue;
@@ -478,24 +512,24 @@ uint8_t aw_host_frame(void) __z88dk_fastcall
 /* The assembly loads the bytecode, pokes these two, and calls CRT_ORG_CODE once.
  * C owns the frame loop for Gate D, which is about the opcode stream rather than
  * about pacing; E1 moves the loop out to the frame interrupt. */
-uint16_t aw_seed;
-uint16_t aw_frames;
-uint8_t aw_finished;
-uint16_t aw_frames_done;
 
 int main(void)
 {
-    aw_init_vars(aw_seed);
+    uint16_t f;
+    aw_init_vars(CTL_SEED);
     aw_init_part();
     aw_blits = 0;
     aw_log_count = 0;
-    aw_out_of_budget = 0;
-    for (aw_frames_done = 0; aw_frames_done < aw_frames; ++aw_frames_done) {
-        if (aw_out_of_budget)
+    CTL_RECORDS = 0;
+    CTL_OUT_OF_BUDGET = 0;
+    for (f = 0; f < CTL_FRAMES; ++f) {
+        CTL_FRAMES_DONE = f;
+        if (CTL_OUT_OF_BUDGET)
             break;
         aw_check_requests();
         aw_host_frame();
     }
-    aw_finished = 0x5A;
+    CTL_FRAMES_DONE = f;
+    CTL_FINISHED = 0x5A;
     return 0;
 }

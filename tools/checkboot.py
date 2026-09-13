@@ -191,7 +191,7 @@ def main():
         time.sleep(0.05)
 
     claimed = int.from_bytes(
-        bytes.fromhex(z.cmd(f"read-memory {sym['aw_log_count']} 2").strip()),
+        bytes.fromhex(z.cmd(f"read-memory {sym['aw_records']} 2").strip()),
         "little")
     # Trust the CONTENT, not the counter. Every record aw_logrec writes has kind 1
     # or 2, so a kind of 0 is the end of what was written - and the counter has

@@ -19,7 +19,6 @@
         PUBLIC  _aw_copy_page
         PUBLIC  _aw_blit
         PUBLIC  _aw_set_palette
-        PUBLIC  _aw_log_buf
 
         defc    _aw_code_window = 0x8000
         defc    _aw_draw_poly   = 0x8003
@@ -28,6 +27,9 @@
         defc    _aw_copy_page   = 0x800C
         defc    _aw_blit        = 0x800F
         defc    _aw_set_palette = 0x8012
-; Not a routine: the trace buffer's address. The C writes its own records, which
-; is one calling convention fewer in a diagnostic that has to be trusted.
-        defc    _aw_log_buf     = 0xC000
+; The trace buffer at $C000 and the control block at $8100 are NOT declared here.
+; They are plain address constants in the C, because an `extern uint8_t x[]` against
+; a defc was read as a pointer variable living at that address rather than as the
+; address itself - four different fields came back as the same value. A cast
+; integer constant cannot be read two ways.
+
