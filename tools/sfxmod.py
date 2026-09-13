@@ -131,6 +131,9 @@ def voices(blob, sample_of, pos=0, ticks=1, split=32):
             data = sample_of(ins["res"])
             if data is None:
                 continue
+            # prepareInstruments zeroes data+8..data+11 on every instrument it loads
+            # (sfxplayer.cpp:89), so a module note opens on four samples of silence. It does
+            # not change any field compared here, but the mixer gate will need it.
             slen = be16(data, 0) * 2
             llen = be16(data, 2) * 2
             vol = ins["volume"] & 0xFF

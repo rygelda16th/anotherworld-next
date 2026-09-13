@@ -1564,7 +1564,13 @@ mus_pattern:
         ret
 .not_fd:
         cp      $FE
-        ret     nz                      ; $FFxx that is neither: the reference ignores it
+        ; AN ODD $FFxx IS NOT IGNORED BY THE REFERENCE - it falls out of the note_1 chain at
+        ; sfxplayer.cpp:185 and plays like any other period, and only the assert at :196
+        ; (note_1 < 0x1000) says it should not arise. Returning here is a real divergence, and
+        ; it is safe only because it cannot be reached: across all three modules the game has -
+        ; 0x07, 0x89 and 0x8A, the only resources MEMLIST types RT_MUSIC - all 7,680 rows of
+        ; every block their order tables name contain not one $FFxx besides $FFFD and $FFFE.
+        ret     nz
         ld      hl, (n_mus_stop)
         inc     hl
         ld      (n_mus_stop), hl
@@ -1623,7 +1629,13 @@ mus_voice:
         rrca
         rrca                            ; the instrument number, 1..15
         dec     a
-        add     a, a                    ; two bytes an entry
+        ; TWO bytes an entry, because MUS_INSTR_AT is not the module's layout. The module has
+        ; four bytes an entry - a resource word then a volume word, both big-endian
+        ; (prepareInstruments, sfxplayer.cpp:83-95) - but aw_play_music COMPACTS it on the way
+        ; out, keeping only each word's low byte, so the resident table is thirty bytes and
+        ; DRAW_LOG starts thirty-two bytes along. Read the module's stride here and instrument
+        ; 8 lands in DRAW_LOG.
+        add     a, a                    ; two bytes an entry, as aw_play_music wrote it
         ld      e, a
         ld      d, 0
         ld      hl, MUS_INSTR_AT
@@ -1675,6 +1687,17 @@ mus_voice:
         ld      l, a
         add     hl, hl
         ld      (mv_loop), hl
+        ; FOUR ZERO BYTES AT THE START OF THE DATA. prepareInstruments does
+        ; `memset(ins->data + 8, 0, 4)` - sfxplayer.cpp:89 - to every instrument it loads, so
+        ; every module note opens on four samples of silence. The reference does it once when
+        ; the module loads; this does it when the note is set up, which is the same thing to
+        ; the mixer because nothing reads a sample the player has not set up. It is idempotent,
+        ; so repeating it per note costs four writes and changes nothing.
+        xor     a
+        ld      (SAMP_WIN + 8), a
+        ld      (SAMP_WIN + 9), a
+        ld      (SAMP_WIN + 10), a
+        ld      (SAMP_WIN + 11), a
         ld      a, (mv_saved)
         nextreg NR_SAMP_MMU, a
 
@@ -1859,7 +1882,14 @@ probe_walk:
         ; without this every note found its sample absent, counted n_mus_nores and left the voice
         ; at its boot values - which read as "every channel has increment 256" because that is
         ; what init_voices leaves.
-        ld      hl, MUS_INSTR_AT
+        ld      (pw_left), a            ; KEEP IT. The loop below runs `ld a,(hl)` fifteen times,
+                                        ; so the `ld b,a` that used to follow it took its event
+                                        ; count from a table byte - zero, every time, which djnz
+                                        ; reads as 256. EVERY probe run walked the module to its
+                                        ; end no matter what probe_ticks said, which is why all
+                                        ; four voices came up active for a one-event walk whose
+                                        ; only row was a stop.
+        ld      hl, MUS_INSTR_AT        ; the COMPACTED table: resource byte, volume byte
         ld      b, 15
 .ins:
         ld      a, (hl)
@@ -1876,9 +1906,10 @@ probe_walk:
         inc     hl
         inc     hl
         djnz    .ins
-        ld      b, a
         ld      a, 1
         ld      (mus_frames), a
+        ld      a, (pw_left)
+        ld      b, a
 .tick:
         push    bc
         call    music_tick
@@ -2159,6 +2190,7 @@ snd_off:    db 0            ; 1 = the interrupt ticks but does not mix: a discri
 cur_band_x: db 0
         EXPORT probe_ticks
 probe_ticks: db 0           ; how many events to walk in the probe
+pw_left:     db 0           ; probe_walk's saved count, across the instrument loop
         EXPORT probe_note
 probe_note: db 0            ; 1 = convert one period and stop
         EXPORT probe_mus

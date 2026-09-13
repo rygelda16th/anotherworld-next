@@ -2694,32 +2694,46 @@ the ones that had it worked.
   from `$C0A0` sat inside it. Nothing corrupted - `ds` only reserves - but no assert in that
   page was measuring anything real. Also fixed, also not the cause.
 
-**THE VOICE SETUP IS WRITTEN AND ITS GATE FAILS, and this is exactly where.** `make check-mus`
-covers the header, the event walk and the tuning - all passing - and now the four voice records,
-which do not. The minimal reproducer is **one event**:
+**The voice setup is done and `make check-mus` passes it.** Four things are gated now: the
+header on three modules, the event walk on three cases including a block crossing, the four
+voice records after 1, 70 and 100 events, and the period divide over eleven periods.
 
-| | |
-|---|---|
-| at boot, all four voices | **inactive**, `V_INCI = 1`, as `init_voices` leaves them |
-| the first event's four rows | a stop on channel 1, and `(0,0)` on the other three |
-| the model after it | all four still inactive - correct |
-| the machine after it | **all four ACTIVE** |
+**The bug was one instruction, and it was in the probe.** `probe_walk` read `probe_ticks` into
+A, then ran a fifteen-iteration loop that loads the module's instruments - and every iteration
+does `ld a,(hl)`. The `ld b,a` that followed therefore took its event count from a table byte,
+which is zero, and `djnz` reads zero as **256**. Every probe run walked the module to its end no
+matter what the checker asked for, which is exactly why a one-event walk whose only row was a
+stop came back with all four voices active, in two identical pairs.
 
-**So the machine is reading different bytes, not misjudging the same ones.** A row of `(0,0)`
-returns immediately at `ld a,d / or e / ret z`, and a row of `$FFFE` takes the stop path, so
-nothing in that event can activate anything. Established by measurement, not inference: the boot
-state is right, the checker's 15-byte stride is right, and channel 0's other fields - increment
-97, page 77, `V_LEFT` 18,936 against a 27,128-byte sample - all agree with the model at 65 and
-70 events.
+Worth writing down because of how the search went. The symptom pointed at the voice logic, and
+three inferences from it in a row were wrong. What actually found it was giving up on inference
+and reading the boot state off the machine, which came back correct - and once the boot state
+and the event decode were both known good, the only thing left between them was the loop count.
 
-**The signature is pairs.** After 70 events channels 0 and 1 hold byte-identical records, as do
-2 and 3 - two distinct notes across four records.
+**One wrong turn on the way, and the reason it was wrong is worth keeping.** `sfxplayer.cpp:81-96`
+has the instrument table at four bytes an entry, a resource word then a volume word, both
+big-endian; `mus_voice` indexes it by two. That looks like a bug and is not: `aw_play_music`
+**compacts** the table on the way out, keeping only each word's low byte, because the resident
+copy has to fit the thirty-two bytes between `MUS_INSTR_AT` and `DRAW_LOG`. Changing the readers
+to the module's stride broke a correct routine, and the gate said so immediately. The compaction
+holds only while every id and every volume fits a byte, so check-mus now asserts it instead of
+assuming it - across the three modules the largest id is 131 and the largest volume 63.
 
-**The next step is to read what the machine reads.** Have the probe dump the four channel words
-`music_tick` fetches for event 1 and compare them against the file's bytes at `0xC0`. If they
-differ, the fault is the MMU2 mapping or `mus_page`; if they match, it is in `mus_pattern`'s
-decode. That is one instrument and one run, and it settles which half to look at - where three
-successive inferences from the symptom did not.
+**Two divergences from the reference found while reading it, both left in place deliberately:**
+
+| the reference | ours | why it is safe |
+|---|---|---|
+| an odd `$FFxx` note_1 falls through and PLAYS (`:185`), the assert at `:196` merely saying it should not arise | `mus_pattern` returns | across all 7,680 rows of every block the three modules' order tables name, there is no `$FFxx` but `$FFFD` and `$FFFE` |
+| note_1 == 0 with a nonzero instrument nibble still reaches `setChannelVolume` (`:177`), so it is a volume change without a retrigger | both machine and model return before the volume | zero such rows in those same 7,680 |
+
+Those are measured, not assumed - and the scan had to be restricted to the three resources
+MEMLIST types `RT_MUSIC` (`0x07`, `0x89`, `0x8A`), because a loose "does it parse" filter finds
+six more that are bitmaps underneath and invents divergences out of their pixels.
+
+**One thing the reference does that we now do too:** `prepareInstruments` zeroes four bytes at
+`data + 8` on every instrument (`:89`), so every module note opens on four samples of silence.
+`mus_voice` does it when the note is set up rather than when the module loads - the same thing to
+the mixer, since nothing reads a sample the player has not set up - and it is idempotent.
 
 **What I5 still needs:** the player on the machine, driven at `delay * 60 / 7050` ms;
 `op_playSound` and `op_playMusic` reaching it; and a gate. The gate wants the probe's own

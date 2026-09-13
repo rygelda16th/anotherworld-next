@@ -105,6 +105,15 @@ def main():
         if not got["playing"]:
             fails.append("the machine did not mark the module as playing")
 
+        # THE RESIDENT TABLE KEEPS ONLY EACH WORD'S LOW BYTE. aw_play_music compacts the
+        # module's four-byte entries to two so the table fits the thirty-two bytes between
+        # MUS_INSTR_AT and DRAW_LOG, which is sound only while every resource id and every
+        # volume fits a byte. Assert it rather than trust it: across all three modules the
+        # largest id is 131 and the largest volume 63.
+        for n, i in enumerate(want["instruments"], 1):
+            if i["res"] > 0xFF or i["volume"] > 0xFF:
+                bad.append(f"RES{res:02X} instrument {n} does not fit the resident table: "
+                           f"res {i['res']:#06x}, volume {i['volume']}")
         live = sum(1 for i in want["instruments"] if i["res"])
         if fails:
             print(f"  RES{res:02X} delay {delay} pos {pos}:  " + "; ".join(fails[:3]))
@@ -192,6 +201,8 @@ def main():
             fails.append(f"{nores} notes wanted a resource that was not resident")
         if fails:
             print(f"  RES{res:02X} voices after {ticks} events: " + "; ".join(fails[:4]))
+            print(f"      counters: {made} voices set up, {nores} not resident, "
+                  f"{farloop} far loops")
             for ch in range(4):
                 e = raw[ch * V_SIZE:(ch + 1) * V_SIZE]
                 w = want[ch]
