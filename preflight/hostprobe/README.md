@@ -63,6 +63,25 @@ decide a design rather than describe the engine:
 They are kept apart rather than merged so that the first round, which Gate A's
 byte-exactness depends on, stays exactly as it was when that gate passed.
 
+**To change the second round**, rebuild the once-patched tree as a baseline,
+edit `probe/`, and diff the two - never hand-edit the patch:
+
+    cp -r awbi/src base && rm base/main.cpp base/sysImplementation.cpp
+    cp headless.cpp instr.h base/
+    (cd base && patch -p1 < ../instrument.patch)
+    for f in vm.cpp video.cpp resource.cpp sfxplayer.cpp; do \
+        diff -u base/$f probe/$f | \
+        sed "1s|.*|--- a/$f|; 2s|.*|+++ b/$f|"; done > structure.patch
+
+Then prove the patch reproduces the tree it came from, because a patch that does
+not is worse than no patch:
+
+    cp -r base verify && (cd verify && patch -p1 < ../structure.patch)
+    diff -rq verify probe | grep -v '^Only in probe'   # must print nothing
+
+`headless.cpp` and `instr.h` are copied into both trees, not patched, so they never
+appear in the diff - they are this repository's own files.
+
 ## Running it
 
     ./probe <data-dir> <frame-cap> [trace-frames] [autoplay]
