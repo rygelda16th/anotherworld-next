@@ -29,6 +29,11 @@ extern void aw_fill_page(uint16_t packed) __z88dk_fastcall;   /* page | col<<8 *
 extern void aw_copy_page(uint16_t packed) __z88dk_fastcall;   /* src | dst<<8 */
 extern void aw_blit(uint8_t page) __z88dk_fastcall;
 extern void aw_set_palette(uint8_t id) __z88dk_fastcall;
+/* The frame boundary. In the harness it returns at once; in the game it waits for
+ * the frame interrupt's tick and refills the sound ring - so the C keeps owning the
+ * frame loop that Gate D checks, and the game still gets its pacing and its sound,
+ * without two frame loops that can disagree. */
+extern void aw_frame_sync(void);
 /* The two shared regions are named by PLAIN ADDRESS CONSTANTS, not by extern
  * symbols declared with defc. That is the third arrangement tried and the first
  * that is unambiguous.
@@ -48,8 +53,6 @@ extern void aw_set_palette(uint8_t id) __z88dk_fastcall;
  * volatile, because the checker writes these while the machine is stopped and the
  * compiler must not cache them across the frame loop.
  */
-#define AW_LOG_BUF      ((volatile uint8_t *)0xC000)
-
 /* THE CONTROL VALUES LIVE IN THE SAME BLOCK, and the whole block goes out through
  * a FILE rather than being read out of memory.
  *
@@ -68,14 +71,37 @@ extern void aw_set_palette(uint8_t id) __z88dk_fastcall;
  * The header is sixteen bytes: the checker pokes the first six, the C writes the
  * rest, and the records start after it.
  */
-#define CTL_SEED        (*(volatile uint16_t *)(0xC000))
-#define CTL_FRAMES      (*(volatile uint16_t *)(0xC002))
-#define CTL_BUDGET      (*(volatile uint16_t *)(0xC004))
-#define CTL_RECORDS     (*(volatile uint16_t *)(0xC006))
-#define CTL_FRAMES_DONE (*(volatile uint16_t *)(0xC008))
-#define CTL_FINISHED    (*(volatile uint8_t *)(0xC00A))
-#define CTL_OUT_OF_BUDGET (*(volatile uint8_t *)(0xC00B))
-#define CTL_BAD_OP      (*(volatile uint8_t *)(0xC00C))
+/* WHERE THE CONTROL BLOCK AND THE EXPECTED STREAM LIVE is a build choice, because
+ * the harness and the game cannot both have them at the same address.
+ *
+ * The harness has $C000-$DFFF and $E000-$FFFF spare and uses one for each. The game
+ * has neither: $E000 is the slot it time-shares between the Layer 2 band, a sample
+ * page and the loader's staging, and $C000 holds the one thing that must be mapped
+ * every cycle of every frame - the sound ring, because the zxnDMA reads through the
+ * CPU's own memory decode and a ring in a sliding window is a ring that vanishes.
+ *
+ * So the game packs the control block, a smaller record buffer, the expected stream,
+ * the ring, the volume table and the voice records into that single permanently
+ * mapped 8K page, and passes the addresses in. AW_CTL and AW_EXP are the only two
+ * numbers that differ. */
+#ifndef AW_CTL
+#define AW_CTL          0xC000
+#endif
+#ifndef AW_EXP
+#define AW_EXP          0xE000
+#endif
+#ifndef AW_LOG_RECS
+#define AW_LOG_RECS     2040
+#endif
+
+#define CTL_SEED        (*(volatile uint16_t *)(AW_CTL + 0x00))
+#define CTL_FRAMES      (*(volatile uint16_t *)(AW_CTL + 0x02))
+#define CTL_BUDGET      (*(volatile uint16_t *)(AW_CTL + 0x04))
+#define CTL_RECORDS     (*(volatile uint16_t *)(AW_CTL + 0x06))
+#define CTL_FRAMES_DONE (*(volatile uint16_t *)(AW_CTL + 0x08))
+#define CTL_FINISHED    (*(volatile uint8_t *)(AW_CTL + 0x0A))
+#define CTL_OUT_OF_BUDGET (*(volatile uint8_t *)(AW_CTL + 0x0B))
+#define CTL_BAD_OP      (*(volatile uint8_t *)(AW_CTL + 0x0C))
 /* A FAULT, with the program counter that caused it and one word of context.
  *
  * These exist because every wrong run looked the same and none of them could be
@@ -88,15 +114,15 @@ extern void aw_set_palette(uint8_t id) __z88dk_fastcall;
  * from $BF00 smearing one repeating value over the whole program, and what was left
  * to read was a machine with no state in it at all. Stopping AT the fault, with the
  * pc, is the difference between a diagnosis and four hours of symptoms. */
-#define CTL_FAULT       (*(volatile uint8_t *)(0xC00D))
-#define CTL_FAULT_PC    (*(volatile uint16_t *)(0xC00E))
-#define CTL_CODE_LEN    (*(volatile uint16_t *)(0xC010))
-#define CTL_FAULT_A     (*(volatile uint16_t *)(0xC012))
-#define CTL_EXP_N       (*(volatile uint16_t *)(0xC014))
-#define CTL_DIV_AT      (*(volatile uint16_t *)(0xC016))
-#define CTL_GOT_REC     ((volatile uint8_t *)0xC018)
-#define CTL_WANT_REC    ((volatile uint8_t *)0xC01C)
-#define AW_RECORDS      ((volatile uint8_t *)0xC020)
+#define CTL_FAULT       (*(volatile uint8_t *)(AW_CTL + 0x0D))
+#define CTL_FAULT_PC    (*(volatile uint16_t *)(AW_CTL + 0x0E))
+#define CTL_CODE_LEN    (*(volatile uint16_t *)(AW_CTL + 0x10))
+#define CTL_FAULT_A     (*(volatile uint16_t *)(AW_CTL + 0x12))
+#define CTL_EXP_N       (*(volatile uint16_t *)(AW_CTL + 0x14))
+#define CTL_DIV_AT      (*(volatile uint16_t *)(AW_CTL + 0x16))
+#define CTL_GOT_REC     ((volatile uint8_t *)(AW_CTL + 0x18))
+#define CTL_WANT_REC    ((volatile uint8_t *)(AW_CTL + 0x1C))
+#define AW_RECORDS      ((volatile uint8_t *)(AW_CTL + 0x20))
 
 /* THE ENGINE'S OWN STREAM, shipped in the .nex at $E000.
  *
@@ -108,7 +134,7 @@ extern void aw_set_palette(uint8_t id) __z88dk_fastcall;
  * before any of that. So check each record as it is written and stop dead on the
  * first mismatch: the machine halts while its state still means something, and the
  * verdict is twelve bytes rather than eight kilobytes. */
-#define EXP_OPS         ((const uint8_t *)0xE000)
+#define EXP_OPS         ((const uint8_t *)AW_EXP)
 
 #define FAULT_PAST_END  1       /* the pc left the segment that was loaded */
 #define FAULT_RESET     2       /* resetThread over a range outside the table */
@@ -201,7 +227,7 @@ static uint16_t fetch_word(void)
 }
 
 /* ---- the trace log ------------------------------------------------------- */
-#define LOG_RECS 2040           /* 8K less the 32-byte header, four bytes each */
+#define LOG_RECS AW_LOG_RECS    /* the harness has 8K for these; the game has less */
 uint16_t aw_log_count;
 
 /* Four bytes a record: kind, the program counter as a word, then the opcode or
@@ -654,6 +680,7 @@ int main(void)
     CTL_FAULT_A = 0;
     CTL_DIV_AT = 0;
     for (f = 0; f < CTL_FRAMES; ++f) {
+        aw_frame_sync();
         CTL_FRAMES_DONE = f;
         if (CTL_OUT_OF_BUDGET || CTL_FAULT)
             break;

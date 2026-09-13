@@ -71,7 +71,8 @@ jump_table:
         jp      aw_copy_page            ; $800C  void aw_copy_page(uint16_t)
         jp      aw_blit                 ; $800F  void aw_blit(uint8_t)
         jp      aw_set_palette          ; $8012  void aw_set_palette(uint8_t)
-        ASSERT $ - jump_table == 21
+        jp      aw_frame_sync           ; $8015  void aw_frame_sync(void)
+        ASSERT $ - jump_table == 24
 
 VM_STACK        EQU $BF00               ; what SAVENEX declares; see the Makefile
 
@@ -233,6 +234,13 @@ aw_blit:
         ld      hl, (n_blit)
         inc     hl
         ld      (n_blit), hl
+        ret
+
+; The frame boundary. THIS HARNESS DOES NOTHING AT IT - Gate D is about the opcode
+; stream, and a harness that paced itself would take 45 frames of wall clock to prove
+; something that takes two tenths of a second. src/aw.asm's version waits for the
+; frame interrupt and refills the sound ring.
+aw_frame_sync:
         ret
 
 aw_set_palette:
