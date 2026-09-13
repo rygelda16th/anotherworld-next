@@ -262,6 +262,13 @@ check-aw: cc-game
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkaw.py'
 
+# Which record first draws wrongly. The companion to check-draw: it says the pages
+# differ, this says which draw did it, by halving.
+bisect-draw: cc-game
+	$(MAKE) asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/bisectdraw.py'
+
 # I2's gate: the game's own picture against the engine's, aligned on a blit.
 check-draw: cc-game
 	$(MAKE) asm

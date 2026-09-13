@@ -2284,10 +2284,30 @@ the other way round. Both are now right against the source and neither changed t
 comparison by a single byte. Two plausible fixes, both correct, both irrelevant - which is
 why the next step is the per-draw pixel bisect and not another hypothesis.
 
-**WHAT IS LEFT: page 0 differs by 36.10% with every input proven equal.** The tool for it
-is the bisect `checkpoly.py` already does for the rasteriser - stop the machine after N
-draws, replay the reference to the same N, halve - which needs a `stop_draw` beside the
-`stop_blit` that is already there.
+**WHAT IS LEFT, and it is now a one-record reproducer.** `make bisect-draw` halves over the
+draw count with both sides stopping at the same number, and says:
+
+| | |
+|---|---|
+| **0 draws** | **IDENTICAL** - so the fills and the copies are right |
+| 1 draw | 2,756 bytes differ, rows 0..120, first at row 0 x 51: ours `$03`, engine `$02` |
+
+And `check-draw` had already proved that draw's operands identical to the engine's:
+`off=2096, zoom=64, x=192, y=59, colour=$FF`, into the same page. **So the inputs agree,
+the destination agrees, and the pixels do not** - which puts the fault in the reader or the
+rasteriser for this particular record, or in the segment bytes they are reading.
+
+That last possibility is the one to test first and it is cheap: `check-readmachine` passes
+over 17 draws taken from the same trace, so the reader is right on those - but they are a
+different set of records, and if `RES19.BIN` is not the bytes the reference has in
+`segCinematic` then every polygon read from it is wrong for a reason that has nothing to do
+with the reader. Compare the loaded segment against the reference's, then bisect the record.
+
+**Two wrong attempts at the bisect itself, both worth keeping.** Stopping the machine by
+setting the out-of-budget flag AFTER a draw does not stop at that draw: it ends the frame
+LOOP while the thread already running carries on to its next yield, so "stop after 1" let
+51 through. The test has to refuse the draw. And `0` could not mean "stop immediately"
+while it also meant "no limit", so the sentinel is `$FFFF`.
 
 **And the gate as originally described is not yet passed.** What exists proves the callbacks are reached and
 that pixels change. What I2 claims is the intro's pages **byte for byte against the

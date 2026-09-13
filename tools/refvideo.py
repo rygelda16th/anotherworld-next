@@ -495,7 +495,8 @@ def read_trace(path):
             raise ValueError(f"unknown trace record {kind} at offset {o-1}")
 
 
-def replay(path, on_frame=None, font=None, cls=None, stop_after=None):
+def replay(path, on_frame=None, font=None, cls=None, stop_after=None,
+           stop_draws=None):
     """Run a trace through the reference and return the RefVideo.
 
     `cls` picks the geometry: RefVideo for the engine's own 320x200 4bpp, which is what
@@ -509,7 +510,16 @@ def replay(path, on_frame=None, font=None, cls=None, stop_after=None):
         font = open(fp, "rb").read() if os.path.exists(fp) else None
     v = (cls or RefVideo)()
     frames = 0
+    draws = 0
     for kind, a in read_trace(path):
+        if kind == "draw":
+            # A draw record marks the OPCODE; the leaves that belong to it follow as poly
+            # records. So stopping when the next one arrives includes all of draw N's
+            # leaves and none of draw N+1's, which is what makes a bisect comparable.
+            draws += 1
+            if stop_draws is not None and draws > stop_draws:
+                break
+            continue
         if kind == "poly":
             # The trace records which page was the work page; trust it rather
             # than re-deriving, so a select the trace missed cannot silently

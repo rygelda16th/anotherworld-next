@@ -878,6 +878,26 @@ lf_len:     dw 0
 ; DRAW_BLOCK; this sets the reader's state from them and calls the reader that
 ; check-readmachine gates over 17 real draws and 59 polygons.
 aw_draw_poly:
+        ; THE STOP TEST COMES FIRST AND SKIPS THE DRAW, which took one wrong attempt to
+        ; get right. Setting the out-of-budget flag AFTER drawing stops the frame LOOP,
+        ; but the thread already running carries on until it yields - so asking to stop
+        ; after draw 1 let 51 through. To hold the page at exactly N draws the test has to
+        ; refuse the draw, not end the loop after it.
+        ; $FFFF means never, so that zero can mean "not even the first one".
+        ld      hl, (stop_draw)
+        ld      a, h
+        and     l
+        inc     a                       ; $FFFF -> 0
+        jr      z, .no_limit
+        ld      de, (n_poly)
+        ld      hl, (stop_draw)
+        or      a
+        sbc     hl, de
+        jr      nz, .no_limit           ; not there yet, or already past
+        ld      a, 1
+        ld      (CTL + $0B), a          ; CTL_OUT_OF_BUDGET ends the frame loop
+        ret                             ; and this draw does NOT happen
+.no_limit:
         ld      hl, (n_poly)
         inc     hl
         ld      (n_poly), hl
@@ -1020,6 +1040,8 @@ pg_ptr3:    db 1                        ; the other display page
 fill_col:   db 0
         EXPORT stop_blit
 stop_blit:  dw 0            ; stop the frame loop after this many blits; 0 = never
+        EXPORT stop_draw
+stop_draw:  dw $FFFF        ; refuse the draw once this many have happened; $FFFF = no limit
 saved_mmu0: db 0
         EXPORT n_video2
 n_video2:   dw 0        ; draws that wanted the video2 segment, which is not loaded yet
