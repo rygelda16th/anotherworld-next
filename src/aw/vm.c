@@ -263,13 +263,23 @@ static void aw_logrec(uint8_t kind, uint16_t pc, uint8_t v)
         }
     }
 
-    if (aw_log_count >= LOG_RECS)
-        return;
-    p = AW_RECORDS + (aw_log_count << 2);
-    p[0] = rec[0];
-    p[1] = rec[1];
-    p[2] = rec[2];
-    p[3] = rec[3];
+    /* THE COUNTER ADVANCES WHETHER OR NOT THE RECORD IS STORED, because it is the
+     * comparison's index and not just a buffer position.
+     *
+     * It used to return here when the buffer was full, leaving aw_log_count stuck -
+     * so every record after that was compared against the SAME expected record, and
+     * the first one that differed was reported as a divergence. The harness has 2,040
+     * record slots against a 763-record stream so it could never see this; the game
+     * has 256, and it diverged at exactly record 256 with a pauseThread where the
+     * engine had a fillVideoPage. A buffer that is smaller than the thing being
+     * checked is a different program. */
+    if (aw_log_count < LOG_RECS) {
+        p = AW_RECORDS + (aw_log_count << 2);
+        p[0] = rec[0];
+        p[1] = rec[1];
+        p[2] = rec[2];
+        p[3] = rec[3];
+    }
     ++aw_log_count;
     CTL_RECORDS = aw_log_count;
 }

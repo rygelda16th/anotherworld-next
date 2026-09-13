@@ -23,9 +23,9 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
                    --nex-no-automount-esxdos \
                    --nosplash --noconfigfile
 
-.PHONY: help certs image doctor shell asm cc emu clean distclean \
+.PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-map check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
+        check-map check-aw check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
         toolchain-diff
 
 help:
@@ -47,6 +47,7 @@ help:
 	@echo "make check-reader   Gate C4: the reference reader IS the engine's"
 	@echo "make check-readmachine  Gate C4: the Z80N reader, pixel-exact"
 	@echo "make check-load     Step 5: how fast esxDOS reads, and what a part costs"
+	@echo "make check-aw       I1: one program, everything live at once"
 	@echo "make check-map      I1: the game's five windows and its code coexist"
 	@echo "make check-boot     Gate D: the VM dispatches exactly what the engine does"
 	@echo "make check-pace     Gate E: the input mapping, and pacing to its deadline"
@@ -159,6 +160,21 @@ CC_RUN     := docker run --rm -v "$(CURDIR):/work" -w /work $(CC_IMAGE)
 # name, and without it the assembly symbols silently overwrite the C's.
 # Each C program is compiled with the jump table that belongs beside it: the
 # preflight one for ctest, src/aw/jumptab.asm for the virtual machine.
+# The game's own build of the same C. Different control addresses, because the game
+# has no spare 8K page for them: see the AW_CTL comment in src/aw/vm.c. A smaller
+# record buffer for the same reason - the verdict is what matters and it is 32 bytes.
+AW_CTL       ?= 0xC000
+AW_EXP       ?= 0xC500
+AW_LOG_RECS  ?= 256
+
+cc-game: | $(BUILD)
+	@echo "  CC  src/aw/vm.c -> the game"
+	@$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(VM_ORG) \
+	    -pragma-define:REGISTER_SP=$(CC_STACK) \
+	    -DAW_CTL=$(AW_CTL) -DAW_EXP=$(AW_EXP) -DAW_LOG_RECS=$(AW_LOG_RECS) \
+	    -o $(BUILD)/aw_vm src/aw/vm.c src/aw/jumptab.asm
+	@python3 tools/mkexp.py $(BUILD)/aw_vm.map $(BUILD)/aw_vm_c.exp
+
 cc: | $(BUILD)
 	@set -e; for f in preflight/cc/*.c src/*.c; do \
 		[ -e "$$f" ] || continue; b=$$(basename "$$f" .c); echo "  CC  $$f"; \
@@ -231,6 +247,14 @@ check-pace: asm
 		sleep 3; python3 tools/checkpace.py'
 
 # Gate D: the VM's opcode stream against the engine's. Needs `make assets`.
+# I1: the integrated program. Everything live at once - the frame interrupt, the DMA,
+# the mixer inside the interrupt, the loader, and the VM - with Gate D re-run inside it.
+check-aw: cc-game
+	python3 tools/mkexpected.py $(PROBE)/ops.txt $(BUILD)/expected_ops.inc
+	$(MAKE) asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkaw.py'
+
 # I1's killing experiment: can the game's five windows and its resident code coexist,
 # and does the second window survive being stood down for esxDOS? Run this before
 # building anything on the slot map.

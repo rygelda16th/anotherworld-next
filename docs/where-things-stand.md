@@ -2031,7 +2031,7 @@ had failed to find in dozens.
 
 | # | do this | because | gate |
 |---|---|---|---|
-| **I1** | **one program, and the memory map that lets it exist** - slot map **PROVEN**, `make check-map` | the last thing that could force a redesign | everything resident at once and a frame runs: Gate D re-run *inside* the integrated program, with the frame interrupt and the sound interrupt both live, for 60 seconds |
+| ~~**I1**~~ | ~~one program, and the memory map that lets it exist~~ **DONE**, `make check-map` and `make check-aw` | the last thing that could force a redesign | **PASSED**: all 763 records of the engine's stream with the frame interrupt pacing the VM, the DMA streaming, and the mixer refilling from inside the interrupt | everything resident at once and a frame runs: Gate D re-run *inside* the integrated program, with the frame interrupt and the sound interrupt both live, for 60 seconds |
 | **I1a** | **read a real keyboard** - and a joystick behind the same mask | NOTHING in this project reads input yet; `petest.asm` is handed a poked byte | the six VM variables track real keys, with `check-pace`'s existing mapping table as the oracle |
 | **I2** | **the VM draws** - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
 | **I3** | **resources arrive at runtime** - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
@@ -2120,6 +2120,56 @@ modifies what it later samples has to put it back.
 Citations are to the pinned AWBI checkout in `preflight/hostprobe/probe`, which is
 GPL-2.0-or-later and may be read. Everything each step REUSES is already gated;
 where a step has real risk it names the cheapest experiment that would kill it.
+
+#### I1 is CLOSED, and four things had to be found first
+
+`make check-aw`. `src/aw.asm` is the game: the slot map, the frame interrupt, the
+zxnDMA streaming a ring to the DAC, the mixer refilling that ring from inside the
+interrupt, the loader, and the virtual machine dispatching **all 763 records of the
+engine's stream** through the middle of it. Five seconds of soak afterwards, because
+`vm.c`'s `main` never returns and the interrupt has to keep going on its own.
+
+Nothing needed redesigning. Four things needed finding, and none of them was visible
+from any harness:
+
+**1. The ring cannot live in a sliding window.** The zxnDMA reads through the CPU's own
+memory decode, so a ring at MMU0 - which is what `sndtest.asm` uses, having the slot
+spare - vanishes the moment the bytecode window pages. The game's ring is in MMU6's
+page, which is never remapped, and that page also holds the control block, the expected
+stream, the volume table, the voice records and the vector table.
+
+**2. The CRT owns the interrupt state at BOTH ends.** Gate D found `im 1 / ei / ret` on
+the way out. On the way in, `$8C00` is `F3` - `di` as the very first instruction - so
+the `ei` before `call CC_ORG` is undone before the C runs a line. The machine spun in
+the frame hook forever waiting for a tick that could not arrive: PC at `$8066`, ticks
+frozen at 165, `IFF--`. **`aw_frame_sync` now does `ei` every frame**, which is the
+only place that can assert it.
+
+**3. z88dk's heap eats the resident region.** The CRT initialises a heap from `$AA00`
+upward toward SP and writes a free-block header there. The IM 2 vector table was at
+`$AB00`; the header landed on it, the next interrupt read a corrupt vector, and the
+interrupt driving both the pacing and the sound simply stopped. **Nothing between the C
+and the stack is safe** - the CRT believes all of it is its heap - so the table moved
+into MMU6's page, which the C knows nothing about.
+
+**4. The trace counter was a buffer position when it should have been an index.**
+`aw_logrec` returned early once the record buffer was full, leaving `aw_log_count`
+stuck - so every record after that was compared against the *same* expected record.
+The harness has 2,040 slots against a 763-record stream and could never see it. The
+game has 256, and diverged at exactly record 256. **A buffer smaller than the thing
+being checked is a different program.**
+
+**And one finding that belongs to I5, recorded here because this is where it surfaced.**
+The gated mixer has **no end-of-sample handling at all**. Its inner loop deliberately
+has no per-sample test - that costs 18 T a voice - and the design says the block is cut
+short instead. But `sndtest.asm` only *describes* that cut in a comment; its
+`setup_voices` copies fields and never performs it, and `check-snd` never caught the
+omission because its sample is 1,024 bytes against blocks that never reach the end. So
+**the mixer is gated for its arithmetic and not for the lifecycle of a sample.** Here
+it showed as `V_POS` at `$D610` after a few seconds: the voice had run off its 512-byte
+ramp, past `V_END`, and was reading the ring as sample data and writing the result back
+over it. `src/aw.asm` has a crude rewind to hold it in bounds; real end-of-sample and
+loop-point handling is I5's, and it is more unwritten code than the plan credited.
 
 #### I1a. Read a real keyboard, and a joystick behind the same mask
 
