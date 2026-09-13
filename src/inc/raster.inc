@@ -330,12 +330,19 @@ poly_draw:
         cp      (hl)
         jr      z, .band_ok
         ld      (hl), a
+        ; THE DESTINATION PAGE IS A VARIABLE, not a constant. The harness draws into
+        ; one page for its whole run; the engine keeps four and selects among them with
+        ; selectVideoPage, so the band's page number has to be read rather than
+        ; assembled in. dst_p0 and src_p0 start as the harness's two constants, so
+        ; nothing changes for it.
         push    af
-        add     a, DST_P0
-        nextreg NR_MMU3, a
+        ld      hl, dst_p0
+        add     a, (hl)
+        nextreg NR_DWIN_MMU, a
         pop     af
-        add     a, SRC_P0
-        nextreg NR_MMU2, a              ; the copy mode's source band
+        ld      hl, src_p0
+        add     a, (hl)
+        nextreg NR_SWIN_MMU, a          ; the copy mode's source band
 .band_ok:
         ; HL = DWIN + ((y & 31) << 8) + sx1 ; DE = length as a WORD.
         ; A word, not a byte: a full-width span is 256 pixels, which is 0 in a
@@ -1275,6 +1282,10 @@ cmp_signed:
         ret
 
 
+        EXPORT dst_p0
+dst_p0:         db DST_P0       ; the first 8K page of the page being drawn into
+        EXPORT src_p0
+src_p0:         db SRC_P0       ; and of the source, for a page copy
 p_colour:       db 0
 p_ptx:          dw 0
 p_pty:          dw 0

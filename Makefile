@@ -170,7 +170,7 @@ AW_IN        ?= 0xD300
 
 # The game's C sits HIGHER than the harness's, because the rasteriser and the reader
 # are resident alongside it: see the CC_ORG comment in src/aw.asm.
-AW_VM_ORG    ?= 0x9600
+AW_VM_ORG    ?= 0x9700
 
 cc-game: | $(BUILD)
 	@echo "  CC  src/aw/vm.c -> the game"

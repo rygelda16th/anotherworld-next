@@ -48,7 +48,7 @@
 ; C's stack is the number to watch: $BF00 down to the end of its image. Gate D needed
 ; more than 779 bytes and was given 4,500; this is less, and if it is not enough the
 ; symptom is now a known one.
-CC_ORG          EQU $9600               ; must match VM_ORG in the Makefile
+CC_ORG          EQU $9700               ; must match VM_ORG in the Makefile
 NR_TURBO        EQU $07
 NR_MMU0         EQU $50
 NR_MMU1         EQU $51
@@ -479,40 +479,225 @@ isr:
         ei
         reti
 
+
 ;-----------------------------------------------------------------------------
-; The video calls. STILL COUNTED, not drawn - I2 is what replaces them, and doing
-; both at once would mean two things under test in one gate.
+; THE VIDEO CALLS, FOR REAL. I2.
+;
+; Each one is the reference's, cited. They keep their counters as well, because
+; check-aw scores them and a callback that is reached zero times is worth knowing
+; about.
+;
+; THE PAGE MODEL first, because everything else needs it. The engine keeps FOUR pages
+; (video.cpp:49, `malloc(4 * VID_PAGE_SIZE)`) and three pointers into them:
+;
+;   ptr1  what drawing goes into      changePagePtr1, video.cpp:491
+;   ptr2  what is being displayed     updateDisplay,  video.cpp:597
+;   ptr3  the other display page, swapped with ptr2 when a blit asks for $FF
+;
+; We hold page NUMBERS rather than pointers, so a swap is two byte moves.
 ;-----------------------------------------------------------------------------
-aw_draw_poly:
-        ld      hl, (n_poly)
-        inc     hl
-        ld      (n_poly), hl
+
+; resolve_page - A = a page id as the bytecode gives it, out as 0..3.
+; getPage, video.cpp:468: 0..3 are themselves, $FF is ptr3, $FE is ptr2, and anything
+; else is page 0 with a warning - which we keep, because a port that silently did
+; something else there would diverge from the engine on exactly the records that are
+; hardest to notice.
+resolve_page:
+        cp      4
+        ret     c
+        cp      $FF
+        jr      nz, .not_ff
+        ld      a, (pg_ptr3)
         ret
+.not_ff:
+        cp      $FE
+        jr      nz, .other
+        ld      a, (pg_ptr2)
+        ret
+.other:
+        xor     a                       ; page 0, as the reference warns and does
+        ret
+
+; page_to_p0 - A = 0..3, out as the first of that page's six 8K pages.
+; A Layer 2 page is three 16K banks from L2_BASE_BANK, so six 8K pages from
+; (L2_BASE_BANK + page * 3) * 2.
+page_to_p0:
+        add     a, a                    ; page * 2
+        ld      b, a
+        add     a, a                    ; page * 4
+        add     a, b                    ; page * 6
+        add     a, L2_BASE_BANK * 2
+        ret
+
 aw_select_page:
+        ld      (jt_arg), hl    ; the fastcall argument, before a counter clobbers HL
         ld      hl, (n_select)
         inc     hl
         ld      (n_select), hl
+        ld      a, (jt_arg)
+        call    resolve_page
+        ld      (pg_ptr1), a
+        call    page_to_p0
+        ld      (dst_p0), a             ; where the rasteriser writes its bands
+        ld      a, 255
+        ld      (cur_band), a           ; force the next band map
         ret
+
+; fillPage, video.cpp:498. The reference duplicates the colour into both nibbles
+; because its page is 4bpp; ours is 8bpp with one index a byte, so the byte IS the
+; colour and the duplication would be wrong.
 aw_fill_page:
+        ld      (jt_arg), hl    ; the fastcall argument, before a counter clobbers HL
         ld      hl, (n_fill)
         inc     hl
         ld      (n_fill), hl
+        ld      a, (jt_arg + 1)
+        ld      (fill_col), a
+        ld      a, (jt_arg)
+        call    resolve_page
+        call    page_to_p0
+        ld      c, a                    ; C = the page's first 8K page
+        ld      b, BANDS
+.band:
+        ld      a, c
+        nextreg NR_DWIN_MMU, a
+        push    bc
+        ld      hl, DWIN
+        ld      de, DWIN + 1
+        ld      bc, $2000 - 1
+        ld      a, (fill_col)
+        ld      (hl), a
+        ldir
+        pop     bc
+        inc     c
+        djnz    .band
+        ld      a, 255
+        ld      (cur_band), a
         ret
+
+; copyPage, video.cpp:513. Same page in and out does nothing. The scrolled form is
+; NOT implemented here and says so: it needs vscroll, which our op_copyVideoPage does
+; not yet pass, and the scroll is in the reference's 200-line geometry so it has to be
+; scaled the way every other Y is. Recorded as I2's remaining work rather than guessed.
 aw_copy_page:
+        ld      (jt_arg), hl    ; the fastcall argument, before a counter clobbers HL
         ld      hl, (n_copy)
         inc     hl
         ld      (n_copy), hl
+        ld      a, (jt_arg)
+        ld      c, a                    ; C = src as given
+        ld      a, (jt_arg + 1)
+        ld      b, a                    ; B = dst as given
+        cp      c
+        ret     z                       ; src == dst: the reference returns
+        ld      a, c
+        cp      $FE
+        jr      nc, .plain              ; >= $FE is always a plain copy
+        and     $BF
+        ld      c, a
+        bit     7, a
+        jr      nz, .scrolled
+.plain:
+        ld      a, c
+        call    resolve_page
+        call    page_to_p0
+        ld      (src_p0), a
+        ld      a, b
+        call    resolve_page
+        call    page_to_p0
+        ld      (cp_dst), a
+        ld      d, BANDS
+        ld      e, 0
+.cband:
+        ld      a, (src_p0)
+        add     a, e
+        nextreg NR_SWIN_MMU, a
+        ld      a, (cp_dst)
+        add     a, e
+        nextreg NR_DWIN_MMU, a
+        push    de
+        ld      hl, SWIN
+        ld      de, DWIN
+        ld      bc, $2000
+        ldir
+        pop     de
+        inc     e
+        dec     d
+        jr      nz, .cband
+        ld      a, 255
+        ld      (cur_band), a
         ret
+.scrolled:
+        ld      a, 1
+        ld      (cp_unimpl), a          ; counted, not guessed: see the comment
+        ret
+
+; updateDisplay, video.cpp:597. $FE changes nothing, $FF swaps the two display pages,
+; anything else selects one - and THEN the requested palette is applied, before the
+; page is presented. That order is the reference's and it is the one a port gets wrong.
 aw_blit:
+        ld      (jt_arg), hl    ; the fastcall argument, before a counter clobbers HL
         ld      hl, (n_blit)
         inc     hl
         ld      (n_blit), hl
+        ld      a, (jt_arg)
+        cp      $FE
+        jr      z, .palette             ; $FE: no page change at all
+        cp      $FF
+        jr      nz, .select
+        ld      a, (pg_ptr2)            ; $FF: swap ptr2 and ptr3
+        ld      b, a
+        ld      a, (pg_ptr3)
+        ld      (pg_ptr2), a
+        ld      a, b
+        ld      (pg_ptr3), a
+        jr      .palette
+.select:
+        call    resolve_page
+        ld      (pg_ptr2), a
+.palette:
+        ld      a, (pal_req)
+        cp      $FF
+        jr      z, .present
+        call    apply_palette
+        ld      a, $FF
+        ld      (pal_req), a
+.present:
+        ; the visible Layer 2 bank is the page's first 16K bank
+        ld      a, (pg_ptr2)
+        ld      b, a
+        add     a, a
+        add     a, b                    ; page * 3
+        add     a, L2_BASE_BANK
+        nextreg NR_L2_BANK, a
         ret
+
+; op_setPalette only REQUESTS. changePal runs inside updateDisplay (video.cpp:610),
+; so a palette set mid-frame does not appear until the frame is presented.
 aw_set_palette:
+        ld      (jt_arg), hl    ; the fastcall argument, before a counter clobbers HL
         ld      hl, (n_pal)
         inc     hl
         ld      (n_pal), hl
+        ld      a, (jt_arg)
+        cp      32                      ; changePal ignores >= 32, video.cpp:589
+        ret     nc
+        ld      (pal_req), a
         ret
+
+; The 512 Layer 2 palette entries are already resident as two 256-entry banks, so a
+; palette change is a bank select rather than a transfer: 32 palettes of 16 across the
+; two banks, which is exactly what mkassets.py lays out.
+apply_palette:
+        ld      (pal_now), a
+        ret                             ; I2 remainder: select the entries
+
+aw_draw_poly:
+        ld      (jt_arg), hl    ; the fastcall argument, before a counter clobbers HL
+        ld      hl, (n_poly)
+        inc     hl
+        ld      (n_poly), hl
+        ret                             ; I2 remainder: call poly_read
 
         INCLUDE "src/inc/vmhost.inc"
         INCLUDE "src/inc/input.inc"
@@ -558,6 +743,21 @@ n_blit:     dw 0
         EXPORT n_pal
 n_pal:      dw 0
 
+jt_arg:     dw 0                        ; whichever callback's argument, stashed
+        EXPORT pg_ptr1
+pg_ptr1:    db 0                        ; the page drawing goes into
+        EXPORT pg_ptr2
+pg_ptr2:    db 1                        ; the page being displayed - video.cpp:56-57
+        EXPORT pg_ptr3
+pg_ptr3:    db 2                        ; the other display page
+fill_col:   db 0
+cp_dst:     db 0
+        EXPORT cp_unimpl
+cp_unimpl:  db 0                        ; a scrolled copy was asked for: I2 remainder
+        EXPORT pal_req
+pal_req:    db $FF                      ; $FF = no palette change requested
+        EXPORT pal_now
+pal_now:    db $FF
 rd_log:     ds 8 * 8                    ; the reader's leaf log, small: nothing reads it
 
         DISPLAY "> resident code and data end at ", /H, $
