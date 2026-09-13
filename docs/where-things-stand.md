@@ -2032,7 +2032,7 @@ had failed to find in dozens.
 | # | do this | because | gate |
 |---|---|---|---|
 | ~~**I1**~~ | ~~one program, and the memory map that lets it exist~~ **DONE**, `make check-map` and `make check-aw` | the last thing that could force a redesign | **PASSED**: all 763 records of the engine's stream with the frame interrupt pacing the VM, the DMA streaming, and the mixer refilling from inside the interrupt | everything resident at once and a frame runs: Gate D re-run *inside* the integrated program, with the frame interrupt and the sound interrupt both live, for 60 seconds |
-| **I1a** | **read a real keyboard** - and a joystick behind the same mask | NOTHING in this project reads input yet; `petest.asm` is handed a poked byte | the six VM variables track real keys, with `check-pace`'s existing mapping table as the oracle |
+| ~~**I1a**~~ | ~~read a real keyboard~~ **DONE**, `make check-input` | nothing in this project read input at all; `petest.asm` is handed a poked byte | **PASSED**: all 32 combinations from the emulator's own keys, through `read_keys` and the reference's mapping, to the VM's own variables |
 | **I2** | **the VM draws** - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
 | **I3** | **resources arrive at runtime** - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
 | **I4** | **text** - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
@@ -2191,6 +2191,28 @@ copy from.
 **Gate:** the six variables track real keys, with `check-pace`'s existing table as
 the oracle - the same 32 combinations, driven from the keyboard rather than from a
 poke.
+
+**I1a is closed.** `make check-input`. `src/inc/input.inc` now holds both halves: the
+mapping `check-pace` gated, and `read_keys`, which is new - port `$FE` for O, P, Q, A
+and Space, with a Kempston read on port `$1F` accumulated in parallel so a joystick
+needs no second code path and H1 has only the physical wiring left. It runs in the
+frame interrupt beside the mixer, for the same reason: `vm.c`'s `main` never returns,
+so anything driven only from the frame hook stops when the last frame does. The C reads
+the six published words between `checkThreadRequests` and `hostFrame`, which is the
+reference's own order - a port that read them after the frame would be one frame late
+on every input and would feel it rather than show it.
+
+**Two things went wrong in the checker and neither was the machine.** The first
+version re-derived `inp_updatePlayer` instead of importing `check-pace`'s gated copy,
+and got wrong the one detail that is the entire reason two variables exist: `$FD` takes
+the mask **without** the fire bit and `$FE` takes it **with**, because the reference
+writes `$FD` before the fire test and `$FE` after it. Sixteen of thirty-two
+combinations "failed" and the machine was right in all sixteen. **Import the oracle;
+never keep two.** The second was `0x`-prefixed addresses in the ZRCP commands -
+**ZEsarUX's expression parser refuses them and a refused write is silent** - so
+`CTL_FRAMES` stayed zero, the VM ran no frames at all, and the checker reported that
+input was not reaching it. That trap is already in this document, in the breakpoint
+note, and it cost twenty minutes again anyway.
 
 #### I2. The VM draws
 

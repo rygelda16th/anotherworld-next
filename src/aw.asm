@@ -61,6 +61,7 @@ EXP_OPS         EQU $C500
 RING_ADDR       EQU $D400               ; permanently mapped; see the header
 VOLTAB          EQU $DC00
 VOICES          EQU $DD00
+IN_BLOCK        EQU $D300               ; the six input words the C reads
 SAMPLE          EQU $DE00
 SAMPLE_LEN      EQU 512
 
@@ -294,6 +295,26 @@ mix_block:
         ret
 
 ;-----------------------------------------------------------------------------
+; publish_input - the six variables inp_updatePlayer sets, into a fixed block the C
+; reads at the top of every frame. A fixed address on both sides rather than a symbol
+; bridged between two assemblers, which is the arrangement that has worked here.
+;-----------------------------------------------------------------------------
+publish_input:
+        ld      hl, (var_E5)
+        ld      (IN_BLOCK + 0), hl
+        ld      hl, (var_FA)
+        ld      (IN_BLOCK + 2), hl
+        ld      hl, (var_FB)
+        ld      (IN_BLOCK + 4), hl
+        ld      hl, (var_FC)
+        ld      (IN_BLOCK + 6), hl
+        ld      hl, (var_FD)
+        ld      (IN_BLOCK + 8), hl
+        ld      hl, (var_FE)
+        ld      (IN_BLOCK + 10), hl
+        ret
+
+;-----------------------------------------------------------------------------
 ; Setup, once, at boot.
 ;-----------------------------------------------------------------------------
 build_voltab:
@@ -404,6 +425,14 @@ isr:
         inc     hl
         ld      (ticks), hl
 
+        ; INPUT IS READ HERE, not at the frame boundary, and for the same reason the
+        ; mixing is: vm.c's main never returns, so anything driven only from the frame
+        ; hook stops the moment the last frame runs. Five port reads and the reference's
+        ; own mapping, fifty times a second.
+        call    read_keys
+        call    do_input
+        call    publish_input
+
         ld      a, BLK_A
         call    mix_block
         ld      a, BLK_B
@@ -459,6 +488,7 @@ aw_set_palette:
         ret
 
         INCLUDE "src/inc/vmhost.inc"
+        INCLUDE "src/inc/input.inc"
 
 ; The game's ring and its sample are both resident in MMU6's page, so a voice needs
 ; nothing mapped for it. I5 gives each voice its own sample page and this macro
@@ -473,6 +503,8 @@ aw_set_palette:
         EXPORT fname
         EXPORT err
         EXPORT got
+        EXPORT in_mask
+        EXPORT in_button
 
         EXPORT ready
 ready:      db 0
@@ -520,6 +552,7 @@ ctl:        ds 32 + 256 * 4             ; the control block, then 256 records
         ASSERT EXP_OPS + EXPECTED_N * 4 <= VEC_TABLE
         ASSERT VEC_TABLE + 257 <= VEC_TRAMP
         ASSERT VEC_TRAMP + 3 <= RING_ADDR
+        ASSERT IN_BLOCK + 12 <= VEC_TABLE || IN_BLOCK >= VEC_TRAMP + 3
 
         ORG CC_ORG
         INCBIN  "build/aw_vm_CODE.bin"

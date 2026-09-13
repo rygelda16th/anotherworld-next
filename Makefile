@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-map check-aw check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
+        check-map check-aw check-input check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
         toolchain-diff
 
 help:
@@ -166,12 +166,14 @@ CC_RUN     := docker run --rm -v "$(CURDIR):/work" -w /work $(CC_IMAGE)
 AW_CTL       ?= 0xC000
 AW_EXP       ?= 0xC500
 AW_LOG_RECS  ?= 256
+AW_IN        ?= 0xD300
 
 cc-game: | $(BUILD)
 	@echo "  CC  src/aw/vm.c -> the game"
 	@$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(VM_ORG) \
 	    -pragma-define:REGISTER_SP=$(CC_STACK) \
 	    -DAW_CTL=$(AW_CTL) -DAW_EXP=$(AW_EXP) -DAW_LOG_RECS=$(AW_LOG_RECS) \
+	    -DAW_IN=$(AW_IN) \
 	    -o $(BUILD)/aw_vm src/aw/vm.c src/aw/jumptab.asm
 	@python3 tools/mkexp.py $(BUILD)/aw_vm.map $(BUILD)/aw_vm_c.exp
 
@@ -254,6 +256,13 @@ check-aw: cc-game
 	$(MAKE) asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkaw.py'
+
+# I1a: the game reads a real keyboard and a Kempston joystick, and the reference's
+# mapping survives the trip. Driven by the emulator's own keys, not by a poke.
+check-input: cc-game
+	$(MAKE) asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkinput.py'
 
 # I1's killing experiment: can the game's five windows and its resident code coexist,
 # and does the second window survive being stood down for esxDOS? Run this before

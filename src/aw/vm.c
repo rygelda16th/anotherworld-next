@@ -93,6 +93,11 @@ extern void aw_frame_sync(void);
 #ifndef AW_LOG_RECS
 #define AW_LOG_RECS     2040
 #endif
+/* Where the assembly publishes the six variables inp_updatePlayer sets. Zero in the
+ * harness, which has no input and must not have its opcode stream perturbed by one. */
+#ifndef AW_IN
+#define AW_IN           0
+#endif
 
 #define CTL_SEED        (*(volatile uint16_t *)(AW_CTL + 0x00))
 #define CTL_FRAMES      (*(volatile uint16_t *)(AW_CTL + 0x02))
@@ -627,6 +632,23 @@ static void execute_thread(void)
     }
 }
 
+/* inp_updatePlayer's result, read from where the assembly published it.
+ *
+ * The ORDER matters and is the reference's: engine.cpp runs checkThreadRequests, then
+ * inp_updatePlayer, then hostFrame. A port that read the keys after the frame would be
+ * one frame late on every input and would feel it rather than show it. */
+static void aw_apply_input(void)
+{
+#if AW_IN
+    aw_vars[0xE5] = *(volatile int16_t *)(AW_IN + 0);
+    aw_vars[0xFA] = *(volatile int16_t *)(AW_IN + 2);
+    aw_vars[0xFB] = *(volatile int16_t *)(AW_IN + 4);
+    aw_vars[0xFC] = *(volatile int16_t *)(AW_IN + 6);
+    aw_vars[0xFD] = *(volatile int16_t *)(AW_IN + 8);
+    aw_vars[0xFE] = *(volatile int16_t *)(AW_IN + 10);
+#endif
+}
+
 /* hostFrame, vm.cpp:433-476. Returns non-zero if a blit ended the frame. */
 uint8_t aw_host_frame(void) __z88dk_fastcall
 {
@@ -695,6 +717,7 @@ int main(void)
         if (CTL_OUT_OF_BUDGET || CTL_FAULT)
             break;
         aw_check_requests();
+        aw_apply_input();
         aw_host_frame();
     }
     CTL_FRAMES_DONE = f;

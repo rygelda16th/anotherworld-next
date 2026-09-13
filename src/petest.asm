@@ -92,7 +92,10 @@ main:
 
         ld      a, (what)
         dec     a
-        jp      z, do_input
+        jr      nz, .not_input
+        call    do_input
+        jp      main.done
+.not_input:
         dec     a
         jp      z, do_pace
         jr      .done
@@ -101,83 +104,7 @@ main:
         ld      (done), a
         jr      main
 
-;-----------------------------------------------------------------------------
-; do_input - map (in_mask, in_button) into the six variables, exactly as
-; inp_updatePlayer does, in its order.
-;-----------------------------------------------------------------------------
-do_input:
-        ld      hl, 0
-        ld      (v_lr), hl              ; lr = 0
-        ld      (v_ud), hl              ; ud = 0
-        ld      a, 0
-        ld      (v_mask), a             ; m = 0
-
-        ld      a, (in_mask)
-        ld      c, a
-
-        bit     1, c                    ; DIR_RIGHT
-        jr      z, .no_right
-        ld      hl, 1
-        ld      (v_lr), hl
-        ld      a, (v_mask)
-        or      1
-        ld      (v_mask), a
-.no_right:
-        bit     0, c                    ; DIR_LEFT - assigns too, so both gives left
-        jr      z, .no_left
-        ld      hl, -1
-        ld      (v_lr), hl
-        ld      a, (v_mask)
-        or      2
-        ld      (v_mask), a
-.no_left:
-        bit     3, c                    ; DIR_DOWN
-        jr      z, .no_down
-        ld      hl, 1
-        ld      (v_ud), hl
-        ld      a, (v_mask)
-        or      4
-        ld      (v_mask), a
-.no_down:
-        ; vars[0xE5] = ud, BEFORE the up test, and then overwritten by it
-        ld      hl, (v_ud)
-        ld      (var_E5), hl
-
-        bit     2, c                    ; DIR_UP, tested twice in the original
-        jr      z, .no_up
-        ld      hl, -1
-        ld      (var_E5), hl
-        ld      hl, -1
-        ld      (v_ud), hl
-        ld      a, (v_mask)
-        or      8
-        ld      (v_mask), a
-.no_up:
-        ld      hl, (v_ud)
-        ld      (var_FB), hl
-        ld      hl, (v_lr)
-        ld      (var_FC), hl
-        ld      a, (v_mask)
-        ld      l, a
-        ld      h, 0
-        ld      (var_FD), hl
-
-        ld      hl, 0
-        ld      (var_FA), hl
-        ld      a, (in_button)
-        or      a
-        jr      z, .no_fire
-        ld      hl, 1
-        ld      (var_FA), hl
-        ld      a, (v_mask)
-        or      $80
-        ld      (v_mask), a
-.no_fire:
-        ld      a, (v_mask)
-        ld      l, a
-        ld      h, 0
-        ld      (var_FE), hl
-        jp      main.done
+        INCLUDE "src/inc/input.inc"
 
 ;-----------------------------------------------------------------------------
 ; do_pace - run (pace_n) frames, each asking for (pace_slices) refreshes, and
@@ -259,24 +186,13 @@ what:       db 0            ; 1 = the input mapping, 2 = pacing
 ticks:      dw 0
 
         EXPORT in_mask
-in_mask:    db 0
         EXPORT in_button
-in_button:  db 0
-v_lr:       dw 0
-v_ud:       dw 0
-v_mask:     db 0
         EXPORT var_E5
-var_E5:     dw 0
         EXPORT var_FA
-var_FA:     dw 0
         EXPORT var_FB
-var_FB:     dw 0
         EXPORT var_FC
-var_FC:     dw 0
         EXPORT var_FD
-var_FD:     dw 0
         EXPORT var_FE
-var_FE:     dw 0
 
         EXPORT pace_n
 pace_n:     db 0            ; how many frames
