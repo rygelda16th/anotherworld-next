@@ -43,8 +43,15 @@ FILL = int(49_152 * 1.5)
 # The plan's earlier figures used 672 T a span, which is step 0's purpose-built
 # span row rather than the rasteriser - a three-fold understatement.
 MODELS = {
-    "as built":  (2974, 1570 + 22 * 21.3),
-    "optimised": (2974, 433 + 22 * 5.4),
+    # 2026-09-13, before step 2a: three routines, four calls to a general signed
+    # comparator a row, and DJNZ loops for all three fills.
+    "original":  (2974, 1570 + 22 * 21.3),
+    # after step 2a: the row loop fused with inline specialised clipping, and all
+    # three fills unrolled with a computed entry. Both figures re-measured.
+    "as built":  (3020, 1137 + 22 * 7.3),
+    # the floor step 0 measured for the two techniques left: a PUSH fill at 5.4 T
+    # a byte, and 433 T of span entry with the accumulators in registers.
+    "floor":     (3020, 433 + 22 * 5.4),
 }
 
 

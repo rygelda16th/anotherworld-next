@@ -705,16 +705,41 @@ optimisations would actually achieve. The conclusion "the rasteriser is comforta
 fast enough" was therefore right about the destination and wrong about where the
 code is.
 
-**So the two deferred optimisations are required, and they are sufficient.**
+**So the optimisations were required - and step 2a did them.** Two changes, both
+protected by Gate C:
 
-- hold the four accumulator words in registers across a trapezoid: entry from
-  1,570 T towards step 0's measured 433
-- a PUSH fill instead of the `djnz` store loop: 21.3 T a byte towards 5.4
+- **the row loop fused, with inline specialised clipping.** The four calls a row to
+  a general signed comparator went, along with two call/ret pairs and the six
+  memory round-trips for `sx1` and `sx2`. At this point in the walk `hliney` is
+  either negative or 0..191, so its test is one `or a` rather than a subroutine.
+- **all three fills unrolled with a computed entry**, replacing `djnz` loops whose
+  13 T of branch was more than half the cost of an opaque byte.
 
-Both are techniques step 0 already measured on this machine. Together they take a
-span from 2,037 T to 552 T, the gameplay mean from 48.4% of its pause to 22.6%, and
-the overrun rate from one frame in eight to one in 137. With the mixer's 23.2% on
-top that is 46% of the machine rather than 72%.
+| | before | after | step 0's floor |
+|---|---|---|---|
+| span entry | 1,570 T | **1,137 T** | 433 |
+| opaque byte | 21.3 T | **7.3 T** | 5.4 (PUSH) |
+| blend or copy byte | 32.0 T | **15.6 T** | 19 (unrolled) |
+| a 22-byte opaque span | 2,037 T | **1,296 T** | 552 |
+
+| gameplay | mean load | p90 | worst | frames overrunning |
+|---|---|---|---|---|
+| original | 48.4% | 4.00 | 18.79 | 12.72% |
+| **after step 2a** | **35.7%** | 2.89 | 14.05 | **0.94%** |
+| the floor | 22.7% | 1.76 | 9.21 | 0.73% |
+
+**The overrun rate is now at the floor** - 0.94% against 0.73%, one frame in 106
+against one in 137 - so the thing the optimisation was for is done. What remains
+between here and the floor is mean load, which is headroom rather than
+correctness: 35.7% with the mixer's 23.2% is 59% of the machine. The last two
+techniques, a PUSH fill and the accumulators in registers, are therefore back to
+being optional, and this time that is a conclusion drawn from the measurement
+rather than from a figure belonging to different code.
+
+**Gate C found the one fault in the rewrite in a single run.** The blend fill needed
+a spare register pair to compute length x 3, took DE - which was holding the
+destination - and restored the length as the destination. The bisect named it
+immediately: polygon 35, bucket `blend`. The fix is to push the destination first.
 
 The copy-byte term is **not** measured here: copy-mode bytes never exceed 952 in any
 window and are zero in most, so fitted freely the coefficient came out at minus 243
@@ -1338,7 +1363,7 @@ unblocked only once the one it names has produced a number.
 |---|---|---|---|
 | 1 | ~~price the mixer's inner loop~~ **DONE** | it was the largest unpriced cost, and it decided the output rate | `make check-mix`: **295 T a sample for four voices**, 23.2% of the machine at the reference's own 22,050 Hz |
 | 2 | ~~measure the per-polygon setup cost~~ **DONE** | gameplay spends its time there, and every budget number carried it as a guess | `make check-polycost`: **2,974 T a polygon**, and it found the span cost had been understated threefold |
-| 2a | **the two rasteriser optimisations**: accumulators in registers, PUSH fill | required, not optional - step 2 measured the alternative at one frame in eight overrunning | `check-polycost` again: entry towards 433 T, opaque bytes towards 5.4 T, and Gate C still pixel-exact |
+| 2a | ~~the rasteriser optimisations~~ **DONE** | one gameplay frame in eight was overrunning its own deadline | fused row loop and unrolled fills: **1,296 T a span, 0.94% overrunning** against a 0.73% floor, Gate C still 49,152/49,152 |
 | 3 | **C4, the polygon reader** | nothing renders a real scene without it | the Gate C vector, redrawn from the autoplay trace so bit-6 records with real zooms are covered |
 | 4 | **C6, the segment window** | a 65,230-byte segment cannot be mapped flat | a read of the last byte of the largest cinematic segment |
 | 5 | **D4's read rate**, before any of D is built | a four-second part load is a design decision, not a detail | `make check-load` |

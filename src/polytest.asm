@@ -362,7 +362,7 @@ poly_draw:
         jr      .setfn
 .opaque:
         ld      hl, span_opaque
-.setfn: ld      (span_fn), hl
+.setfn: ld      (.span_call + 1), hl    ; patch the CALL, once a polygon
 
 ;-----------------------------------------------------------------------------
 ; The trapezoid walk.
@@ -425,75 +425,64 @@ poly_draw:
 
 .rows:
         ld      (row_count), hl
+
+;-----------------------------------------------------------------------------
+; One scanline, FUSED. This was three routines and four calls to cmp_signed,
+; which make.check-polycost measured at 1,570 T-states of span entry against the
+; 433 T step 0 measured for its own span row. The difference was all avoidable:
+; two call/ret pairs, a general signed comparator invoked four times a row for
+; values that are known to be 16-bit and small, and sx1/sx2 written to memory and
+; read back three times each.
+;
+; Every comparison here is inline and specialised instead. At this point hliney is
+; either negative or 0..191 - the loop below exits as soon as it passes 191 - so
+; a non-zero high byte means negative and nothing else, which is one test rather
+; than a subroutine.
+;-----------------------------------------------------------------------------
 .row:
-        ; if hliney >= 0 and the span is on screen, draw it
         ld      hl, (hliney)
-        bit     7, h
-        jr      nz, .next               ; above the top edge
-        call    emit_span
-.next:
-        call    step_both
-        ld      hl, (hliney)
-        inc     hl
-        ld      (hliney), hl
-        ld      de, SCR_H - 1
-        call    cmp_signed
-        jr      z, .more
-        jp      p, .ret                 ; hliney > 191: off the bottom
-.more:
-        ld      hl, (row_count)
-        dec     hl
-        ld      (row_count), hl
         ld      a, h
-        or      l
-        jr      nz, .row
-        jp      .trapezoid
-.ret:
-        ret
+        or      a
+        jp      nz, .step               ; above the top edge: step, do not draw
+        ld      e, l                    ; E = y, 0..191, for band and address
 
-;-----------------------------------------------------------------------------
-; emit_span - clip the current scanline's two edges and paint it.
-;-----------------------------------------------------------------------------
-emit_span:
-        ld      hl, (cpt1 + 2)          ; sx1, signed
-        ld      (sx1), hl
-        ld      hl, (cpt2 + 2)          ; sx2, signed
-        ld      (sx2), hl
-
-        ; if sx1 > 255 or sx2 < 0: nothing
-        ld      hl, (sx1)
-        ld      de, SCR_W - 1
-        call    cmp_signed
-        jr      z, .l_ok
-        ret     p                       ; sx1 > 255
-.l_ok:
-        ld      hl, (sx2)
+        ; sx1 = the integer half of cpt1, clipped to 0
+        ld      hl, (cpt1 + 2)
+        ld      a, h
+        or      a
+        jr      z, .x1_in
         bit     7, h
-        ret     nz                      ; sx2 < 0
+        jp      z, .step                ; positive and > 255: nothing visible
+        ld      l, 0                    ; negative: clamp left
+.x1_in:
+        ld      c, l                    ; C = sx1
 
-        ; clamp sx1 to >= 0
-        ld      hl, (sx1)
+        ; sx2 = the integer half of cpt2, clipped to 255
+        ld      hl, (cpt2 + 2)
+        ld      a, h
+        or      a
+        jr      z, .x2_in
         bit     7, h
-        jr      z, .l_pos
-        ld      hl, 0
-        ld      (sx1), hl
-.l_pos:
-        ; clamp sx2 to <= 255
-        ld      hl, (sx2)
-        ld      de, SCR_W - 1
-        call    cmp_signed
-        jr      z, .r_ok
-        jp      m, .r_ok
-        ld      hl, SCR_W - 1
-        ld      (sx2), hl
-.r_ok:
-        ; the band, and the MMU write only when it changes
-        ld      a, (hliney)             ; 0..191 here, so the low byte is enough
-        ld      e, a
-        ; y >> 5, the 8K band. THREE RLCA, not RRCA: rotating a byte right
-        ; three times leaves bits 3-5 in the low bits, which is (y >> 3) & 7 -
-        ; a band change every 8 rows instead of every 32. Rotating LEFT three
-        ; times brings bits 5-7 down, which is what y >> 5 means.
+        jp      nz, .step               ; negative: nothing visible
+        ld      l, SCR_W - 1            ; positive and > 255: clamp right
+.x2_in:
+        ld      b, l                    ; B = sx2
+
+        ; The two edges can CROSS, and then sx1 > sx2. The original's drawLine
+        ; routines take MIN and MAX of their arguments; without that the length
+        ; underflows and paints the whole 256-byte row. It shows up only on the
+        ; last rows of a sliver, where the accumulators finally overtake.
+        ld      a, b
+        cp      c
+        jr      nc, .ordered
+        ld      a, c
+        ld      c, b
+        ld      b, a
+.ordered:
+        ; the band, and the MMU write only when it changes. y >> 5 is THREE RLCA,
+        ; not RRCA: three RRCA leaves bits 3-5 low, which is (y >> 3) & 7 and
+        ; moves the window every 8 rows instead of every 32.
+        ld      a, e
         rlca
         rlca
         rlca
@@ -509,67 +498,160 @@ emit_span:
         add     a, SRC_P0
         nextreg NR_MMU2, a              ; the copy mode's source band
 .band_ok:
-        ; The two edges can CROSS, and then sx1 > sx2. The original's drawLine
-        ; routines take MIN and MAX of their two arguments, so the span is still
-        ; drawn left to right; computing sx2 - sx1 without that underflows and
-        ; paints the whole 256-byte row. It shows up only on the last rows of a
-        ; sliver, where the accumulators finally overtake each other.
-        ld      a, (sx1)
-        ld      c, a
-        ld      a, (sx2)
-        cp      c
-        jr      nc, .ordered            ; sx2 >= sx1, nothing to do
-        ld      (sx1), a                ; swap them
-        ld      a, c
-        ld      (sx2), a
-.ordered:
-        ; HL = DWIN + ((y & 31) << 8) + sx1 ; B = length
+        ; HL = DWIN + ((y & 31) << 8) + sx1 ; DE = length as a WORD.
+        ; A word, not a byte: a full-width span is 256 pixels, which is 0 in a
+        ; byte, and every fill below needs the true length to compute its entry.
         ld      a, e
         and     31
         add     a, DWIN >> 8
         ld      h, a
-        ld      a, (sx1)
-        ld      l, a
-        ld      a, (sx2)
-        sub     l
-        inc     a                       ; length 1..256, 0 meaning 256
-        ld      b, a
+        ld      l, c
+        ld      a, b
+        sub     c
+        ld      e, a
+        ld      d, 0
+        inc     de                      ; DE = 1..256
         ld      a, (p_colour)
-        ld      ix, (span_fn)
-        jp      (ix)
+        ; A LOCAL label. As a global one it reparented every local label after it
+        ; to itself, so .row and .step became span_call.row and span_call.step and
+        ; poly_draw's own jumps stopped resolving - the same trap span_tail hit in
+        ; src/span.asm.
+.span_call:
+        call    0000                    ; patched per polygon by .setfn
+
+.step:
+        ; Both accumulators, inline. The call/ret this replaces was 34 T of the
+        ; 1,570.
+        ld      hl, (cpt1)
+        ld      de, (step1)
+        add     hl, de
+        ld      (cpt1), hl
+        ld      hl, (cpt1 + 2)
+        ld      de, (step1 + 2)
+        adc     hl, de                  ; carry survives the two LDs
+        ld      (cpt1 + 2), hl
+        ld      hl, (cpt2)
+        ld      de, (step2)
+        add     hl, de
+        ld      (cpt2), hl
+        ld      hl, (cpt2 + 2)
+        ld      de, (step2 + 2)
+        adc     hl, de
+        ld      (cpt2 + 2), hl
+
+        ; ++hliney, and stop once it passes the bottom edge
+        ld      hl, (hliney)
+        inc     hl
+        ld      (hliney), hl
+        ld      a, h
+        or      a
+        jr      z, .y_low
+        bit     7, h
+        jp      z, .ret                 ; positive and > 255: off the bottom
+        jr      .y_ok                   ; still negative: keep walking
+.y_low:
+        ld      a, l
+        cp      SCR_H
+        jp      nc, .ret                ; y > 191
+.y_ok:
+        ld      hl, (row_count)
+        dec     hl
+        ld      (row_count), hl
+        ld      a, h
+        or      l
+        jp      nz, .row
+        jp      .trapezoid
+.ret:
+        ret
 
 ;-----------------------------------------------------------------------------
-; The three fills. HL = first pixel, B = count (0 means 256), A = colour.
-; No end masking at all: at one byte a pixel every span is whole bytes, which
-; is the masking the 4bpp original needs at both ends of all three of these.
+; The three fills. HL = the first pixel, DE = length 1..256, A = colour.
+;
+; All three are UNROLLED with a computed entry, which is the second half of what
+; check-polycost said was needed: the loops they replace charged 21.3 T an opaque
+; byte and 32.0 T a blend byte, measured, against step 0's 10.7 and 19 for exactly
+; this technique. A DJNZ is 13 T of the 24 an opaque byte used to cost.
+;
+; No end masking at all: at one byte a pixel every span is whole bytes, which is
+; the masking the 4bpp original needs at both ends of all three of these.
 ;-----------------------------------------------------------------------------
 span_opaque:
         and     $0F                     ; index in the low nibble, top clear
-.l:     ld      (hl), a
+        ex      de, hl                  ; HL = length, DE = dest
+        add     hl, hl                  ; 2 bytes a pixel in the block below
+        ex      de, hl                  ; DE = length*2, HL = dest
+        push    hl
+        ld      hl, opaque_end
+        sbc     hl, de                  ; carry is clear after ADD HL,HL
+        ld      (opaque_jp + 1), hl
+        pop     hl
+opaque_jp:
+        jp      0000
+        DUP 256
+        ld      (hl), a
         inc     l
-        djnz    .l
+        EDUP
+opaque_end:
         ret
 
 span_blend:
         ; Colour 0x10: set bit 3 of the index. The game's palettes already hold
         ; the blended variants at entries 8-15, so this needs no palette work.
-.l:     set     3, (hl)
+        ;
+        ; PUSH THE DESTINATION FIRST. Length*3 needs a copy of the length in a
+        ; pair, and the only spare pair is DE - which is holding the destination.
+        ; The first version wrote the length over it and then restored the length
+        ; as the destination, which the Gate C bisect named in one run: polygon
+        ; 35, bucket 'blend'.
+        push    hl                      ; the destination
+        ex      de, hl                  ; HL = length
+        ld      d, h
+        ld      e, l                    ; DE = length
+        add     hl, hl                  ; 2 * length
+        add     hl, de                  ; 3 * length, 3 bytes a pixel
+        ex      de, hl                  ; DE = 3 * length
+        ld      hl, blend_end
+        or      a
+        sbc     hl, de
+        ld      (blend_jp + 1), hl
+        pop     hl                      ; HL = the destination again
+blend_jp:
+        jp      0000
+        DUP 256
+        set     3, (hl)
         inc     l
-        djnz    .l
+        EDUP
+blend_end:
         ret
 
 span_copy:
         ; Colour above 0x10: take the pixels from page 0 at the same coordinate.
+        ; The entry has to be computed BEFORE DE becomes the destination, because
+        ; the block needs both pointers.
+        ex      de, hl                  ; HL = length, DE = dest
+        add     hl, hl
+        add     hl, hl                  ; HL = length*4, 4 bytes a pixel
+        ex      de, hl                  ; DE = length*4, HL = dest
+        push    hl
+        ld      hl, copy_end
+        or      a
+        sbc     hl, de
+        ld      (copy_jp + 1), hl
+        pop     hl
         ld      d, h
-        ld      e, l
+        ld      e, l                    ; DE = destination
         ld      a, h
         sub     (DWIN - SWIN) >> 8
-        ld      h, a                    ; HL = the source, DE = the destination
-.l:     ld      a, (hl)
+        ld      h, a                    ; HL = source, same offset in page 0
+copy_jp:
+        jp      0000
+        DUP 256
+        ld      a, (hl)
         ld      (de), a
         inc     l
         inc     e
-        djnz    .l
+        EDUP
+copy_end:
         ret
 
 ;-----------------------------------------------------------------------------
@@ -880,7 +962,6 @@ hliney:         dw 0
 row_count:      dw 0
 sx1:            dw 0
 sx2:            dw 0
-span_fn:        dw 0
 cur_band:       db 255
 cs_left:        dw 0
 t_p1:           db 0
