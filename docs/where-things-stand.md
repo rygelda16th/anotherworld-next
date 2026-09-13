@@ -23,16 +23,25 @@ measurement that is the **only** thing that needs to be.
 | B - toolchain | **done**, Gate B passed |
 | C - rasteriser core | **done**, Gate C passed, 61 polygons pixel-exact |
 | C - 16-bit geometry, polygon reader, segment window | **done**, Gates C4 and C5a passed |
-| D - the virtual machine | **built**, Gate D claims 1 and 3 passing as far as traced |
-| E - pacing, input, sound | **specified and priced**, not built |
+| D - the virtual machine | **done**, Gate D passed, 763 records identical, repeatably |
+| E - pacing, input, sound | **built and gated** |
 | F - the rest of the game | **scoped**, three known gaps |
 
-**Eight of the nine gates pass.** The exception is Gate D: the virtual machine is
-built and its opcode stream has been observed identical to the engine's for 354
-consecutive records, but not repeatably - see *Gate D* for what was ruled out and
-what to try next. Everything else - the rasteriser, the polygon reader, the segment
-window, the loader, the mixer, pacing, input and six of the seven parts - is gated
-and green.
+**All nine gates pass.** Gate D closed on 2026-09-13: the virtual machine dispatches
+exactly what the engine dispatches - all 763 records of the reference, thread by
+thread and opcode by opcode - and it does it three runs in a row with the same
+numbers, which is the part that had been missing. The comparison now happens ON the
+machine, against the engine's own stream shipped in the .nex, so what crosses the
+boundary is a 32-byte verdict rather than eight kilobytes of trace.
+
+What had been wrong was not the VM. z88dk's exit path is `im 1 / ei / ret`, and `EI`
+delays interrupt acceptance by exactly one instruction - the `RET` - so the interrupt
+lands before the caller's next instruction runs, and `$0038` here is not the ROM but
+the bytecode segment MMU0 and MMU1 are holding. The machine executed Another World's
+bytecode as Z80 code about twenty milliseconds after every successful run, and the
+checker was reading the wreckage. **The full account is in D5**, because four other
+real faults were found and fixed while chasing it and each one looked like the
+answer.
 
 Nothing here is a guess unless it says so. Every number was measured on the
 machine, on the host, or read out of a pinned source and cited.
@@ -1277,7 +1286,7 @@ Also worth carrying: `op_updateMemList` loads ONE resource inside a frame, and t
 largest is 65,230 bytes. That is a frame the pacing has to be told about however
 fast the card is.
 
-### D5. Gate D - built, and the VM is right as far as it is traced
+### D5. Gate D - PASSED, and what it cost to get there
 
 `make check-boot`. The C virtual machine is written - 426 lines, **7,095 bytes of
 code**, which puts risk 6 to rest - and it loads a bytecode segment off the card
@@ -1297,18 +1306,16 @@ of the engine's: **nineteen records, every one identical** - the thread edge, th
 the second frame's thread edge and its run of five `updateMemList` calls. Every
 field: thread, program counter, opcode.
 
-**The best verified result is 354 of 354 records identical**, reached after moving
-the VM's C down to `$8C00` so the stack had room. Every record: the thread edge, the
-opcode, the program counter, across many frames and several threads.
+**The final result is 763 of 763 records identical, three runs with the same
+numbers** - every record the reference contains, thread by thread, opcode by opcode,
+program counter by program counter. `make check-boot` prints it.
 
-**But it is not repeatable, and that is the honest headline.** The same inputs have
-given 0, 64, 122 and 354 matching records on different runs. Non-determinism with
-identical inputs means something uninitialised, and one cause was found and fixed -
-**ZEsarUX's `smartload` does not clear RAM between loads, so a second run inherits
-the first run's memory** and C's statics do not start at zero the way C assumes.
-`main` now states every one of them explicitly, which a `.nex` should do anyway
-because it cannot assume a clean machine. It did not make the result repeatable, so
-there is at least one more.
+**Getting there took most of a session, and the history below is kept deliberately.**
+For a long time the same inputs gave 0, 64, 122 and 354 matching records on different
+runs. Non-determinism with identical inputs means something uninitialised, and four
+separate uninitialised or misconfigured things were found and fixed along the way -
+each of them a genuine fault, none of them the cause. That is the interesting part,
+and *The interrupt that ate the evidence* at the end of this section is the answer.
 
 Ruled out, so that nobody re-runs them: the ZRCP client does not desynchronise (30
 interleaved reads of a known byte, all correct); the two `.exp` files share no
@@ -1348,10 +1355,6 @@ presented as something other than a memory-map problem:
 | `$C000-$DFFF` | the trace buffer |
 | `$E000-$FFFF` | the loader's staging window |
 
-**So Gate D stands at: the VM is built, its initial state is exactly the engine's,
-and its opcode stream has been observed identical for 354 consecutive records - but
-not repeatably.** It is the one gate of nine that does not pass.
-
 **So the channel went.** The C now writes everything - the header the checker pokes
 and the records it reads - into one 8K block at `$C000`, which it has demonstrably
 always been able to write since records appeared there correctly all along. After
@@ -1385,6 +1388,130 @@ it.
 The seed is taken from the host's own run, because the reference sets variable
 `0x3C` from `time(0)` and the two streams would diverge the first time the
 bytecode read it.
+
+#### The interrupt that ate the evidence
+
+**z88dk's exit path is `im 1 / ei / ret`.** Four bytes, `ED 56 FB C9`, at `$8C40` in
+this build, visible in `build/vm_CODE.bin` with `xxd`. And `EI` does not take effect
+immediately: the Z80 defers interrupt acceptance by exactly one instruction, and that
+one instruction is the `RET`. So the interrupt is taken **before the caller's first
+instruction runs**.
+
+`$0038` is not the ROM here. MMU0 and MMU1 are holding the bytecode segment the
+virtual machine has spent the last two hundred milliseconds reading. So the Z80
+started executing Another World's bytecode as Z80 instructions, the stack ran down
+from `$BF00` and wrapped, and the smear covered every counter this gate reads - the
+record count, the frame count, the fault code, the segment length, all of it, with
+whatever those bytes happened to push.
+
+**That is the whole of "Gate D will not repeat".** The virtual machine had been
+finishing correctly in under a quarter of a second and then destroying itself about
+twenty milliseconds later, and the checker was reading the wreckage. How much
+survived depended on how long the read took, which is why identical inputs gave
+different numbers. A `di` placed immediately after `call CC_ORG` is one instruction
+too late, every time; it was tried, and it changed the smear without stopping it.
+
+**The fix is that `main` never returns.** Its last statement is `for (;;)
+CTL_FINISHED = 0x5A;`. Nothing runs the code that turns interrupts on, so nothing
+needs to be true about the ROM, the MMU or the timing. `write_trace` came out of the
+path with it - calling esxDOS meant putting the ROM back over `$0000-$3FFF`, taking
+the bytecode out from under a machine still holding pointers into it, and the `RST
+$08` did not come back.
+
+**What found it, after everything else had failed, was stopping earlier on purpose.**
+`stage_stop` in `src/vmtest.asm`: 1 clears the bytecode pages and stops, 2 loads the
+segment and stops, 0 runs the lot. Stages 1 and 2 were clean and repeatable and the
+loader read 9,871 bytes - exactly `RES18.BIN` - every time. Then an **opcode budget
+of zero**: the C dispatches nothing, sets `finished` to `$5A`, and leaves a control
+block that reads back perfectly - segment length 9,871, expected count 679,
+out-of-budget set - while `done` is still zero, because the assembly never got back
+to set it. The virtual machine cannot have been at fault in that run. Everything
+after the C was.
+
+**The general lesson, which is not specific to this project.** A program that hands
+control to somebody else's runtime gets that runtime's interrupt state back, not its
+own. Ask what the CRT does on exit before believing any measurement taken after it -
+and if a measurement is not repeatable, suspect the reader before the thing being
+read.
+
+#### The comparison moved onto the machine
+
+The engine's own stream now ships **in the .nex at `$E000`** - `tools/mkexpected.py`
+emits it as four-byte records - and `aw_logrec` checks each record against it as the
+record is written. On a mismatch the VM stops dead: it records the index, its own
+record and the engine's, and returns. Nothing runs afterwards.
+
+That shape is better than a trace for three reasons, and the third is the one that
+mattered:
+
+1. The verdict is 32 bytes, and the checker reads it twice and compares, so a bad
+   read is a verdict that disagrees with itself rather than a rasteriser bug.
+2. It says WHERE, at the record, rather than handing back eight kilobytes to diff.
+3. **It stops before the damage.** Whatever the VM did wrong, it did it before the
+   first wrong record; anything that destroys state does so after. A trace read at
+   the end can only ever show the aftermath.
+
+`src/aw/vm.c` also gained a fault trap - a code, the program counter and one word of
+context, first one wins - for five conditions the reference never has to check
+because its bytecode is always bytecode:
+
+| fault | what it means |
+|---|---|
+| 1 | the pc left the segment that was loaded |
+| 2 | `resetThread` over a range outside the thread table |
+| 3 | an opcode the reference calls `error()` on |
+| 4 | `ret` with nothing on the call stack |
+| 5 | a record the engine did not produce |
+| 6 | the reference ran out, every record in it matched |
+
+Fault 2 deserves a note. `op_resetThread` takes a first thread and a last, masks the
+last to 0-63 as the reference does, and takes the difference **as `int8_t`** - which
+is what `vm.cpp:96-99` does. A first of 200 with a last masked to 10 gives a
+*positive* count of 67: sixty-seven words written past a sixty-four word array, over
+whatever follows it. The reference has the same hazard and never meets it, because
+its script is always the script. Ours was reading past the end of a segment at the
+time, so it met it immediately.
+
+#### Three traps in the harness, each of which produced a wrong answer first
+
+**The reference must be LONGER than the run under test.** The first version asked the
+probe for 40 frames and the machine for 40 frames, and the machine matched all 679
+records and then produced a 680th with nothing to compare it against. That is neither
+a pass nor a failure - it is a reference that ended before the test did.
+`AW_OP_FRAMES` in `preflight/hostprobe/headless.cpp` now sets the length, and
+`tools/checkboot.py` takes its frame count from the reference rather than from a
+constant.
+
+**The reference must be generated with the input the machine has, which is none.**
+A reference generated with the probe's synthetic input diverged at record 53, on a
+`condJmp` at pc 135 reading variable `0xFA` - the hero's action button, which
+`inp_updatePlayer` sets and the VM under test has no way to know about. The bytecode
+there is `0a 01 fa 00 09 b8`: compare variable 250 against 0, jump to 2488 if it
+differs. The engine jumped and the machine did not, and both were right about their
+own world. Run the probe with autoplay off for this gate.
+
+**The probe counts BLITS, not VM frames.** `instrFrame()` hangs off
+`Video::updateDisplay`, so what `ops.txt` labels frame *N* is the *N*th blit. 45 of
+the probe's frames is 44 of the VM's here. The record stream carries no frame
+boundaries, so the comparison cannot tell them apart and does not need to - but
+asking both sides for "45 frames" asks for different amounts of work, and the
+difference shows up as the reference running out early.
+
+#### Two smaller things, recorded so nobody spends the time again
+
+**ZEsarUX breakpoints are not a debugging tool in this container.** Two independent
+reasons. Conditions reject a `0x` prefix - `PC<0x8000` is refused, `PC<32768` and
+`PC<8000h` are accepted - and the default action on a hit is to *open the debugger
+window*, which `--vo null` cannot do, so the CPU never stops. Several hours went into
+breakpoints that were firing and doing nothing. `set-breakpointaction` with `write`
+is the headless-usable form; stopping after a named stage is better.
+
+**`clear_code`, because the bytecode window reaches eight 8K pages and the segment
+fills two.** Everything past the segment's last byte was the previous run's memory,
+because `smartload` does not clear RAM. The fill byte is a variable rather than a
+constant so the experiment can be run in reverse: if behaviour changes when the fill
+changes, the VM is reading past the end of what it was given, which is a fault in the
+VM rather than in the memory it was handed.
 
 #### The stack was in the bytecode window, and that is worth the whole section
 
@@ -1452,18 +1579,22 @@ the outside:
    four bypass values. Read back over ZRCP.
 2. **A frame advances.** Thread 0's PC differs between two reads, and the
    `pauseThread` count is non-zero - a VM that never yields would also "advance".
-3. **The opcode trace matches the host.** Extend the host probe to log
-   (thread, pc, opcode) for the first N frames, log the same on the machine into a
-   ring in a spare page, and compare. This is the gate that matters: it catches a
-   wrong operand length at the opcode that has it, rather than as a wrong picture
-   4,000 opcodes later. It is the VM's equivalent of Gate C's bisect, and for the
-   same reason - **a whole-image comparison only ever says that something is
-   wrong**.
+3. **The opcode trace matches the host.** **This is the claim that matters, and it
+   passes: 763 of 763 records.** It catches a wrong operand length at the opcode that
+   has it, rather than as a wrong picture 4,000 opcodes later. It is the VM's
+   equivalent of Gate C's bisect, and for the same reason - **a whole-image
+   comparison only ever says that something is wrong**. The comparison happens on the
+   machine, against the engine's own stream in the .nex, and the VM stops on the first
+   record that differs.
 4. **Then the intro renders**, and `check-ref`'s page comparison can be run against
-   the machine rather than against the Python reference.
+   the machine rather than against the Python reference. **This one is not done**: it
+   is D4, the next piece of Phase D, and it is a milestone rather than part of Gate D.
 
-Gate D3 is a prerequisite for D4 being meaningful, and C4 (the reader) is a
-prerequisite for D4 rendering anything.
+Claims 1, 2 and 3 are Gate D and all three pass. Gate D3 was the prerequisite for D4
+being meaningful; C4 (the reader) is the prerequisite for D4 rendering anything, and
+it passed earlier. **So D4 is unblocked on both sides** - what it needs now is the
+video calls wired to the real rasteriser instead of to the counters, and the stubbed
+`op_updateMemList` replaced by the loader step 5 measured.
 
 ---
 
@@ -1797,7 +1928,7 @@ unblocked only once the one it names has produced a number.
 | 3a | ~~C5a, widen the geometry to 16 bits~~ **DONE** | the machine reader was blocked on it: the trace reaches 483 and the rasteriser held bytes | Gate C with a `wide` bucket reaching 303, and `calc_step` **576 of 576** exact as words |
 | 4 | ~~C6, the segment window~~ **DONE** | a 65,230-byte segment cannot be mapped flat | the same gate: the whole 65,230-byte segment is read through a two-page window at `$0000` |
 | 5 | ~~D4's read rate~~ **DONE, and the answer is "not here"** | a four-second part load is a design decision, not a detail | `make check-load`: the path works and every byte arrives; the rate is r = -0.518 against size, so the emulator cannot time it |
-| 6 | **D2 and D3, the scheduler and opcodes** - built, gate **NOT** passing | the rest of the port hangs off them | Gate D: 354 records observed identical, not repeatably. The one gate of nine that does not pass |
+| 6 | **D2 and D3, the scheduler and opcodes** - built and **gated** | the rest of the port hangs off them | Gate D: 763 of 763 records identical, three runs with the same numbers |
 | 7 | ~~E1 and E2, pacing and input~~ **DONE** | the game is unplayable without them and they are small | `make check-pace`: all 32 input combinations, and a 4-slice frame doing 6 refreshes of work comes out at 6 |
 | 8 | ~~E3, sound~~ **DONE** | priced at step 1, and the ring proven on the other project | `make check-snd`: four voices byte-exact at three block lengths, 9 ring wraps, nothing outside it |
 | 9 | ~~F1, a later part~~ **DONE** | everything so far was two parts of ten | `make check-parts`: six of seven parts run, and four of the five numbers that rested on two parts move |
@@ -1948,3 +2079,24 @@ Method, which cost more than the code did:
 - **A trace-window analysis cannot answer a whole-run question.** Voice
   concurrency needed the entire run, so the sound log deliberately ignores the
   traced window that everything else respects.
+- **A runtime you did not write returns its interrupt state, not yours.** z88dk's
+  exit is `im 1 / ei / ret`, and `EI` defers acceptance by one instruction - the
+  `RET` - so the interrupt lands before the caller's next instruction and a `di`
+  placed after the call is always one instruction late. With the bottom 16K paged to
+  data rather than ROM, `$0038` is data, and the machine executes it. Cost: most of a
+  session, and four wrong diagnoses that were each a real fault.
+- **When the result is not repeatable, suspect the reader.** Every one of 0, 64, 122
+  and 354 matching records was a correct read of a machine that had already started
+  destroying itself. Nothing was wrong with the thing being measured.
+- **Move the comparison to where the fault happens.** Checking each record against
+  the reference *on the machine* and stopping dead beats reading a trace afterwards,
+  because whatever went wrong went wrong before the first bad record and whatever
+  destroys the evidence happens after it.
+- **A reference must outlast the run it judges, and share its inputs.** A 40-frame
+  reference against a 40-frame run ends mid-test and reports neither pass nor fail. A
+  reference generated with synthetic input diverges at the first `condJmp` on the
+  hero's action variable, and both sides are right about their own world.
+- **Stopping after a named stage is worth more than a breakpoint.** ZEsarUX's
+  breakpoints reject a `0x` prefix and their default action opens a window `--vo null`
+  cannot open, so they fire and do nothing. A `stage_stop` byte and an opcode budget
+  of zero localised in two runs what breakpoints had failed to localise in dozens.
