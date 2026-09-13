@@ -48,6 +48,7 @@ are now optional. See *What has been measured*.
     make check-span    step 0: what one polygon span costs
     make check-cc      Gate B: C calls assembly at a fixed address and returns
     make check-poly    Gate C: the rasteriser, pixel-exact vs the reference
+    make check-mix     step 1: what one output sample of the mixer costs
     make frame-load    every frame against the pause its own script asked for
     make voices        how many mixer voices are live, and at what rates
     make toolchain-diff  has the shared toolchain drifted from wolf3d-next?
@@ -594,6 +595,64 @@ spans are under 47 bytes and the median is far shorter, so **re-check that
 crossover against gameplay's distribution** before trusting it: the fallback may
 be the common path, not the exception.
 
+### The mixer, priced on the machine
+
+`make check-mix`, step 1 of the plan, fitted over five block lengths with a NULL
+mode subtracting the harness - the same method `check-span` used, and for the same
+reason: a figure obtained by dividing one measurement carries whatever else was in
+it.
+
+Correctness first, because a benchmark of wrong code measures nothing. All 256
+volume-table entries match the reference's `(int)b * volume / 0x40` computed on
+the host, the sample ramp is exact, and an eight-sample mix matches a host walk of
+the same 16.8 accumulator.
+
+| T-states per output sample | |
+|---|---|
+| the advance alone, branchless | 27.7 |
+| one voice, table volume, store and bias | 58.9 |
+| one voice, accumulate and saturate | 79.1 |
+| **four voices, unrolled** | **295.2** |
+| four voices, rolled | 325.4 |
+| one voice through Z80N `MUL D,E` | 186.2 |
+| one voice with the reference's interpolation | 178.4 |
+
+**Four voices at each candidate rate**, against the renderer's measured 24.8%:
+
+| rate | mixer | with the renderer |
+|---|---|---|
+| 11,025 | 11.6% | 36% |
+| 15,625 | 16.5% | 41% |
+| **22,050, the reference's own** | **23.2%** | **48%** |
+
+**The plan's threshold was 35% for four voices at 22,050, and the measurement is
+23.2%, so the ring-and-tick design stands and the reference's own output rate is
+affordable.** Decided: mix at 22,050 Hz. The estimates the plan carried - 22%, 16%
+and 11% - came out at 23%, 16% and 12%, which is the one part of this document
+that was scaled from another project rather than measured, and it held.
+
+Three decisions fall out of the same run:
+
+- **The volume table wins, and the 16,384 bytes are well spent.** `MUL D,E` costs
+  **127 T a sample more**, because an unsigned multiply of a signed sample is
+  magnitude-then-sign plus a six-place shift of a 16-bit product, and the table is
+  `ld e,a` / `ld a,(de)`.
+- **Drop the linear interpolation.** It costs **+119 T a sample, 203% more than
+  the whole rest of a voice**, for an anti-aliasing nicety. Build it later behind a
+  switch if a listening test asks for it.
+- **Unroll by four**: 30 T a sample on four voices, for 240 bytes of code.
+
+**The advance is 47% of a storing voice**, which is why it must be branchless: the
+fractional add sets carry, `LD` does not disturb it, so `ADC HL,DE` applies the
+integer increment and the fraction's carry in one 15 T instruction. The first
+draft used `JR NC` / `INC HL` and cost 14 T a sample more. The page-boundary,
+sample-end and loop-point tests are **not** in the loop - the block is split at
+each of those before the loop runs, which is O(1) a block instead of 18 T a voice
+a sample.
+
+Additivity holds to 8.9%: one store plus three saturating voices predicts 296 T
+against 325 measured for the rolled version.
+
 ### Palette loss
 
 Nine palette resources, 32 palettes of 16 colours each, RGB444 down to RGB333.
@@ -1117,24 +1176,20 @@ Three things Another World adds:
 3. **Loops**, which Wolf3D has none of. A looping voice never ends on its own, which
    is why occupancy is what it is.
 
-**The output rate is the one real decision**, and it is a trade with no correct
-answer available from the source:
+**The output rate was the one real decision, and it is now measured rather than
+argued.** `make check-mix` says four voices cost **295 T an output sample**, so:
 
-| rate | cost at 4 voices | what it loses |
-|---|---|---|
-| 22,050, as the reference | ~22% of the machine | nothing |
-| 15,625, one per scanline | ~16% | decimates above 15.6 kHz |
-| 11,025 | ~11% | decimates the top third of the frequency table |
+| rate | mixer | with the renderer's 24.8% | |
+|---|---|---|---|
+| **22,050, as the reference** | **23.2%** | 48% | **chosen** |
+| 15,625, one per scanline | 16.5% | 41% | the first lever if needed |
+| 11,025 | 11.6% | 36% | decimates the top third of the frequency table |
 
-Those percentages are scaled from wolf3d-next's measured mixer and are the least
-evidenced numbers in this document. Measure before choosing. Against a mean
-rasteriser load of 24.8%, even the expensive option leaves half the machine idle,
-so the answer is probably 22,050 - but say so after measuring, not before.
-
-**Drop the linear interpolation**, at least at first: it doubles the fetches and
-adds a multiply per voice per sample, and its purpose is to soften the aliasing of
-an Amiga sample played at the wrong rate. Whether it is audible here is a listening
-question, and the honest way to answer it is to build both and compare recordings.
+**Mix at 22,050 Hz**, the reference's own rate, so nothing is lost to decimation.
+See *The mixer, priced on the machine* for the rest: the volume table beats
+`MUL D,E` by 127 T a sample, interpolation costs 203% more than the whole rest of a
+voice and is dropped, and the advance must be branchless because it is 47% of a
+storing voice.
 
 **What cannot be a byte-exact gate.** Every other gate here compares against the
 real engine byte for byte. Sound cannot: we choose a different output rate, so the
@@ -1213,7 +1268,7 @@ unblocked only once the one it names has produced a number.
 
 | # | do this | because | gate |
 |---|---|---|---|
-| 1 | **price the mixer's inner loop** for one voice | it is the largest unpriced cost in the project, and it decides the output rate | a fitted T-per-output-sample, as `check-span` fitted T-per-byte |
+| 1 | ~~price the mixer's inner loop~~ **DONE** | it was the largest unpriced cost, and it decided the output rate | `make check-mix`: **295 T a sample for four voices**, 23.2% of the machine at the reference's own 22,050 Hz |
 | 2 | **measure the per-polygon setup cost** by fitting `check-poly` over several polygon limits | gameplay spends its time there and every budget number carries it as a guess | a fitted T-per-polygon |
 | 3 | **C4, the polygon reader** | nothing renders a real scene without it | the Gate C vector, redrawn from the autoplay trace so bit-6 records with real zooms are covered |
 | 4 | **C6, the segment window** | a 65,230-byte segment cannot be mapped flat | a read of the last byte of the largest cinematic segment |
@@ -1227,11 +1282,10 @@ Steps 1 and 2 are measurements, not code, and they are first because both of the
 can still change what gets built. Steps 3 and 4 are the remainder of Phase C and
 can proceed in parallel with them.
 
-**The one thing that would change the plan wholesale** is step 1 coming back at
-more than about 35% of the machine for four voices. In that case sound moves from
-"a tick that mixes ahead of a ring" to something that gives up fidelity on
-purpose - fewer voices, a lower rate, or the nearest-sample shortcut - and that is
-a conversation to have with a number in hand, not a decision to take now.
+**Step 1 came back under its threshold.** 23.2% of the machine at the reference's
+own rate against a 35% limit, so sound keeps its fidelity: 22,050 Hz, four voices,
+the volume table rather than `MUL`, and no interpolation. The thing that would have
+changed the plan wholesale did not happen, and the plan is unchanged below.
 
 ---
 
@@ -1241,15 +1295,15 @@ Reordered on 2026-09-13. What had been risk 1 is now risk 7, and what had been
 risk 2 is now risk 1 - which is the ordinary consequence of measuring two things
 that had been estimated.
 
-1. **The mixer is a permanent cost and its budget is the least evidenced number
-   here.** Sound is live 98.3% of the intro at a mean of 2.83 voices, so the
-   mixer runs essentially always, and the three output-rate options are costed by
-   scaling wolf3d-next's measurement rather than by measuring this mixer. If
-   22,050 Hz with four voices costs 35% rather than the estimated 22%, sound and
-   rasteriser together are most of the machine. **Cheapest experiment:** port the
-   inner mix loop for one voice, benchmark it with `check-span`'s harness - a null
-   mode and a settable length, so the loop subtracts itself - and multiply by
-   four. A day's work that prices the whole phase.
+1. ~~**The mixer is a permanent cost and its budget is the least evidenced number
+   here.**~~ **Closed by measurement.** The experiment named here was run:
+   `make check-mix` prices four voices at 295 T an output sample, **23.2% of the
+   machine at the reference's own 22,050 Hz** against a threshold of 35%. Sound is
+   still live 98.3% of the intro at a mean of 2.83 voices - that has not changed -
+   but it is affordable at full fidelity. What remains of the risk is that this
+   prices the *mixer*, not the *player*: the tick that decides which voices are
+   live, splits blocks at page and loop boundaries, and reads the DMA's position is
+   unwritten, and wolf3d-next's equivalent cost seven faults to get right.
 2. **Everything is measured on two parts out of ten.** Parts 2 and 3 are all the
    probe reaches. The hierarchy depth of 4, the fan-out of 119, the 83-byte
    record, the heap peak of 241,363 and every frame-cost percentile are properties

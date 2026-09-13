@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-poly toolchain-diff
+        check-poly check-mix toolchain-diff
 
 help:
 	@echo "make certs          extract the corporate TLS-inspection CA for the image"
@@ -41,6 +41,7 @@ help:
 	@echo "make check-span     Step 0: what one polygon span costs, measured"
 	@echo "make check-cc       Gate B: C calls assembly at a fixed address and returns"
 	@echo "make check-poly     Gate C: the rasteriser, pixel-exact vs the reference"
+	@echo "make check-mix      Step 1: what one output sample of the mixer costs"
 	@echo "make toolchain-diff has the shared toolchain drifted from wolf3d-next?"
 
 certs:
@@ -163,6 +164,11 @@ check-poly: | $(BUILD)
 check-cc: cc asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkcc.py'
+
+# Step 1 of the plan: price the mixer before designing around it.
+check-mix: asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkmix.py'
 
 # ---- decision 7's drift check ----------------------------------------------
 # The shared files are duplicated from wolf3d-next rather than submoduled. This
