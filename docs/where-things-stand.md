@@ -57,6 +57,7 @@ are now optional. See *What has been measured*.
     make check-load    step 5: esxDOS reads correctly; its speed needs hardware
     make check-pace    Gate E: the input mapping, and pacing to its deadline
     make check-snd     Gate E: four voices byte-exact, and the DMA's output rate
+    make check-parts   step 9: every part the probe can reach, measured separately
     make check-mix     step 1: what one output sample of the mixer costs
     make check-polycost step 2: T a polygon and T a span, measured apart
     make frame-load    every frame against the pause its own script asked for
@@ -1630,13 +1631,60 @@ block stops at its end whatever WR5 says - so none of it is reproducible there.
 
 Scoped, not specified, and it is honest to say which parts are genuinely unknown.
 
-**F1. The parts beyond the intro.** Everything measured here is parts 2 and 3 of
-ten. The remaining parts are bigger in bytecode - part 5 is 62,683 bytes against
-the intro's 9,871 - and the bit-6 opcode form with a real zoom and the
-`_segVideo2` buffer is a gameplay path the intro never takes. The cheap experiment
-is the probe's own password screen: `inp_handleSpecialKeys` requests part 0x3E89 on
-the code key, so a probe that types a known level code reaches later parts without
-playing through them.
+**F1. The parts beyond the intro - DONE, and six of seven of them run.**
+
+`make check-parts`. The game's own route onward is the password screen and its codes
+are not in the data, so the probe requests a part directly - which
+`engine.cpp:75-85` warns can crash. Each part is therefore reported separately and
+the ones that did not run say so, rather than being averaged in.
+
+| part | frames in it | drew | polys/frame | spans/frame | worst frame | bitmaps | verdict |
+|---|---|---|---|---|---|---|---|
+| 3, water | 5,795 | 4,169 | 62.3 | 429 | 3,637 | 0 | ran |
+| **4, jail** | 5,795 | 5,698 | 63.0 | **1,121** | **12,329** | 0 | ran |
+| 5, cave | 5,795 | 3,977 | 17.4 | 96 | 2,643 | 0 | ran |
+| battlechar | 5,795 | 5,470 | 75.7 | 764 | 6,946 | 0 | ran |
+| **7, arena** | 5,795 | 5,253 | 46.9 | 490 | 3,096 | **70** | ran |
+| 8, baths | 5,795 | 345 | 1.5 | 27 | (20,306) | 0 | **did not run** |
+| 9, final | 5,795 | 5,695 | 4.2 | 43 | 225 | 0 | ran |
+
+**Five numbers this project rested on came from two parts, and four of them move:**
+
+- **the worst frame is 12,329 spans, in the jail** - 3.4 times the 3,637 that parts
+  2 and 3 gave.
+- **the deepest hierarchy nesting is 5, not 4.** The reader's stack is eight deep
+  with an assert, which the plan argued for precisely because the measurement was
+  of two parts; it earned its keep.
+- **peak script-heap use is 305,919 bytes, not 241,363** - 38 pages of 8K, 19 banks
+  rather than 15.
+- **the pause the scripts ask for is not one profile.** Part 3 asks for 4 slices
+  71.8% of the time; **the jail asks for 7 slices - 140 ms - 78.9% of the time.**
+- widest fan-out (99 here against 119) and the longest record (40 vertices) do not
+  move.
+
+**And the budget holds, which is the point of having measured it.** Scored against
+the pause each frame itself requests:
+
+| | mean load | p99 | frames overrunning |
+|---|---|---|---|
+| part 3, gameplay | 37.3% | 3.97 | 0.97% |
+| **part 4, the jail** | **50.8%** | 4.29 | **0.53%** |
+| part 7, the arena | 42.8% | 3.62 | 0.42% |
+
+The jail draws three times the spans and overruns *less often*, because its scripts
+ask for 140 ms a frame rather than 80. With the mixer's 23.2% on top, the jail is
+74% of the machine as the rasteriser stands and 52% at the floor - tight, and the
+two remaining optimisations are what the headroom is for.
+
+**70 full-screen bitmaps load in the arena.** That path had zero loads in 72,000
+frames of parts 2 and 3, which is why Gate A covers none of it and
+`tools/mkassets.py`'s deplaner has never been compared against the engine's. It is
+locatable now, and that comparison is a host-only check needing no machine.
+
+One fault worth recording, because the wrong version was far more convincing than a
+crash: the probe writes `frames.txt` into its own working directory, and running it
+from the repository root left every part reading one stale file - so the table came
+out **identical for seven different parts** and called them all sane.
 
 **F2. The full-screen bitmap path, which no gate covers.** `RT_POLY_ANIM`
 resources - 12 of them, 32,000 bytes each - are loaded into a staging buffer and
@@ -1692,7 +1740,7 @@ unblocked only once the one it names has produced a number.
 | 6 | **D2 and D3, the scheduler and opcodes** | the rest of the port hangs off them | Gate D, and D3's opcode trace before D4's picture |
 | 7 | ~~E1 and E2, pacing and input~~ **DONE** | the game is unplayable without them and they are small | `make check-pace`: all 32 input combinations, and a 4-slice frame doing 6 refreshes of work comes out at 6 |
 | 8 | ~~E3, sound~~ **DONE** | priced at step 1, and the ring proven on the other project | `make check-snd`: four voices byte-exact at three block lengths, 9 ring wraps, nothing outside it |
-| 9 | **F1, a later part** | everything so far is two parts of ten | the same reports, over part 5 |
+| 9 | ~~F1, a later part~~ **DONE** | everything so far was two parts of ten | `make check-parts`: six of seven parts run, and four of the five numbers that rested on two parts move |
 
 Steps 1 and 2 are measurements, not code, and they are first because both of them
 can still change what gets built. Steps 3 and 4 are the remainder of Phase C and
@@ -1738,7 +1786,16 @@ that had been estimated.
    does not exist yet - a zoom other than the identity, a hierarchy five deep, a
    record whose first byte is neither a leaf nor a 2.
 
-3. **Everything is measured on two parts out of ten.** Parts 2 and 3 are all the
+3. ~~**Everything is measured on two parts out of ten.**~~ **Closed.**
+   `make check-parts` runs six of the seven, and four of the five numbers that
+   rested on two parts moved: the worst frame is 12,329 spans not 3,637, the
+   deepest nesting 5 not 4, the peak heap 305,919 bytes not 241,363, and the pause
+   profile differs by part - the jail asks for 140 ms a frame where part 3 asks for
+   80. The budget survived all of it: the jail draws three times the spans and
+   overruns *less* often. What remains is that part 8 does not survive being
+   requested cold, and that no part is reached the way a player reaches it.
+
+   The original text follows. Parts 2 and 3 were all the
    probe reaches. The hierarchy depth of 4, the fan-out of 119, the 83-byte
    record, the heap peak of 241,363 and every frame-cost percentile are properties
    of those two parts. **Cheapest experiment:** the probe types a level code at the

@@ -58,6 +58,17 @@ extern void instrThread(int thread, int pc);
 extern void instrFrameEdge(void);
 extern void instrBytecode(const unsigned char *code, int size);
 extern void instrSeed(int seed);
+
+/* ---- fifth round: reaching a later part ---------------------------------
+ * Every measurement in this project comes from two parts out of ten, because the
+ * probe can only reach what synthetic input can play. The game's own route to a
+ * later part is the password screen, and its codes are not in the data. So the
+ * part is requested directly instead - which the engine's own comments say can
+ * crash - and the report says plainly which parts produced sane figures and which
+ * did not, rather than averaging the two together.
+ */
+extern int instrJumpPart(unsigned frame);
+extern unsigned instrFrameNow(void);
 extern void instrPace(int slices);   /* vmVariables[0xFF] at each blit */
 extern void instrTick(unsigned ms);   /* the virtual clock, for sound.txt */
 #endif

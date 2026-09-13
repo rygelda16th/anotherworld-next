@@ -113,6 +113,19 @@ void instrFrameEdge(void) {
         fprintf(gOps, "frame %u\n", gFrameNo);
 }
 
+unsigned instrFrameNow(void) { return gFrameNo; }
+
+static int gJumpPart = 0;
+static uint32_t gJumpFrame = 0;
+
+int instrJumpPart(unsigned frame) {
+    if (!gJumpPart || frame < gJumpFrame) return 0;
+    int p = gJumpPart;
+    gJumpPart = 0;                  /* once */
+    printf("requesting part %d (index %d) at frame %u\n", p, p - 0x3E80, frame);
+    return p;
+}
+
 void instrSeed(int seed) {
     if (gOps) fprintf(gOps, "seed %d\n", seed);
     printf("random seed: %d\n", seed);
@@ -388,6 +401,9 @@ int main(int argc, char **argv) {
     const char *data = (argc>1)? argv[1] : ".";
     if (argc>2) gFrameCap = atoi(argv[2]);
     if (argc>4) gAutoplay = atoi(argv[4]);
+    /* argv[5] = a part INDEX 0..9 to request, argv[6] = the frame to do it at */
+    if (argc>5 && atoi(argv[5]) >= 0) gJumpPart = 0x3E80 + atoi(argv[5]);
+    if (argc>6) gJumpFrame = atoi(argv[6]);
     if (argc>3 && atoi(argv[3])) {
         gTraceFrames = atoi(argv[3]); gTrace = fopen("trace.bin","wb");
         /* Dump the font rather than transcribe it: 96 glyphs of 8 bytes from

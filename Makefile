@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd \
+        check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts \
         toolchain-diff
 
 help:
@@ -50,6 +50,7 @@ help:
 	@echo "make check-boot     Gate D: the VM dispatches exactly what the engine does"
 	@echo "make check-pace     Gate E: the input mapping, and pacing to its deadline"
 	@echo "make check-snd      Gate E: four voices byte-exact, and the DMA's rate"
+	@echo "make check-parts    Step 9: every part the probe can reach, separately"
 	@echo "make toolchain-diff has the shared toolchain drifted from wolf3d-next?"
 
 certs:
@@ -208,6 +209,10 @@ check-polycost: | $(BUILD)
 	@$(MAKE) --no-print-directory asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkpolycost.py'
+
+# Step 9: every part the probe can reach, measured separately. Host only.
+check-parts:
+	python3 tools/checkparts.py
 
 # Gate E, third claim: the mixer's bytes, and the DMA's output rate.
 check-snd: asm
