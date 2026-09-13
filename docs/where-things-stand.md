@@ -2297,11 +2297,36 @@ And `check-draw` had already proved that draw's operands identical to the engine
 the destination agrees, and the pixels do not** - which puts the fault in the reader or the
 rasteriser for this particular record, or in the segment bytes they are reading.
 
-That last possibility is the one to test first and it is cheap: `check-readmachine` passes
-over 17 draws taken from the same trace, so the reader is right on those - but they are a
-different set of records, and if `RES19.BIN` is not the bytes the reference has in
-`segCinematic` then every polygon read from it is wrong for a reason that has nothing to do
-with the reader. Compare the loaded segment against the reference's, then bisect the record.
+**That possibility has been tested and closed. The host is correct.**
+
+`RES19.BIN` is **byte-identical** to the probe's `seg_cine_0.bin`, all 65,230 of them - and
+the reference reading `RES19.BIN` at offset 2096 produces **exactly** the engine's own leaf
+for draw 1. So the asset is right, the reader is right, and the fault is the machine's.
+
+**Two of my own tests were wrong before that held**, which is worth more than the result:
+
+- I diffed against `seg_cine_1.bin` and found 55,781 of 57,510 bytes differing. `gSegDump`
+  counts **setupPart calls**, and with `BYPASS_PROTECTION` the engine starts at part 2, so
+  `seg_cine_0` is the intro's and `seg_cine_1` is the next part's. Different resource,
+  different length, and the numbers looked like a catastrophe.
+- Then I fed the engine's leaf to `fill_polygon` while the reader path goes through
+  `_draw_polygon`, which **scales** 320x200 into 256x192 first. Comparing a scaled page
+  against an unscaled one gave 2,756 bytes - the same count as the machine's difference,
+  which made it look like proof that the machine was right and the host wrong. It was a
+  coincidence of magnitude, not a match.
+
+**THE NEXT TEST, and it is sharp.** Drive that one record through `check-readmachine`'s
+mechanism - poke `off=2096, colour=$FF, zoom=64, x=192, y=59` as a one-entry draw list - and
+see whether the machine's reader gets it wrong without the VM involved at all:
+
+- **wrong** - a reader fault on this record, reproducible with no VM, and `check-readmachine`
+  simply never drew it. Its 17 draws are a different set.
+- **right** - then the fault is in how `aw_draw_poly` sets the reader up: `rd_col` for the
+  bit-7 form's `$FF`, `seg_base`, `rd_depth`, or the MMU0 borrow for the copy-mode fill.
+
+The record is the reference's own black full-screen polygon - `vm.cpp` comments it as
+"probably draws a black polygon over all the screen" - so it is large, it reaches the right
+edge at x=192, and 2,756 differing bytes in rows 0..120 is about 5.6% of the page.
 
 **Two wrong attempts at the bisect itself, both worth keeping.** Stopping the machine by
 setting the out-of-budget flag AFTER a draw does not stop at that draw: it ends the frame
