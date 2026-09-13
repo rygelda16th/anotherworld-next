@@ -114,6 +114,8 @@ def main():
     ring_run = read(z, RING, 64)
     counts = {n: int.from_bytes(read(z, sym[n], 2), "little")
               for n in ("n_poly", "n_select", "n_fill", "n_copy", "n_blit", "n_pal")}
+    n_cmp = min(256, len(want))
+    rec_raw = read(z, CTL + 0x20, n_cmp * 4)
 
     print(f"\nbefore the VM was let go: {t1 - t0} ticks in half a second "
           f"(50 a second is {25} in half)")
@@ -151,8 +153,40 @@ def main():
                3: "an invalid opcode", 4: "ret with an empty stack"}
         raise SystemExit(f"FAIL: fault {flt} - {why.get(flt, '?')} - after "
                          f"{records:,} records")
-    if records != len(want):
-        bad.append(f"{records:,} records, the engine's stream has {len(want):,}")
+    # AT LEAST the reference's length, not exactly it. With the engine's stream no longer
+    # inside the .nex there is nothing to stop the VM at record 763, so it runs the frames
+    # it was asked for and dispatches whatever they contain - 801 here for 45 frames. What
+    # matters is that it got at least as far as the reference and that the records it
+    # produced are the engine's, which the prefix comparison below establishes.
+    if records < len(want):
+        bad.append(f"only {records:,} records, the engine's stream has {len(want):,}")
+
+    # THE STREAM IS STILL CHECKED, but from the trace buffer over ZRCP rather than
+    # against a copy inside the .nex. The in-.nex comparison was how I1 was gated and it
+    # passed - 763 of 763 - but the rasteriser needs 1,024 reciprocals resident and the
+    # resident 16K will not hold the assembly, the C and 2KB of table together, so the
+    # engine's stream gave up its 3,052 bytes to the reciprocals. The buffer holds 256
+    # records; those are compared here, and I2's page comparison is the stronger claim
+    # that replaces the rest.
+    cur, norm = 0, []
+    for k in range(n_cmp):
+        kind, lo, hi, v = rec_raw[k * 4:k * 4 + 4]
+        pc = lo | (hi << 8)
+        if kind == 2:
+            cur = v
+            norm.append(("thread", cur, pc, 0))
+        elif kind == 1:
+            norm.append(("op", cur, pc, v))
+        else:
+            bad.append(f"record {k} has kind {kind}, which aw_logrec never writes")
+            break
+    m = 0
+    while m < len(norm) and norm[m] == want[m]:
+        m += 1
+    print(f"  the first {m:,} of {len(norm):,} trace records are the engine's, "
+          f"read back over ZRCP")
+    if m < len(norm):
+        bad.append(f"record {m} differs: the game {norm[m]}, the engine {want[m]}")
 
     # 4. Left alone: the interrupt and the DMA carry on without the frame loop.
     print(f"\nsoak: left alone for {SOAK_S:.0f}s with the interrupt and the DMA live")
@@ -174,11 +208,11 @@ def main():
         print("\n  " + "\n  ".join(bad))
         raise SystemExit(f"FAIL: {len(bad)} problem(s) with everything running at once")
     print(f"""
-PASS: one program, everything live. All {records:,} records of the engine's stream,
-      thread by thread and opcode by opcode, with the frame interrupt pacing the VM
-      at 50 Hz, the zxnDMA streaming the ring to the DAC, and the mixer refilling it
-      from inside the interrupt - and it holds for {SOAK_S:.0f} seconds of being left
-      alone afterwards. I1 is closed.""")
+PASS: one program, everything live. {records:,} records dispatched, the first {m:,}
+      checked record for record against the engine's own, with the
+      frame interrupt pacing the VM at 50 Hz, the zxnDMA streaming the ring to the DAC,
+      and the mixer refilling it from inside the interrupt - and it holds for
+      {SOAK_S:.0f} seconds of being left alone afterwards.""")
 
 
 if __name__ == "__main__":

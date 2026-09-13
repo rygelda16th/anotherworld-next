@@ -43,7 +43,12 @@
 
         DEVICE ZXSPECTRUMNEXT
 
-CC_ORG          EQU $8C00               ; must match VM_ORG in the Makefile
+; $9600, not $8C00. The rasteriser and the reader are 1,248 lines and their data, and
+; with them in the resident region the assembly now ends at $95D4. What that leaves the
+; C's stack is the number to watch: $BF00 down to the end of its image. Gate D needed
+; more than 779 bytes and was given 4,500; this is less, and if it is not enough the
+; symptom is now a known one.
+CC_ORG          EQU $9600               ; must match VM_ORG in the Makefile
 NR_TURBO        EQU $07
 NR_MMU0         EQU $50
 NR_MMU1         EQU $51
@@ -57,11 +62,35 @@ CODE_PAGE       EQU 48
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
 
 CTL             EQU $C000
-EXP_OPS         EQU $C500
+INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
 RING_ADDR       EQU $D400               ; permanently mapped; see the header
 VOLTAB          EQU $DC00
 VOICES          EQU $DD00
 IN_BLOCK        EQU $D300               ; the six input words the C reads
+
+; Layer 2. The destination band goes at MMU7, because MMU2/MMU3 are the polygon window
+; and the reader is reading it at the moment the rasteriser writes a band. The source
+; band for a page copy borrows MMU2, which is safe only because no copy happens during
+; a draw.
+L2_BASE_BANK    EQU 12                  ; page 0 = banks 12,13,14
+BANDS           EQU 6                   ; 8K pages of 32 scanlines each
+DWIN            EQU $E000
+NR_DWIN_MMU     EQU $57
+SWIN            EQU $4000
+NR_SWIN_MMU     EQU $52
+NR_L2_BANK      EQU $12
+NR_L2_CFG       EQU $70
+L2_PORT         EQU $123B
+L2_VISIBLE      EQU %00000010
+SCR_W           EQU 256
+SCR_H           EQU 192
+; The engine keeps FOUR pages and selects among them; these two constants are what the
+; harness had, and I2's page model is what replaces them. For now they name page 1 as
+; the destination and page 2 as the source, which is what the intro's first frames use.
+DST_PAGE        EQU 1
+SRC_PAGE        EQU 2
+DST_P0          EQU (L2_BASE_BANK + DST_PAGE * 3) * 2
+SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * 3) * 2
 SAMPLE          EQU $DE00
 SAMPLE_LEN      EQU 512
 
@@ -145,8 +174,6 @@ start:
         jr      nz, .stop
         ld      hl, (got)
         ld      (CTL + $10), hl         ; the segment length, for the pc guard
-        ld      hl, EXPECTED_N
-        ld      (CTL + $14), hl         ; how many records to compare against
 
         call    CC_ORG                  ; and the C runs the frame loop
         di                              ; the CRT's exit does `im 1 / ei / ret`
@@ -489,6 +516,7 @@ aw_set_palette:
 
         INCLUDE "src/inc/vmhost.inc"
         INCLUDE "src/inc/input.inc"
+        INCLUDE "src/inc/raster.inc"
 
 ; The game's ring and its sample are both resident in MMU6's page, so a voice needs
 ; nothing mapped for it. I5 gives each voice its own sample page and this macro
@@ -530,18 +558,29 @@ n_blit:     dw 0
         EXPORT n_pal
 n_pal:      dw 0
 
-        ASSERT $ < VEC_TABLE
+rd_log:     ds 8 * 8                    ; the reader's leaf log, small: nothing reads it
+
         DISPLAY "> resident code and data end at ", /H, $
+        ASSERT $ < CC_ORG
 
         ORG CTL
         EXPORT ctl
 ctl:        ds 32 + 256 * 4             ; the control block, then 256 records
-        ASSERT $ <= EXP_OPS
+        ASSERT $ <= INTERP_AT
 
-        ORG EXP_OPS
-        EXPORT expected_ops
-        INCLUDE "build/expected_ops.inc"
-        DISPLAY "> expected stream is ", /D, EXPECTED_N, " records at ", /H, EXP_OPS
+        ; THE RECIPROCAL TABLE, where the expected opcode stream used to be.
+        ;
+        ; I1's gate compared the game's opcode stream against the engine's from inside
+        ; the .nex, and it passed - 763 of 763. But the rasteriser needs 1,024
+        ; reciprocals resident and the resident 16K cannot hold the assembly, the C and
+        ; 2KB of table at once. I2's gate is the PICTURE, compared page for page against
+        ; the engine, which is a stronger claim than the stream anyway: a wrong opcode
+        ; that does not change what is drawn is not interesting, and one that does shows
+        ; up here.
+        ORG INTERP_AT
+        ALIGN 2
+        INCLUDE "build/interp.inc"
+        DISPLAY "> reciprocals at ", /H, INTERP_AT, " ending ", /H, $
         ASSERT $ <= RING_ADDR
 
         ASSERT RING_ADDR + RING_LEN <= VOLTAB
@@ -549,7 +588,6 @@ ctl:        ds 32 + 256 * 4             ; the control block, then 256 records
         ASSERT VOICES + V_SIZE * 4 <= SAMPLE
         ASSERT SAMPLE + SAMPLE_LEN <= $E000
         ; the vector table and its trampoline, in the gap the expected stream leaves
-        ASSERT EXP_OPS + EXPECTED_N * 4 <= VEC_TABLE
         ASSERT VEC_TABLE + 257 <= VEC_TRAMP
         ASSERT VEC_TRAMP + 3 <= RING_ADDR
         ASSERT IN_BLOCK + 12 <= VEC_TABLE || IN_BLOCK >= VEC_TRAMP + 3

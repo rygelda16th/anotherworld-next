@@ -35,6 +35,8 @@ DST_P0          EQU (L2_BASE_BANK + DST_PAGE * 3) * 2
 SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * 3) * 2
 DWIN            EQU $6000               ; MMU3: the destination band
 SWIN            EQU $4000               ; MMU2: the source band, copy mode only
+NR_MMU0         EQU $50
+NR_MMU1         EQU $51
 NR_DWIN_MMU     EQU $53                 ; which slot each of those is
 NR_SWIN_MMU     EQU $52
 

@@ -164,13 +164,17 @@ CC_RUN     := docker run --rm -v "$(CURDIR):/work" -w /work $(CC_IMAGE)
 # has no spare 8K page for them: see the AW_CTL comment in src/aw/vm.c. A smaller
 # record buffer for the same reason - the verdict is what matters and it is 32 bytes.
 AW_CTL       ?= 0xC000
-AW_EXP       ?= 0xC500
+AW_EXP       ?= 0        # the game compares PICTURES, not streams: see src/aw.asm
 AW_LOG_RECS  ?= 256
 AW_IN        ?= 0xD300
 
+# The game's C sits HIGHER than the harness's, because the rasteriser and the reader
+# are resident alongside it: see the CC_ORG comment in src/aw.asm.
+AW_VM_ORG    ?= 0x9600
+
 cc-game: | $(BUILD)
 	@echo "  CC  src/aw/vm.c -> the game"
-	@$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(VM_ORG) \
+	@$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(AW_VM_ORG) \
 	    -pragma-define:REGISTER_SP=$(CC_STACK) \
 	    -DAW_CTL=$(AW_CTL) -DAW_EXP=$(AW_EXP) -DAW_LOG_RECS=$(AW_LOG_RECS) \
 	    -DAW_IN=$(AW_IN) \

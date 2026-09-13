@@ -19,6 +19,11 @@
 ; during a copy, when the polygon window is not in use. That was the second conflict
 ; integration turned up, after the sound ring.
 ;
+; It must also define SCR_W and SCR_H (256 and 192), NR_MMU0 and NR_MMU1, a small
+; rd_log for the reader's leaf log, and DST_P0 / SRC_P0 - the first 8K page of the
+; destination and source Layer 2 pages. In the game those two are not constants for
+; long: the engine selects among four pages, so I2's page model replaces them.
+;
 ; It must also INCLUDE build/interp.inc somewhere - 1,024 reciprocals, 2,048 bytes,
 ; indexed by an edge's dy - and provide seg_base pointing at the polygon segment's
 ; first 8K page.
@@ -430,8 +435,6 @@ poly_draw:
 ;-----------------------------------------------------------------------------
 
 SEG_WIN         EQU $0000               ; MMU0 + MMU1: 16K of the polygon segment
-NR_MMU0         EQU $50
-NR_MMU1         EQU $51
 X_MUL           EQU 205
 Y_MUL           EQU 246
 
