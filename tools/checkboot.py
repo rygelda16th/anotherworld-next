@@ -29,12 +29,25 @@ NEX = "build/vmtest.nex"
 EXP_ASM, EXP_C = "build/vmtest.exp", "build/vm_c.exp"
 PROBE = "preflight/hostprobe/probe"
 CODE_FILE = "RES18.BIN"         # the intro cinematic's bytecode, 9,871 bytes
-FRAMES = int(os.environ.get("AW_FRAMES", "40"))   # the host logged 40
+# How many frames the reference covers. Taken FROM the reference rather than fixed:
+# the first version of this gate had 40 here and 40 in the probe, and the machine
+# matched every one of the engine's 679 records and then produced a 680th with
+# nothing to compare it against - a reference that ends before the thing under test
+# does cannot say whether the next record is right. AW_OP_FRAMES in the probe and
+# this number come from the same place now.
+def ref_frames(path):
+    n = 0
+    for line in open(path):
+        f = line.split()
+        if f[0] in ("op", "thread"):
+            n = max(n, int(f[1]) + 1)
+    return n
 # An opcode budget, so the harness terminates even when the script waits for a
 # resource the stubbed loader never delivers. Generous: the host dispatched 567
 # opcodes over those 40 frames.
-BUDGET = int(os.environ.get("AW_BUDGET", "4000"))
+BUDGET = int(os.environ.get("AW_BUDGET", "20000"))
 TRACE_FILE = "AWTRACE.BIN"   # the machine writes this through esxDOS
+HDR = 32                     # the control block, then the records
 
 
 def symbols(*paths):
@@ -64,7 +77,9 @@ def host_stream(path):
 
 def main():
     sym = symbols(EXP_ASM, EXP_C)
-    seed, want = host_stream(os.path.join(PROBE, "ops.txt"))
+    ops = os.path.join(PROBE, "ops.txt")
+    frames = int(os.environ.get("AW_FRAMES", str(ref_frames(ops))))
+    seed, want = host_stream(ops)
     print(f"host stream: {len(want):,} records "
           f"({sum(1 for r in want if r[0]=='op'):,} opcodes, "
           f"{sum(1 for r in want if r[0]=='thread'):,} thread edges), seed {seed}")
@@ -84,7 +99,7 @@ def main():
     # The header the C reads, poked into the same block it writes - so the only
     # memory the checker touches is six bytes at a fixed address in assembly-owned
     # RAM, and everything it reads comes back in a file.
-    hdr = (seed.to_bytes(2, "little") + FRAMES.to_bytes(2, "little")
+    hdr = (seed.to_bytes(2, "little") + frames.to_bytes(2, "little")
            + BUDGET.to_bytes(2, "little"))
     z.cmd(f"write-memory-raw {sym['log_buf']} {hdr.hex()}")
     blob = CODE_FILE.encode() + b"\x00"
@@ -94,88 +109,106 @@ def main():
     def b1(name):
         return int(z.cmd(f"read-memory {sym[name]} 1").strip(), 16)
 
+    # WAIT ON THE CONTROL BLOCK, not on an assembly flag. main does not return -
+    # see the comment at the foot of src/aw/vm.c - so $C00A going to $5A is the only
+    # signal there is, and it is also the one the verdict is read beside.
     waited = 0.0
-    limit = float(os.environ.get("AW_WAIT_S", "120"))
+    limit = float(os.environ.get("AW_WAIT_S", "60"))
+    fin = sym["log_buf"] + 10
     while waited < limit:
-        if z.cmd(f"read-memory {sym['done']} 1").strip().upper() == "5A":
+        if z.cmd(f"read-memory {fin} 1").strip().upper() == "5A":
             break
         time.sleep(0.1)
         waited += 0.1
-    err = b1("trace_err")
-    where = b1("trace_where")
-    wrote = int.from_bytes(
-        bytes.fromhex(z.cmd(f"read-memory {sym['trace_wrote']} 2").strip()),
-        "little")
+
+    # THE VERDICT COMES OFF THE MACHINE AS THIRTY-TWO BYTES, and it is read twice.
+    #
+    # The comparison itself happens on the machine now: the engine's 679 records
+    # ship in the .nex at $E000 and the VM checks each record as it writes it. That
+    # change is what made this gate readable at all. Every failing run used to end
+    # the same way - the VM leaves the rails, the bytes after the rails get executed
+    # as opcodes, and the stack runs down from $BF00 and wraps, so the smear reaches
+    # the trace block and destroys the evidence of what went wrong. Stopping on the
+    # first mismatch stops before any of that.
+    #
+    # Two reads because a verdict read wrongly is a verdict that disagrees with
+    # itself, and this is the one number the gate turns on.
+    def block():
+        raw = z.cmd(f"read-memory {sym['log_buf']} 32").strip()
+        return bytes(int(raw[i:i + 2], 16) for i in range(0, 64, 2))
+
+    b, b2 = block(), block()
+    if b != b2:
+        raise SystemExit("FAIL: the control block read back differently twice - "
+                         f"{b.hex()} then {b2.hex()}")
+    w = lambda o: int.from_bytes(b[o:o + 2], "little")     # noqa: E731
+    records, frames_done = w(6), w(8)
+    finished, oob, bad_op, flt = b[10], b[11], b[12], b[13]
+    fault_pc, code_len, fault_a, exp_n, div_at = w(14), w(16), w(18), w(20), w(22)
+    got_rec, want_rec = b[24:28], b[28:32]
     z.close()
 
-    if not os.path.exists(trace_path):
-        where_name = {0: "no call attempted", 1: "F_OPEN", 2: "F_WRITE"}
-        print(f"  the machine wrote no {TRACE_FILE} after {waited:.0f}s")
-        print(f"  esxDOS: error {err:#04x} at "
-              + where_name.get(where, "?")
-              + f", it reported taking {wrote:,} bytes")
-        if where == 1:
-            print("  F_OPEN refused it. If this emulator's esxDOS handler is "
-                  "read-only then the\n  trace cannot leave by this route, and "
-                  "the comparison has to happen ON the\n  machine instead - see "
-                  "tools/mkexpected.py.")
-        raise SystemExit("FAIL: no trace file")
-    blk = open(trace_path, "rb").read()
-    print(f"\n{TRACE_FILE}: {len(blk):,} bytes, written by the machine itself")
+    print(f"\nthe machine: {records:,} records over {frames_done} frames of a "
+          f"{code_len:,}-byte segment")
+    print(f"  it {'finished' if finished == 0x5A else 'DID NOT finish'} in "
+          f"{waited:.1f}s, with {exp_n:,} expected records loaded")
+    if oob:
+        print("  it ran out of opcode budget")
+    if bad_op:
+        print(f"  it saw opcode {bad_op:#04x}, which the engine calls error() on")
 
-    n = int.from_bytes(blk[6:8], "little")
-    frames_done = int.from_bytes(blk[8:10], "little")
-    finished = blk[10]
-    oob = blk[11]
-    bad_op = blk[12]
-    print(f"  the VM ran {frames_done} frames, "
-          f"{'finished cleanly' if finished == 0x5A else 'did not finish'}"
-          f"{', out of opcode budget' if oob else ''}"
-          f"{f', invalid opcode {bad_op:#04x}' if bad_op else ''}")
-    print(f"  it claims {n:,} trace records")
+    def rec(r):
+        kind = {1: "op", 2: "thread"}.get(r[0], f"kind {r[0]}")
+        return f"({kind}, pc {r[1] | (r[2] << 8)}, {r[3]})"
 
-    # Trust the content over the count, as ever: every record aw_logrec writes has
-    # kind 1 or 2.
-    recs, k = [], 0
-    while 16 + k * 4 + 3 < len(blk) and blk[16 + k * 4] in (1, 2):
-        kind, lo, hi, v = blk[16 + k * 4:20 + k * 4]
-        recs.append((kind, lo | (hi << 8), v))
-        k += 1
-    print(f"  and holds {len(recs):,} of them")
+    why = {1: "the pc left the segment it was given",
+           2: "resetThread over a range outside the thread table",
+           3: "an opcode the reference calls error() on",
+           4: "ret with nothing on the call stack",
+           5: "a record the engine did not produce",
+           6: "the reference ran out - every record in it was matched"}
+    if flt and not (flt == 6 and records == exp_n):
+        print(f"  FAULT {flt}: {why.get(flt, '?')}")
+        print(f"    at pc {fault_pc} ({fault_pc:#06x}), context {fault_a:#06x}")
 
-    cur, norm = 0, []
-    for kind, pc, v in recs:
-        if kind == 2:
-            cur = v
-            norm.append(("thread", cur, pc, 0))
-        else:
-            norm.append(("op", cur, pc, v))
+    if flt == 5:
+        print(f"\n  FIRST DIVERGENCE at record {div_at:,} of {exp_n:,}")
+        print(f"    the machine {rec(got_rec)}")
+        print(f"    the engine  {rec(want_rec)}")
+        print("    the engine's records either side:")
+        for j in range(max(0, div_at - 5), min(len(want), div_at + 3)):
+            mark = "  <-- here" if j == div_at else ""
+            print(f"      {j:>5}  {want[j]}{mark}")
+        raise SystemExit("FAIL: the machine's opcode stream is not the engine's")
 
-    m = 0
-    while m < min(len(norm), len(want)) and norm[m] == want[m]:
-        m += 1
-    print(f"\nthe stream: {m:,} records identical to the engine's, of "
-          f"{min(len(norm), len(want)):,} compared")
+    if flt and not (flt == 6 and records == exp_n):
+        print(f"""
+  The machine's first {records:,} records ARE the engine's - the comparison runs on
+  the machine and it stopped at a fault, not at a mismatch. {why.get(flt, '?')}
+  is what to fix next.""")
+        raise SystemExit(f"PARTIAL: {records:,} records identical, then a fault")
 
-    if m == len(want):
+    if flt == 6 and records == exp_n:
+        # THE REFERENCE ENDS BEFORE THE MACHINE DOES, and that is the probe's frame
+        # counter, not a difference in the VM. instrFrame() hangs off
+        # Video::updateDisplay, so what the probe calls a frame is a BLIT; the C
+        # counts hostFrame iterations. The two agree closely and not exactly - here
+        # 43 of ours to 45 of its - so asking both for "45 frames" asks for different
+        # amounts of work. The record stream carries no frame boundaries, so it
+        # cannot tell them apart and does not need to: matching every record in the
+        # reference and then having nothing left to compare is the end of the test,
+        # not a failure of it.
+        print(f"  the reference ends here: {frames} of the probe's frames is "
+              f"{frames_done + 1} of the VM's, because the probe counts blits")
+
+    if records == len(want) and finished == 0x5A:
         print(f"""
 PASS: the VM dispatches exactly what the engine dispatches - all {len(want):,}
-      records, thread by thread and opcode by opcode, over {FRAMES} frames.""")
+      records, thread by thread and opcode by opcode, over {frames} frames,
+      checked on the machine as each one was produced.""")
         return
-    if m < len(norm) and m < len(want):
-        print(f"\n  FIRST DIVERGENCE at record {m}")
-        print(f"    machine   {norm[m]}")
-        print(f"    engine    {want[m]}")
-        for j in range(max(0, m - 6), m):
-            print(f"    {j:>5}  {norm[j]}   {want[j]}")
-        raise SystemExit("FAIL: the machine's opcode stream is not the engine's")
-    print(f"""
-  The machine's stream is a PREFIX: every one of its {m:,} records is right and then
-  it produces no more. Raise AW_BUDGET if it ran out of opcode budget; otherwise the
-  script is waiting for a resource the stubbed loader never delivers, and the rest
-  of D4 is what unblocks it.""")
-    raise SystemExit(f"PARTIAL: {m:,} records identical, then the VM runs out of "
-                     "things it can do")
+    raise SystemExit(f"FAIL: {records:,} records, {len(want):,} expected, no fault "
+                     f"reported - which should not be possible")
 
 
 if __name__ == "__main__":

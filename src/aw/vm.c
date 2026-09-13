@@ -76,7 +76,55 @@ extern void aw_set_palette(uint8_t id) __z88dk_fastcall;
 #define CTL_FINISHED    (*(volatile uint8_t *)(0xC00A))
 #define CTL_OUT_OF_BUDGET (*(volatile uint8_t *)(0xC00B))
 #define CTL_BAD_OP      (*(volatile uint8_t *)(0xC00C))
-#define AW_RECORDS      ((volatile uint8_t *)0xC010)
+/* A FAULT, with the program counter that caused it and one word of context.
+ *
+ * These exist because every wrong run looked the same and none of them could be
+ * read. The VM would leave the rails somewhere, execute the bytes past the end of
+ * the segment as opcodes, and one of those would be a resetThread whose first
+ * thread was 200 and whose last was 10 - which the reference computes as a POSITIVE
+ * count of 66 threads (vm.cpp:96-99 takes the difference as int8_t) and which then
+ * writes sixty-six words past a sixty-four word array, over the opcode table. The
+ * next dispatch jumped to whatever the bytecode had put there, the stack ran down
+ * from $BF00 smearing one repeating value over the whole program, and what was left
+ * to read was a machine with no state in it at all. Stopping AT the fault, with the
+ * pc, is the difference between a diagnosis and four hours of symptoms. */
+#define CTL_FAULT       (*(volatile uint8_t *)(0xC00D))
+#define CTL_FAULT_PC    (*(volatile uint16_t *)(0xC00E))
+#define CTL_CODE_LEN    (*(volatile uint16_t *)(0xC010))
+#define CTL_FAULT_A     (*(volatile uint16_t *)(0xC012))
+#define CTL_EXP_N       (*(volatile uint16_t *)(0xC014))
+#define CTL_DIV_AT      (*(volatile uint16_t *)(0xC016))
+#define CTL_GOT_REC     ((volatile uint8_t *)0xC018)
+#define CTL_WANT_REC    ((volatile uint8_t *)0xC01C)
+#define AW_RECORDS      ((volatile uint8_t *)0xC020)
+
+/* THE ENGINE'S OWN STREAM, shipped in the .nex at $E000.
+ *
+ * The comparison moved onto the machine because getting the trace off it was the
+ * whole difficulty. Every wrong run ended the same way - the VM leaves the rails,
+ * executes what is after the rails as opcodes, and the stack runs down from $BF00
+ * and then wraps, so the smear reaches the trace block and there is nothing left to
+ * read. The record that MATTERS is the first one that differs, and it is produced
+ * before any of that. So check each record as it is written and stop dead on the
+ * first mismatch: the machine halts while its state still means something, and the
+ * verdict is twelve bytes rather than eight kilobytes. */
+#define EXP_OPS         ((const uint8_t *)0xE000)
+
+#define FAULT_PAST_END  1       /* the pc left the segment that was loaded */
+#define FAULT_RESET     2       /* resetThread over a range outside the table */
+#define FAULT_BAD_OP    3       /* an opcode the reference calls error() on */
+#define FAULT_RET       4       /* ret with nothing on the call stack */
+#define FAULT_DIVERGE   5       /* a record the engine did not produce */
+#define FAULT_OVERRUN   6       /* more records than the engine produced */
+
+static void fault(uint8_t code, uint16_t pc, uint16_t a)
+{
+    if (CTL_FAULT)              /* the FIRST one is the one that explains it */
+        return;
+    CTL_FAULT = code;
+    CTL_FAULT_PC = pc;
+    CTL_FAULT_A = a;
+}
 
 /* Parameters for aw_draw_poly, because a fastcall takes one argument. */
 uint16_t aw_draw_off;
@@ -133,6 +181,8 @@ static void seek(uint16_t off)
 static uint8_t fetch_byte(void)
 {
     uint8_t v;
+    if (CTL_CODE_LEN && aw_pc_now >= CTL_CODE_LEN)
+        fault(FAULT_PAST_END, aw_pc_now, CTL_CODE_LEN);
     if (aw_pc_now >= w_hi || aw_pc_now < w_lo) {
         wp = aw_code_window(aw_pc_now);
         w_lo = aw_pc_now & 0xE000;
@@ -151,7 +201,7 @@ static uint16_t fetch_word(void)
 }
 
 /* ---- the trace log ------------------------------------------------------- */
-#define LOG_RECS 2040           /* 8K less the header, in four-byte records */
+#define LOG_RECS 2040           /* 8K less the 32-byte header, four bytes each */
 uint16_t aw_log_count;
 
 /* Four bytes a record: kind, the program counter as a word, then the opcode or
@@ -159,13 +209,41 @@ uint16_t aw_log_count;
 static void aw_logrec(uint8_t kind, uint16_t pc, uint8_t v)
 {
     volatile uint8_t *p;
+    const uint8_t *q;
+    uint8_t rec[4];
+
+    rec[0] = kind;
+    rec[1] = (uint8_t)pc;
+    rec[2] = (uint8_t)(pc >> 8);
+    rec[3] = v;
+
+    if (CTL_EXP_N) {
+        if (aw_log_count >= CTL_EXP_N) {
+            /* Not a pass and not a crash: the engine stopped here and we did not.
+             * Worth its own code, because "more than the engine" and "different
+             * from the engine" have different causes. */
+            fault(FAULT_OVERRUN, pc, aw_log_count);
+            return;
+        }
+        q = EXP_OPS + ((uint16_t)aw_log_count << 2);
+        if (rec[0] != q[0] || rec[1] != q[1] || rec[2] != q[2] || rec[3] != q[3]) {
+            CTL_DIV_AT = aw_log_count;
+            CTL_GOT_REC[0] = rec[0];  CTL_GOT_REC[1] = rec[1];
+            CTL_GOT_REC[2] = rec[2];  CTL_GOT_REC[3] = rec[3];
+            CTL_WANT_REC[0] = q[0];   CTL_WANT_REC[1] = q[1];
+            CTL_WANT_REC[2] = q[2];   CTL_WANT_REC[3] = q[3];
+            fault(FAULT_DIVERGE, pc, aw_log_count);
+            return;
+        }
+    }
+
     if (aw_log_count >= LOG_RECS)
         return;
     p = AW_RECORDS + (aw_log_count << 2);
-    p[0] = kind;
-    p[1] = (uint8_t)pc;
-    p[2] = (uint8_t)(pc >> 8);
-    p[3] = v;
+    p[0] = rec[0];
+    p[1] = rec[1];
+    p[2] = rec[2];
+    p[3] = rec[3];
     ++aw_log_count;
     CTL_RECORDS = aw_log_count;
 }
@@ -185,7 +263,15 @@ static void op_call(void)
     seek(off);
 }
 
-static void op_ret(void)        { --aw_sp; seek(aw_call_stack[aw_sp]); }
+static void op_ret(void)
+{
+    if (aw_sp == 0) {
+        fault(FAULT_RET, aw_pc_now, 0);
+        return;
+    }
+    --aw_sp;
+    seek(aw_call_stack[aw_sp]);
+}
 static void op_pauseThread(void){ aw_goto_next = 1; }
 static void op_jmp(void)        { seek(fetch_word()); }
 
@@ -249,6 +335,15 @@ static void op_resetThread(void)
     }
     ++n;
     action = fetch_byte();
+    /* The reference does not check this and does not need to: its bytecode is
+     * always the bytecode. Ours is whatever the pc is pointing at, and a first of
+     * 200 with a last masked to 10 gives a POSITIVE n of 67 - sixty-seven words
+     * written past a sixty-four word array. That is the write that destroyed the
+     * opcode table on every bad run. */
+    if ((uint16_t)first + (uint16_t)n > NUM_THREADS) {
+        fault(FAULT_RESET, aw_pc_now, (uint16_t)(first | ((uint16_t)n << 8)));
+        return;
+    }
     if (action == 2) {
         while (n--)
             aw_pc_req[first++] = 0xFFFE;    /* checkThreadRequests makes these
@@ -484,10 +579,15 @@ static void execute_thread(void)
             poly_bit7(opcode);
         else if (opcode & 0x40)
             poly_bit6(opcode);
-        else if (opcode > 0x1A)
+        else if (opcode > 0x1A) {
             CTL_BAD_OP = opcode;        /* the engine calls error() here */
-        else
+            fault(FAULT_BAD_OP, pc_before, opcode);
+        } else
             op_table[opcode]();
+        if (CTL_FAULT) {
+            aw_goto_next = 1;
+            return;
+        }
     }
 }
 
@@ -496,13 +596,15 @@ uint8_t aw_host_frame(void) __z88dk_fastcall
 {
     uint8_t t, blitted = 0;
     for (t = 0; t < NUM_THREADS; ++t) {
-        if (CTL_OUT_OF_BUDGET)
+        if (CTL_OUT_OF_BUDGET || CTL_FAULT)
             break;
         if (aw_state[t])
             continue;
         if (aw_pc[t] == INACTIVE)
             continue;
         aw_logrec(2, aw_pc[t], t);
+        if (CTL_FAULT)
+            break;
         seek(aw_pc[t]);
         aw_sp = 0;                      /* the shared stack, per thread */
         aw_goto_next = 0;
@@ -546,14 +648,41 @@ int main(void)
     aw_log_count = 0;
     CTL_RECORDS = 0;
     CTL_OUT_OF_BUDGET = 0;
+    CTL_BAD_OP = 0;
+    CTL_FAULT = 0;
+    CTL_FAULT_PC = 0;
+    CTL_FAULT_A = 0;
+    CTL_DIV_AT = 0;
     for (f = 0; f < CTL_FRAMES; ++f) {
         CTL_FRAMES_DONE = f;
-        if (CTL_OUT_OF_BUDGET)
+        if (CTL_OUT_OF_BUDGET || CTL_FAULT)
             break;
         aw_check_requests();
         aw_host_frame();
     }
     CTL_FRAMES_DONE = f;
     CTL_FINISHED = 0x5A;
-    return 0;
+
+    /* AND MAIN NEVER RETURNS, which is the point.
+     *
+     * z88dk's exit path is `im 1 / ei / ret` - ED 56 FB C9, at $8C40 in this build.
+     * EI delays interrupt acceptance by exactly one instruction, and that one
+     * instruction is the RET, so the interrupt is taken BEFORE the caller's first
+     * instruction runs. A `di` placed immediately after `call CC_ORG` is therefore
+     * too late by one instruction, every single time - and $0038 is not the ROM
+     * here, it is the bytecode segment MMU0 and MMU1 are holding. The machine
+     * executes Another World's bytecode as Z80 code, the stack runs down from $BF00
+     * and wraps, and every counter the gate reads is overwritten.
+     *
+     * That is the whole of "Gate D will not repeat": 0, 64, 122 and 354 matching
+     * records from identical inputs, because the checker was reading a machine that
+     * had already begun destroying itself and how much survived depended on how long
+     * the read took. Four other faults were found and fixed while chasing it - each
+     * real, none of them this - which is exactly why fixing them changed nothing.
+     *
+     * Never coming back is the fix that needs nothing else to be true. The verdict is
+     * in the control block, the checker reads it from there, and interrupts stay off
+     * because nothing ever runs the code that turns them on. */
+    for (;;)
+        CTL_FINISHED = 0x5A;
 }

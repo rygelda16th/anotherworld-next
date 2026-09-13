@@ -87,13 +87,84 @@ start:
         or      a
         jr      z, .wait
 
+        ; stage_stop exists because "the machine is wrecked" was true at every
+        ; stage and the aftermath looks identical whichever stage did it: the stack
+        ; runs down from $BF00 smearing one repeating value over the program, so by
+        ; the time anything can be read there is nothing left to read. Stopping
+        ; after a named stage is the only way to ask WHICH stage.
+        ;   1  after clearing the bytecode pages
+        ;   2  after loading the segment
+        ;   0  the whole thing
+        ld      a, (stage_stop)
+        dec     a
+        jr      nz, .not_one
+        call    clear_code
+        jr      .stop
+.not_one:
         call    load_code
         ld      a, (err)
         or      a
         jr      nz, .stop
+        ld      a, (stage_stop)
+        cp      2
+        jr      z, .stop
+
+        ; Tell the C how long the segment actually is, at $C010 in the control
+        ; block. Without it the VM cannot tell bytecode from the memory after it,
+        ; and reading past the end was what wrecked every run.
+        ld      hl, (got)
+        ld      ($C010), hl
+        ; And how many records the engine produced, so the C can compare its own
+        ; against them as it goes and stop on the first one that differs.
+        ld      hl, EXPECTED_N
+        ld      ($C014), hl
 
         call    CC_ORG                  ; the C virtual machine, once
-        call    write_trace             ; and the whole block out to a file
+        di                              ; SEE BELOW. Not optional, and not tidiness.
+
+        ; DI, BECAUSE THE C RE-ENABLES INTERRUPTS ON ITS WAY OUT.
+        ;
+        ; z88dk's exit path is `im 1 / ei / ret` - $8C40 in this build, and visible
+        ; as ED 56 FB C9 in build/vm_CODE.bin. Twenty milliseconds later the machine
+        ; takes a frame interrupt and jumps to $0038, and $0038 is not the ROM: MMU0
+        ; and MMU1 are holding the bytecode segment the VM has been reading. So the
+        ; Z80 starts executing Another World's bytecode as Z80 instructions, the
+        ; stack runs down from $BF00 and wraps, and every counter this gate reads is
+        ; overwritten with whatever those bytes happened to push.
+        ;
+        ; THIS IS THE WHOLE OF "GATE D WILL NOT REPEAT". The same .nex and the same
+        ; inputs gave 0, 64, 122 and 354 matching records because the checker was
+        ; reading a machine that had already begun destroying itself, and how much
+        ; was left depended on how long the read took. Nothing was wrong with the
+        ; virtual machine. Four separate wrong diagnoses came out of that window -
+        ; uninitialised statics, a stack in the bytecode window, a stale trace file,
+        ; and an esxDOS mode byte - and each of them was a real fault worth fixing,
+        ; which is exactly why none of them fixed this.
+        ;
+        ; The general lesson: a program that hands control to somebody else's runtime
+        ; gets that runtime's interrupt state back, not its own. Ask what the CRT
+        ; does on exit before believing any measurement taken after it.
+
+        ; AND NOTHING ELSE. write_trace is still below and still works as far as it
+        ; goes, but calling it here was destroying the machine AFTER the virtual
+        ; machine had finished, and that is what a whole session of "Gate D will not
+        ; repeat" turned out to be.
+        ;
+        ; The evidence: run with an opcode budget of ZERO. The C dispatches nothing,
+        ; sets finished to $5A, and leaves a control block that reads back perfectly
+        ; - the segment length 9,871, the expected count 679, out-of-budget set. And
+        ; `done` is still zero, because the assembly never got back from the esxDOS
+        ; call to set it. The VM was not the problem in that run and cannot have been.
+        ;
+        ; The mechanism is the ROM. Getting to esxDOS means putting the ROM back over
+        ; $0000-$3FFF, which means taking the bytecode out from under a machine whose
+        ; C has been running with it there; the RST $08 does not come back, the stack
+        ; runs down from $BF00 and wraps, and the smear covers every byte of every
+        ; counter this gate reads. That is why each failure looked like a different
+        ; VM bug: the state being read was the smear, not the VM.
+        ;
+        ; It is not needed. The comparison happens ON the machine against the engine's
+        ; own 679 records at $E000, and what leaves is a 32-byte verdict.
 .stop:
         ld      a, $5A
         ld      (done), a
@@ -178,6 +249,46 @@ aw_set_palette:
 ;   kind 2  a thread edge; the pc field is the thread's starting offset
 ;-----------------------------------------------------------------------------
 ;-----------------------------------------------------------------------------
+; clear_code - every page the bytecode window can reach, set to (code_fill).
+;
+; This is here because Gate D would not REPEAT: the same .nex, the same seed, the
+; same frame count, and 0, 64, 122 and 354 trace records on four runs. smartload
+; does not clear the machine's RAM, so whatever the previous run left behind was
+; still there - and the bytecode window can reach eight 8K pages while the segment
+; under test fills barely two of them. Everything past the segment's last byte was
+; last run's rubbish, and it differed every time.
+;
+; The fill byte is a variable rather than a constant so the experiment can be run
+; the other way round: if the VM's behaviour changes when the fill changes, then it
+; is READING past the end of the segment, which is a fault in the VM and not in the
+; memory it was handed.
+;-----------------------------------------------------------------------------
+clear_code:
+        ld      a, CODE_PAGE
+        ld      b, 8                    ; the whole 64K the window can address
+.page:
+        nextreg NR_MMU7, a
+        push    af
+        push    bc
+        ld      hl, DST_WIN
+        ld      de, DST_WIN + 1
+        ld      bc, $2000 - 1
+        ld      a, (code_fill)
+        ld      (hl), a
+        ldir
+        pop     bc
+        pop     af
+        inc     a
+        djnz    .page
+        nextreg NR_MMU7, 1
+        ret
+
+        EXPORT code_fill
+code_fill:      db 0
+        EXPORT stage_stop
+stage_stop:     db 0
+
+;-----------------------------------------------------------------------------
 ; load_code - reads (fname) into banked pages from CODE_PAGE.
 ;-----------------------------------------------------------------------------
 load_code:
@@ -185,6 +296,7 @@ load_code:
         ld      (err), a
         ld      hl, 0
         ld      (got), hl
+        call    clear_code
 
         ld      a, ESX_DRIVE
         ld      ix, fname
@@ -331,14 +443,29 @@ last_pal:       db 0
         ORG     $C000
         ; log_buf fills MMU6 exactly, $C000-$DFFF, and the stack lives above it in
         ; MMU7. Nothing pages either during the run.
-; One 8K block: sixteen bytes of header, then four-byte records. The C writes all
-; of it and write_trace sends the lot to a file.
+; One 8K block: THIRTY-TWO bytes of header, then four-byte records. The C writes
+; all of it and write_trace sends the lot to a file. The header grew when the fault
+; trap and the on-machine verdict went in; 32 + 2040*4 is $2000 exactly, so the
+; record count did not have to change.
         EXPORT log_buf
-log_buf:        ds 16 + 2040 * 4
+log_buf:        ds 32 + 2040 * 4
 
         ; log_buf sits ABOVE the stack, at $C000-$DFFF, which is fine: the stack
         ; grows DOWN from $BF00. The bound here is the top of memory, not the stack.
+        ASSERT $ <= $E000
+
+; THE ENGINE'S OWN STREAM, in the .nex, at a fixed address the C knows.
+;
+; $E000 is the loader's staging window, which looks like a collision and is not:
+; clear_code and load_code point MMU7 at a bytecode page while they work there, so
+; the writes land in that page and bank 0's own second half - this data - is never
+; touched. load_code puts MMU7 back to 1 before it returns.
+        ORG     $E000
+        EXPORT expected_ops
+        INCLUDE "build/expected_ops.inc"
+        DISPLAY "> expected stream is ", /D, EXPECTED_N, " records at $E000"
         ASSERT $ < $FF00
+
         ORG     CC_ORG
         INCBIN  "build/vm_CODE.bin"
         DISPLAY "> VM C image is ", /D, $ - CC_ORG, " bytes at ", /H, CC_ORG

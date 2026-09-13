@@ -430,7 +430,15 @@ int main(int argc, char **argv) {
     /* The opcode stream, for the first few frames only: it is about 40 bytes an
      * opcode and the engine dispatches thousands a frame in gameplay. */
     if (gTraceFrames) {
-        gOpFrames = gTraceFrames < 40 ? gTraceFrames : 40;
+        /* The cap used to be a flat 40, which is how the reference came to END
+         * exactly where the Next's VM was still running. Gate D matched all 679
+         * records and then produced a 680th with nothing to compare it against,
+         * which is not a pass and not a failure - it is a reference that ran out.
+         * AW_OP_FRAMES lets the reference be made longer than the thing under
+         * test, which is the only way round that. */
+        const char *of = getenv("AW_OP_FRAMES");
+        uint32_t cap = of ? (uint32_t)atoi(of) : 40;
+        gOpFrames = gTraceFrames < cap ? gTraceFrames : cap;
         gOps = fopen("ops.txt", "w");
     }
     Engine *e = new Engine(stub, data, "/tmp");

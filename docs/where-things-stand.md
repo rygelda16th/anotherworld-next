@@ -1360,6 +1360,10 @@ path step 5 proved byte-exact. The checker reads the file. **The only memory it
 touches now is six bytes of header at a fixed address in assembly-owned RAM.** A
 file either holds the records or it does not.
 
+**The trace file was the wrong idea, and finding out why took the rest of the
+session.** It is recorded here because the reasoning was sound and the conclusion
+still wrong, which is the sort of thing worth keeping.
+
 **Two things had to be right before it would write at all**, and both are worth
 carrying:
 

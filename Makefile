@@ -230,7 +230,15 @@ check-pace: asm
 		sleep 3; python3 tools/checkpace.py'
 
 # Gate D: the VM's opcode stream against the engine's. Needs `make assets`.
-check-boot: cc asm
+# The engine's own stream ships IN the .nex and the VM checks itself against it as
+# it runs, so the expected data has to be regenerated before the assembly that
+# embeds it - a stale .inc would be compared confidently against the wrong run, and
+# the seed alone differs between probe runs. Make the reference LONGER than the
+# machine's own frame count: AW_OP_FRAMES=45 ./probe <data> 4000 45 0, with the last
+# 0 meaning no synthetic input, because the VM under test has no input either.
+check-boot: | $(BUILD)
+	python3 tools/mkexpected.py $(PROBE)/ops.txt $(BUILD)/expected_ops.inc
+	$(MAKE) cc asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkboot.py'
 
