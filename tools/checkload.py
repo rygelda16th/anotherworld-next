@@ -111,19 +111,31 @@ def main():
     r = sxy / (sxx * syy) if sxx and syy else 0.0
     spread = (max(times) - min(times)) / (sum(times) / n)
 
+    # The decisive test is NOT the correlation. Over these files the times sit in a
+    # narrow band whatever the size, and a correlation computed on that band wanders
+    # either side of zero run to run - one run gave r = -0.518 and another r = 0.614,
+    # and on the strength of the second this checker once reported 135 KB/s. What
+    # settles it is whether the implied PER-BYTE cost agrees between files: a real
+    # rate is the same for a 9,871-byte file and a 65,230-byte one. Here it spans
+    # sixfold, which is proof there is no rate to measure.
+    per_byte = [t / sz for t, sz in zip(times, sizes)]
+    spread_pb = max(per_byte) / min(per_byte)
     print(f"\nsize against time over {n} files: r = {r:.3f}, "
           f"times spread {spread*100:.0f}% across a {max(sizes)/min(sizes):.1f}-fold "
           f"range of sizes")
+    print(f"implied cost a byte: {min(per_byte):.1f} to {max(per_byte):.1f} T, "
+          f"a {spread_pb:.1f}-fold spread - a real rate would be one number")
 
-    if r < 0.5:
+    if spread_pb > 2.0 or r < 0.9:
         print("""
 NOT MEASURABLE HERE, and that is the result.
 
-The time a read takes does not depend on how much is read: the smallest file above
-cost MORE emulated time than the largest, and two files 98 bytes apart in size cost
-the same number of T-states to the byte. ZEsarUX's esxDOS handler does its I/O on
-the host and charges the emulated CPU nothing for it, so what these figures measure
-is this checker's polling interval while the program spins in its wait loop.
+The time a read takes barely depends on how much is read: every file above costs
+between two and three million T-states whatever its size, so the implied cost a byte
+spans sixfold and there is no single rate to report. ZEsarUX's esxDOS handler does
+its I/O on the host and charges the emulated CPU nothing for it, so what these
+figures measure is this checker's polling interval while the program spins in its
+wait loop.
 
 So the read rate is a HARDWARE question, and it joins the list of things only the
 KS3 can answer - alongside whether the DMA honours $123B and what it really costs

@@ -1253,12 +1253,19 @@ Seven files from 9,871 to 65,230 bytes, every byte arriving, the largest across
 eight pages.
 
 **But ZEsarUX's esxDOS handler does its I/O on the host and charges the emulated
-CPU nothing**, so the time a read takes does not depend on how much is read. Over
-those seven files, size against time comes out at **r = -0.518** - negative - and
-the smallest file costs more emulated time than the largest. What such a
-measurement records is the checker's own polling interval while the program spins
-in its wait loop. The checker detects this and says so rather than reporting a
-rate; it would have reported 99 KB/s, and that number would have been fiction.
+CPU nothing**, so the time a read takes barely depends on how much is read: every
+one of those seven files costs between two and three million T-states whatever its
+size, and the implied cost a byte therefore spans **34 to 226 T, a sixfold
+spread**. A real rate is one number.
+
+**The checker's first two versions both reported a rate anyway**, and the second
+failure is the instructive one. Version one divided and got 99 KB/s. Version two
+tested the size-against-time correlation and refused - but that correlation is
+computed over a narrow band of times and wanders either side of zero: one run gave
+**r = -0.518** and another **r = +0.614**, and on the strength of the second the
+checker reported 135 KB/s. It now tests whether the per-byte figures AGREE between
+files, which is the thing a rate actually means, and gives the same verdict every
+run.
 
 So the read rate joins the short list of things only the KS3 can answer, beside
 whether the DMA honours `$123B`. Phase D is designed against an assumed rate, and
