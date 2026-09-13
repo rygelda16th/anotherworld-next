@@ -69,7 +69,9 @@ jump_table:
         jp      aw_frame_sync           ; $8015  void aw_frame_sync(void)
         jp      aw_load_res             ; $8018  I3: the game loads; this counts
         jp      aw_inval_res            ; $801B
-        ASSERT $ - jump_table == 30
+        jp      aw_draw_string          ; $801E  I4: counted here
+        jp      aw_play_music           ; $8021  I5: counted here
+        ASSERT $ - jump_table == 36
 
 VM_STACK        EQU $BF00               ; what SAVENEX declares; see the Makefile
 
@@ -228,6 +230,10 @@ aw_inval_res:
         ld      hl, (n_inval)
         inc     hl
         ld      (n_inval), hl
+        ret
+aw_draw_string:
+        ret
+aw_play_music:
         ret
 
 aw_set_palette:

@@ -136,7 +136,12 @@ def main():
     # The palette: did the file arrive, and did a blit apply one? pal=2 in the counters
     # only says op_setPalette was reached, which is not the same as sixteen colours
     # reaching Layer 2.
-    pal_file = read(z, 0xCD00, 64)
+    # The palette moved into the TEXT page when MMU6 had to give 1,024 bytes to the stack,
+    # so it is read through MMU7 mapping page 1. Reading $CD00 now finds the IM 2 vector
+    # table, every byte of which is VEC_FILL - $CE, 206 - which is what this reported as
+    # "PAL17.BIN did not load: the first 64 bytes hold [206]".
+    z.cmd(f"tbblue-set-register {0x57} 1")
+    pal_file = read(z, 0xEE00, 64)
     pal_now = read(z, sym["pal_now"], 1)[0]
     pal_req = read(z, sym["pal_req"], 1)[0]
 

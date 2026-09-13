@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-map check-aw check-input check-draw check-res check-text check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
+        check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
         toolchain-diff
 
 help:
@@ -168,17 +168,25 @@ AW_EXP       ?= 0        # the game compares PICTURES, not streams: see src/aw.a
 AW_LOG_RECS  ?= 32       # the game's trace buffer: small on purpose, see RES_TABLE_AT
 AW_IN        ?= 0xC380
 AW_DRAW      ?= 0xC390
+AW_MUS       ?= 0xC3B0
 
 # The game's C sits HIGHER than the harness's, because the rasteriser and the reader
 # are resident alongside it: see the CC_ORG comment in src/aw.asm.
 AW_VM_ORG    ?= 0x9C00
 
+# AND THE GAME'S STACK POINTER IS THE ONE IN MMU6, not $BF00. The CRT sets SP itself from
+# REGISTER_SP - that is how Gate D's stack was fixed in the first place - so setting it in
+# src/aw.asm's start: achieves nothing: the C overwrites it before main runs. Moving the stack
+# into MMU6's page and leaving this at $BF00 changed not one byte of behaviour, and cost an
+# hour of believing the stack was the problem when the stack had not moved.
+AW_STACK     ?= 0xD400
+
 cc-game: | $(BUILD)
 	@echo "  CC  src/aw/vm.c -> the game"
 	@$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(AW_VM_ORG) \
-	    -pragma-define:REGISTER_SP=$(CC_STACK) \
+	    -pragma-define:REGISTER_SP=$(AW_STACK) \
 	    -DAW_CTL=$(AW_CTL) -DAW_EXP=$(AW_EXP) -DAW_LOG_RECS=$(AW_LOG_RECS) \
-	    -DAW_IN=$(AW_IN) -DAW_DRAW=$(AW_DRAW) \
+	    -DAW_IN=$(AW_IN) -DAW_DRAW=$(AW_DRAW) -DAW_MUS=$(AW_MUS) \
 	    -o $(BUILD)/aw_vm src/aw/vm.c src/aw/jumptab.asm
 	@python3 tools/mkexp.py $(BUILD)/aw_vm.map $(BUILD)/aw_vm_c.exp
 
@@ -261,6 +269,13 @@ check-aw: cc-game
 	$(MAKE) asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkaw.py'
+
+# I5: the machine's module-header parse against tools/sfxmod.py's.
+check-mus: cc-game
+	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
+	$(MAKE) asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkmus.py'
 
 # I4: the machine's text against the reference's, driven directly.
 check-text: cc-game

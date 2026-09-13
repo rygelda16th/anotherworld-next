@@ -2664,6 +2664,36 @@ and a 16-by-8 divide by the integer part otherwise - which under-estimates, beca
 fraction advances too, so it is safe and merely means the caller loops again. One divide a
 block a voice against 18 T a sample a voice.
 
+**`make check-mus` passes: all three modules parsed exactly as `tools/sfxmod.py` parses them**
+- the delay with and without `op_playMusic`'s override, `numOrder`, all 128 order entries and
+all 15 instruments. The header is right, which had to come before the event loop: a player
+built on a misread header produces plausible noise, the worst failure mode sound has.
+
+**THE WORST BUG OF THE SESSION was a silent no-op in my own tooling.** The scripted edits that
+were supposed to add `jp aw_draw_string` and `jp aw_play_music` to **`src/aw.asm`'s** jump table
+used a string replacement **with no check** and matched nothing. The table stayed at 30 bytes
+while `src/aw/jumptab.asm` declared `_aw_play_music` at `$8021` - and `$8021` is **inside
+`start:`**. The C called into the middle of an instruction and the VM faulted eleven records in
+with "ret with an empty stack", taking `check-res`, `check-draw` and `check-input` down with it.
+
+**I4 never noticed**, because its gate calls `aw_draw_string` directly in assembly and never
+through the table. **A slot nothing calls is a slot nothing tests**, and the `ASSERT $ -
+jump_table == 36` is the only thing that can catch it. Every scripted edit needs its assertion;
+the ones that had it worked.
+
+**Two further wrong diagnoses on the way to it, both costing real time:**
+
+- **The stack, twice.** 1,137 bytes looked like the cause, so the stack was moved into MMU6's
+  page and the palette displaced into the text page to pay for it. It changed nothing - because
+  **the CRT sets SP itself from `REGISTER_SP`**, so `ld sp` in `start:` is overwritten before
+  `main` runs. That is the same mechanism Gate D's stack fix used and I had already written it
+  down. The move is kept: it is correct, and it freed 1,179 bytes of resident tail for code,
+  which the next steps will need.
+- **The control block's reservation.** The assembly said `ds 32 + 256 * 4` while the Makefile
+  told the C to use 32 records, so 1,056 bytes were reserved to `$C41F` and every table placed
+  from `$C0A0` sat inside it. Nothing corrupted - `ds` only reserves - but no assert in that
+  page was measuring anything real. Also fixed, also not the cause.
+
 **What I5 still needs:** the player on the machine, driven at `delay * 60 / 7050` ms;
 `op_playSound` and `op_playMusic` reaching it; and a gate. The gate wants the probe's own
 `note` records, and the input-free 45-frame trace has **none** - the timer never fires in a

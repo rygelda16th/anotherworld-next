@@ -161,8 +161,8 @@ def main():
     # THE OPERANDS, which nothing has ever compared. Gate D proves the opcode stream and
     # says nothing about what the C computed from it; check-readmachine proves the reader
     # given a poked draw list. This is the seam between them.
-    N = min(n_poly, 20)
-    raw = read(z, 0xD320, N * 10)
+    N = min(n_poly, 8)
+    raw = read(z, 0xC4A0, N * 10)
     mach = []
     for i in range(N):
         e = raw[i * 10:i * 10 + 10]

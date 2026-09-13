@@ -37,6 +37,8 @@ extern void aw_frame_sync(void);
 /* I3. The harness's are `ret`s; the game's load a resource and forget them all. */
 extern void aw_load_res(uint16_t id) __z88dk_fastcall;
 extern void aw_inval_res(void);
+/* I5. The harness counts; the game parses the module's header. */
+extern void aw_play_music(void);
 /* The two shared regions are named by PLAIN ADDRESS CONSTANTS, not by extern
  * symbols declared with defc. That is the third arrangement tried and the first
  * that is unambiguous.
@@ -105,6 +107,10 @@ extern void aw_inval_res(void);
  * aw_draw_poly is a counter and reads nothing. */
 #ifndef AW_DRAW
 #define AW_DRAW         0
+#endif
+/* Where op_playMusic leaves its three operands. = MUS_BLOCK in src/aw.asm. */
+#ifndef AW_MUS
+#define AW_MUS          0
 #endif
 
 #define CTL_SEED        (*(volatile uint16_t *)(AW_CTL + 0x00))
@@ -496,11 +502,21 @@ static void op_updateMemList(void)
     }
 }
 
+/* op_playMusic, vm.cpp:380, into loadSfxModule. The three operands go where the assembly
+ * reads them; fetching them is still the VM's job, so the opcode stream is unchanged. */
 static void op_playMusic(void)
 {
-    fetch_word();                   /* resource */
-    fetch_word();                   /* delay */
-    fetch_byte();                   /* position */
+    uint16_t res = fetch_word();
+    uint16_t delay = fetch_word();
+    uint8_t pos = fetch_byte();
+#if AW_MUS
+    *(volatile uint8_t *)(AW_MUS + 0) = (uint8_t)res;
+    *(volatile uint16_t *)(AW_MUS + 1) = delay;
+    *(volatile uint8_t *)(AW_MUS + 3) = pos;
+    aw_play_music();
+#else
+    (void)res; (void)delay; (void)pos;
+#endif
 }
 
 typedef void (*op_fn)(void);

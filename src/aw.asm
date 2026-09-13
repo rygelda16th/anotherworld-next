@@ -68,6 +68,8 @@ RES_MAX_PAGES   EQU 40
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
 
 CTL             EQU $C000
+STACK_TOP       EQU $D400               ; grows down to $CF00: 1,280 bytes
+STACK_FLOOR     EQU $CF00
 INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
 ; I3's tables, in MMU6's page rather than the resident region, which the rasteriser and
 ; the C had already filled: 584 bytes of resource table and 146 of load state is 730, and
@@ -75,7 +77,10 @@ INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
 ; buffer, which dropped from 256 records to 32 - check-boot gates the opcode stream at 763
 ; in the harness, so the game's copy of it is a post-mortem convenience and not a claim.
 RES_TABLE_AT    EQU $C0A0
-PAL_BASE        EQU $CD00               ; 32 palettes x 16 entries x 2 bytes = 1,024
+; The palette moved OUT of MMU6's page and into the text page, because MMU6 had to give up
+; 1,024 bytes for the stack. It is read only by apply_palette, which runs at a blit and never
+; during a draw, so mapping the text page at MMU2 for it is free.
+PAL_BASE        EQU $EE00               ; in the text page: 32 palettes x 16 x 2 = 1,024
 NR_PAL_CTRL     EQU $43
 NR_PAL_INDEX    EQU $40
 NR_PAL_VALUE    EQU $44
@@ -118,8 +123,22 @@ STR_INDEX_AT    EQU $E300
 ; bytes actually put it at $E52C, which would have made every string sixteen bytes adrift
 ; with nothing to say so.
 STR_BLOCK       EQU $C3A0               ; colour, x, y, id - what the C leaves for us
-DRAW_LOG        EQU $D320
-DRAW_LOG_MAX    EQU 20                  ; 20 x 10 bytes, all that fits before the ring
+MUS_BLOCK       EQU $C3B0               ; resNum, delay, pos - what op_playMusic leaves
+; The module's window. Its patterns run to 15,552 bytes so they cannot be resident; the
+; header and order table are copied out once at load, and a pattern block is read through
+; a window when an event is due. MMU2 is free at the FRAME BOUNDARY, which is where events
+; are handled - not in the interrupt, where a polygon draw may own MMU2 mid-record.
+; The order table and the instrument list are copied out of the module once and read on
+; every event, so they are DATA in MMU6's page rather than beside the code - the resident
+; region is the binding constraint at every step now, and 158 bytes of table there costs
+; 158 bytes of stack.
+MUS_ORDER_AT    EQU $C400               ; 128 bytes
+MUS_INSTR_AT    EQU $C480               ; 15 x 2
+MUS_WIN         EQU $4000
+NR_MUS_MMU      EQU $52
+DRAW_LOG        EQU $C4A0
+DRAW_LOG_MAX    EQU 8                   ; 8 x 10 bytes: the stack took the rest, and
+                                        ; check-draw only ever prints the first eight
 
 ; Layer 2. The destination band goes at MMU7, because MMU2/MMU3 are the polygon window
 ; and the reader is reading it at the moment the rasteriser writes a band. The source
@@ -213,8 +232,8 @@ BLK_B           EQU 220
 ; $C000-$DFFF is never remapped and the C knows nothing about it, so the table lives
 ; there, in the gap between the expected stream and the ring. Every entry is VEC_FILL,
 ; so the vector is $D2D2 and the trampoline goes there.
-VEC_TABLE       EQU $D100
-VEC_FILL        EQU $D2
+VEC_TABLE       EQU $CD00
+VEC_FILL        EQU $CE
 VEC_TRAMP       EQU (VEC_FILL << 8) | VEC_FILL
 
         ORG $8000
@@ -229,11 +248,31 @@ jump_table:
         jp      aw_frame_sync           ; $8015
         jp      aw_load_res             ; $8018  void aw_load_res(uint16_t id)
         jp      aw_inval_res            ; $801B  void aw_inval_res(void)
-        ASSERT $ - jump_table == 30
+        jp      aw_draw_string          ; $801E  I4
+        jp      aw_play_music           ; $8021  I5
+        ; THIRTY-SIX. src/aw/jumptab.asm declares the same addresses to the C and this ASSERT
+        ; is the only thing that catches a slot added to one file and not the other - which is
+        ; exactly what happened: the edits that were supposed to add these two slots used a
+        ; string replacement with no check and matched nothing, so the table stayed at 30
+        ; bytes while jumptab.asm declared _aw_play_music at $8021. $8021 is INSIDE start:.
+        ; The C called into the middle of an instruction and the VM faulted eleven records in.
+        ;
+        ; I4 did not notice because its gate calls aw_draw_string directly in assembly and
+        ; never through the table. A slot nothing calls is a slot nothing tests.
+        ASSERT $ - jump_table == 36
 
 start:
         di
-        ld      sp, $BF00
+        ; THE STACK IS IN MMU6's PAGE, not below the C. The resident 16K holds the assembly
+        ; and the C's 7.8K, and every table added to it came straight off the stack - 1,137
+        ; bytes by the time the module player went in, at which point the VM started faulting
+        ; with "ret with an empty stack" and two other gates broke.
+        ;
+        ; MMU6 is never remapped, so a stack there is always present. SAVENEX still declares
+        ; $BF00 because the .nex LOADER uses it while bank 0 is being written, and pointing it
+        ; at bank 0 is what broke the load when this was tried at $FF00. The switch happens
+        ; here, once the loader is done.
+        ld      sp, STACK_TOP
         nextreg NR_TURBO, 3
 
         ; MMU6 is deliberately NOT touched: bank 0's first half is where the ring
@@ -291,7 +330,7 @@ start:
         ld      de, fname
         ld      bc, 10
         ldir
-        ld      de, PAL_BASE
+        ld      de, PAL_BASE            ; MMU7 still maps the text page here
         ld      bc, 1024
         call    load_flat
 .loaded:
@@ -307,6 +346,18 @@ start:
         ; wrong on its own, or whether aw_draw_poly sets it up wrong. Those need separating
         ; and no existing gate separates them: check-readmachine drives the reader from a
         ; poked list in the HARNESS, and check-draw drives it from the VM in the GAME.
+        ; probe_mus holds a resource id: load it and hand it to the player, no VM. The
+        ; module has to be RESIDENT before its header can be read, so this does the load
+        ; through the same aw_load_res the bytecode would have used.
+        ld      a, (probe_mus)
+        or      a
+        jr      z, .not_mus
+        ld      l, a
+        ld      h, 0
+        call    aw_load_res
+        call    aw_play_music
+        jr      .stop
+.not_mus:
         ld      a, (probe_str)
         or      a
         jr      z, .not_str
@@ -1054,8 +1105,9 @@ apply_palette:
         add     hl, hl
         add     hl, hl
         add     hl, hl
-        ld      de, PAL_BASE
-        add     hl, de                  ; HL = this palette's first byte
+        ld      de, PAL_BASE - $E000 + TEXT_WIN
+        add     hl, de                  ; HL = this palette's first byte, through the window
+        nextreg NR_TEXT_MMU, TEXT_PAGE  ; the palette lives in the text page
         nextreg NR_PAL_CTRL, PAL_SEL_L2
         nextreg NR_PAL_INDEX, 0
         ld      b, 32
@@ -1207,6 +1259,95 @@ aw_draw_poly:
 .restore:
         ld      a, (saved_mmu0)
         nextreg NR_MMU0, a
+        ret
+
+;-----------------------------------------------------------------------------
+; I5. loadSfxModule, sfxplayer.cpp. The header is copied out of the module once, because
+; every field in it is read on every event and paging a window in to fetch two bytes is
+; absurd. The patterns are not: they run to 15,552 bytes.
+;
+; The layout, big-endian throughout:
+;   0x00  delay, a word - the default if op_playMusic passes zero
+;   0x02  fifteen instruments of four bytes: a resource number and a volume, both words
+;   0x3E  numOrder, a word
+;   0x40  the order table, 0x80 bytes
+;   0xC0  the pattern blocks, 1024 bytes each, selected by the order table
+;
+; tools/sfxmod.py decodes the same thing on the host and is this routine's oracle.
+;-----------------------------------------------------------------------------
+aw_play_music:
+        ld      a, (MUS_BLOCK + 0)      ; the resource number
+        or      a
+        jr      nz, .have
+        ; resNum zero: the reference treats that as "carry on", and pos zero as a rewind
+        ret
+.have:
+        ld      (mus_res), a
+        ; where did aw_load_res put it? zero means it never arrived
+        ld      h, 0
+        ld      l, a
+        ld      de, res_page
+        add     hl, de
+        ld      a, (hl)
+        or      a
+        jr      nz, .resident
+        ld      hl, (n_mus_miss)
+        inc     hl
+        ld      (n_mus_miss), hl
+        ret
+.resident:
+        ld      (mus_page), a
+        nextreg NR_MUS_MMU, a           ; the module's first 8K at $4000
+
+        ; the default delay, big-endian at 0x00
+        ld      a, (MUS_WIN + 0)
+        ld      h, a
+        ld      a, (MUS_WIN + 1)
+        ld      l, a
+        ld      (mus_delay_raw), hl
+        ; op_playMusic's delay wins if it is not zero
+        ld      hl, (MUS_BLOCK + 1)
+        ld      a, h
+        or      l
+        jr      z, .use_default
+        ld      (mus_delay_raw), hl
+.use_default:
+        ; numOrder, big-endian at 0x3E - a byte in practice, and the reference reads a word
+        ld      a, (MUS_WIN + $3F)
+        ld      (mus_num_order), a
+        ; the order table, 0x80 bytes from 0x40, copied out
+        ld      hl, MUS_WIN + $40
+        ld      de, MUS_ORDER_AT
+        ld      bc, $80
+        ldir
+        ; the fifteen instruments: a resource number and a volume, both big-endian
+        ld      hl, MUS_WIN + 2
+        ld      de, MUS_INSTR_AT
+        ld      b, 15
+.instr:
+        ld      a, (hl)                 ; resource, high byte
+        inc     hl
+        ld      c, (hl)                 ; low
+        inc     hl
+        ld      a, c
+        ld      (de), a                 ; only the low byte can be a resource id
+        inc     de
+        inc     hl                      ; volume, high byte - always zero here
+        ld      a, (hl)
+        inc     hl
+        ld      (de), a                 ; the volume
+        inc     de
+        djnz    .instr
+
+        ld      a, (MUS_BLOCK + 3)      ; the starting order
+        ld      (mus_cur_order), a
+        ld      hl, 0
+        ld      (mus_cur_pos), hl
+        ld      a, 1
+        ld      (mus_playing), a
+        ld      hl, (n_mus)
+        inc     hl
+        ld      (n_mus), hl
         ret
 
 ;-----------------------------------------------------------------------------
@@ -1475,6 +1616,8 @@ stop_blit:  dw 0            ; stop the frame loop after this many blits; 0 = nev
 snd_off:    db 0            ; 1 = the interrupt ticks but does not mix: a discriminator
         EXPORT cur_band_x
 cur_band_x: db 0
+        EXPORT probe_mus
+probe_mus:  db 0            ; a resource id: load it and parse it, no VM
         EXPORT probe_str
 probe_str:  db 0            ; 1 = draw one string from STR_BLOCK and stop, no VM
         EXPORT probe_fill
@@ -1502,6 +1645,24 @@ nm_res:     db "RES", 0
 nm_pal:     db "PAL", 0
 nm_bmp:     db "BMP", 0
 nm_tail:    db ".BIN", 0
+        EXPORT mus_res
+mus_res:        db 0
+        EXPORT mus_page
+mus_page:       db 0
+        EXPORT mus_delay_raw
+mus_delay_raw:  dw 0
+        EXPORT mus_num_order
+mus_num_order:  db 0
+        EXPORT mus_cur_order
+mus_cur_order:  db 0
+        EXPORT mus_cur_pos
+mus_cur_pos:    dw 0
+        EXPORT mus_playing
+mus_playing:    db 0
+        EXPORT n_mus
+n_mus:          dw 0
+        EXPORT n_mus_miss
+n_mus_miss:     dw 0
 str_col:    db 0
 str_x:      db 0
 str_x0:     db 0
@@ -1537,8 +1698,14 @@ rd_log:     ds 8 * 8                    ; the reader's leaf log, small: nothing 
 
         ORG CTL
         EXPORT ctl
-ctl:        ds 32 + 256 * 4             ; the control block, then 256 records
-        ASSERT $ <= INTERP_AT
+; THIRTY-TWO records, matching AW_LOG_RECS in the Makefile - which is the number the C was
+; given. This said 256 while the C used 32, so the assembly reserved 1,056 bytes to $C41F and
+; every table placed from $C0A0 onward - the resource tables, the input and draw blocks, the
+; music blocks - sat INSIDE that reservation. Nothing corrupted, because `ds` only reserves,
+; but the layout could not be reasoned about and the asserts were all measuring the wrong end.
+AW_LOG_RECS     EQU 32                  ; = AW_LOG_RECS in the Makefile
+ctl:        ds 32 + AW_LOG_RECS * 4     ; the control block, then its records
+        ASSERT $ <= RES_TABLE_AT        ; the records must not reach the resource tables
 
         ; THE RECIPROCAL TABLE, where the expected opcode stream used to be.
         ;
@@ -1568,17 +1735,21 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
         ASSERT VOICES + V_SIZE * 4 <= SAMPLE
         ASSERT SAMPLE + SAMPLE_LEN <= $E000
         ; the vector table and its trampoline, in the gap the expected stream leaves
-        ASSERT VEC_TABLE + 257 <= VEC_TRAMP
-        ASSERT VEC_TRAMP + 3 <= RING_ADDR
         ; EVERY small block asserted, because STR_BLOCK sat inside DRAW_LOG's 200 bytes
         ; for three commits and only escaped notice because the two probe paths that use
         ; them never run together.
         ASSERT IN_BLOCK    >= RES_TABLE_AT + RES_COUNT + RES_COUNT * 4
         ASSERT DRAW_BLOCK  >= IN_BLOCK + 12
         ASSERT STR_BLOCK   >= DRAW_BLOCK + 10
-        ASSERT INTERP_AT   >= STR_BLOCK + 10
-        ASSERT DRAW_LOG    >= VEC_TRAMP + 3
-        ASSERT DRAW_LOG + DRAW_LOG_MAX * 10 <= RING_ADDR
+        ASSERT MUS_ORDER_AT >= STR_BLOCK + 16
+        ASSERT MUS_INSTR_AT >= MUS_ORDER_AT + $80
+        ASSERT INTERP_AT    >= MUS_INSTR_AT + 30
+        ASSERT VEC_TABLE   >= MUS_INSTR_AT + 30
+        ASSERT VEC_TRAMP   >= VEC_TABLE + 257
+        ASSERT STACK_FLOOR >= VEC_TRAMP + 3
+        ASSERT STACK_TOP   <= RING_ADDR
+        ASSERT DRAW_LOG    >= MUS_INSTR_AT + 30
+        ASSERT DRAW_LOG + DRAW_LOG_MAX * 10 <= INTERP_AT
 
         ; I4's font and dictionary, in bank 0's second half. Mapped at MMU2 during text.
         ORG FONT6_AT
