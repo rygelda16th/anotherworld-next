@@ -525,8 +525,19 @@ def replay(path, on_frame=None, font=None, cls=None, stop_after=None,
             # than re-deriving, so a select the trace missed cannot silently
             # send a polygon to the wrong page.
             v.cur1 = a["page"]
-            v.fill_polygon(a["colour"], a["px"], a["py"],
-                           a["bbw"], a["bbh"], a["points"])
+            # _draw_polygon, NOT fill_polygon. _draw_polygon is the leaf hook each
+            # geometry overrides: RefVideo's is the engine's own 320x200, RefVideo8's
+            # scales into 256x192 and then fills. Calling fill_polygon here fed a
+            # RefVideo8 unscaled coordinates, and this is the SECOND time that exact
+            # mistake has been made in this project - the first cost a day of believing
+            # the machine's rasteriser was wrong when the reference was.
+            #
+            # What it cost this time: I2's gate reported the game's first polygon as
+            # 2,756 wrong bytes when the machine was right. Nine eliminations, four
+            # correct-but-irrelevant fixes, and a one-record probe that would not
+            # reproduce the failure - all of it measuring the harness.
+            v._draw_polygon(a["colour"], a["px"], a["py"],
+                            a["bbw"], a["bbh"], a["points"])
         elif kind == "fill":
             v.fill_page(a["page"], a["colour"])
         elif kind == "copy":

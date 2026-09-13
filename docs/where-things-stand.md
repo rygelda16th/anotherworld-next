@@ -2033,7 +2033,7 @@ had failed to find in dozens.
 |---|---|---|---|
 | ~~**I1**~~ | ~~one program, and the memory map that lets it exist~~ **DONE**, `make check-map` and `make check-aw` | the last thing that could force a redesign | **PASSED**: all 763 records of the engine's stream with the frame interrupt pacing the VM, the DMA streaming, and the mixer refilling from inside the interrupt | everything resident at once and a frame runs: Gate D re-run *inside* the integrated program, with the frame interrupt and the sound interrupt both live, for 60 seconds |
 | ~~**I1a**~~ | ~~read a real keyboard~~ **DONE**, `make check-input` | nothing in this project read input at all; `petest.asm` is handed a poked byte | **PASSED**: all 32 combinations from the emulator's own keys, through `read_keys` and the reference's mapping, to the VM's own variables |
-| **I2** | **the VM draws** - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
+| ~~**I2**~~ | ~~the VM draws~~ **DONE**, `make check-draw` - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
 | **I3** | **resources arrive at runtime** - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
 | **I4** | **text** - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
 | **I5** | **sound in the game** - `op_playSound` and `op_playMusic` reach the gated player, **and the music module is parsed** | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | SFX and music events fire at the same frames as the engine's `sound.txt`, the mixer output stays byte-exact **on real sound resources**, and the module's order table and patterns match `sfxplayer.cpp`'s reading of them |
@@ -2214,7 +2214,7 @@ never keep two.** The second was `0x`-prefixed addresses in the ZRCP commands -
 input was not reaching it. That trap is already in this document, in the breakpoint
 note, and it cost twenty minutes again anyway.
 
-#### I2 is PARTWAY, and this is exactly where it stands
+#### I2 is CLOSED - the intro renders, and the harness was the last bug
 
 **The VM draws polygons on the Next.** `make check-aw` reports 151 polygon draws and
 the page the VM drew into holding three distinct values over 3,072 sampled bytes - real
@@ -2360,35 +2360,43 @@ So the one-record probe, given what looks like the identical starting state, dra
 correctly - and the VM, from the same state with the same operands, does not. **The probe is
 therefore not equivalent for a reason not yet found**, and that is the thing to chase.
 
-**THE PER-ROW EXTENTS WERE THE RIGHT INSTRUMENT and they broke the problem open.**
-`bisect-draw` now reports them and needed no change to the machine. Rows 0 to 13 disagree
-over **exactly columns 51..64**, a constant 14-byte stripe - a block, not an edge. An
-endpoint one or two out gives a ribbon down one side; this is a span being painted where
-none should be.
+**THE PER-ROW EXTENTS WERE THE RIGHT INSTRUMENT and they broke it open.** Rows 0 to 13
+disagreed over **exactly columns 51..64**, a constant 14-byte stripe - a block, not an edge.
+An endpoint one or two out gives a ribbon down one side; this was a span painted where none
+should be.
 
-**And then the decisive read: `dst_p0 = src_p0 = 24`, both page 0 and correct, while**
+**Then the decisive read, and it was a contradiction inside the HOST tooling:**
 
 | | |
 |---|---|
-| the machine's page 0 after draw 1 | 25,577 bytes of `2`, **23,575 of `3`** |
-| `bisect-draw`'s reference, same point | **all 49,152 bytes of `2`** - it painted nothing |
+| the machine's page 0 after draw 1 | 25,577 bytes of `2`, 23,575 of `3` |
+| `bisect-draw`'s reference | all 49,152 of `2` - it painted nothing |
 | a **standalone** host call of the same draw | painted exactly **23,575** bytes |
 
-**That is a contradiction inside the host tooling, and it has to be settled first.** The
-machine agrees with the standalone reference and disagrees with `bisect-draw`'s, and the two
-references disagree about the identical draw. Only one of them can be the engine.
+The machine agreed with one reference and not the other. The record's first byte at offset
+2096 is `$C3`, which is `>= $C0`, so the record supplies its own colour - `$C3 & $3F = 3` -
+and the trace's leaf says `colour=3`. So the machine was **right**, and `bisect-draw`'s
+reference was wrong.
 
-The likely mechanism is that `replay`'s `stop_draws` and the engine's own record order do not
-line up the way the code assumes: `instrDraw` is called BEFORE `readAndDrawPolygon`, so a
-`draw` record precedes its leaves, and the break must happen on the NEXT draw record - but
-the trace also carries `part` records and the first `draw` may not be the first thing in it.
-If `bisect-draw` is dropping draw 1's leaf then **the machine has been right all along and
-every count in this section is measuring the harness**, which would also explain why four
-correct fixes changed nothing and why the one-record probe would not reproduce the failure.
+**`replay` called `fill_polygon` where it had to call `_draw_polygon`.** `_draw_polygon` is
+the leaf hook each geometry overrides: `RefVideo`'s is the engine's own 320x200, `RefVideo8`'s
+scales into 256x192 and then fills. Calling `fill_polygon` fed a `RefVideo8` unscaled
+coordinates - and **this is the second time that exact mistake has been made in this
+project.** The first cost a day of believing the machine's rasteriser was wrong.
 
-**Settle it by having `replay` report what it actually processed** - leaves drawn, records
-skipped - and compare that against the standalone call. That is an hour's work and it decides
-whether there is a machine bug here at all.
+**With one line changed, all four pages are identical - 196,608 bytes.** I2's gate passes.
+
+**WHAT THE HARNESS BUG COST, recorded because the pattern is the lesson.** Nine eliminations,
+a probe path that would not reproduce the failure, and **four fixes that were correct against
+the source and changed nothing**: the initial drawing page, the two display pointers, and
+`SRC_PAGE`. Every one of them is right and worth keeping. None of them was the fault. When
+several correct fixes in a row move the number by zero, the thing being measured is the
+measurement.
+
+**Three of the four bugs found in I2 were real and the gate caught them all**: the bit-7
+form's signed coordinates, which had been wrong for the whole of Phase D and which no other
+gate could see; the register clobber in `aw_copy_page` that copied page 0 onto itself; and the
+trace counter that was a buffer position where it should have been an index.
 
 **`SRC_PAGE` was wrong and is now fixed, and it did not change this.** The rasteriser's
 copy-mode fill reads page 0 and only page 0; the harness had `SRC_PAGE 2` because its own
