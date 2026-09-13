@@ -2506,6 +2506,36 @@ verified.
 reference's measured high-water across the parts is 38 pages - so the reservation has
 seven pages of headroom for parts that load more than the intro does. I6 will find out.
 
+#### I4 is BLOCKED on a decision, and the reference has no answer either
+
+**`RefVideo8` does not override `draw_char`.** The 4bpp version it inherits writes four
+bytes a cell with two pixels a byte into a 256-byte stride, which is meaningless at 8bpp.
+So **there is no specification for what text looks like on the Next** - the thing I4 is
+supposed to reproduce does not exist yet. This is the third time a missing `RefVideo8`
+override has mattered, after `_draw_polygon` twice.
+
+**And the geometry does not divide.** `drawChar` takes x in CHARACTER CELLS, `x <= 39`
+(`video.cpp:299`), so the original addresses 40 cells across its 320 pixels - 8 pixels a
+cell. Our page is 256 wide, which is **32 cells**. There is no arrangement in which 40
+eight-pixel cells fit in 256 pixels, so something has to give, and what gives is a visual
+decision rather than an arithmetic one. **Same class as F4, and therefore David's.**
+
+**Why no gate caught this earlier:** the 45-frame intro trace contains **no `char` records
+at all**. Text needs input - the code screen waits for keys and dialogue follows progress -
+and the traces every gate uses are input-free so the streams stay deterministic. With
+autoplay on, the protection screen draws **2,378** glyphs in 400 frames and part index 2
+draws **5,800**. So text is reachable, just not on the path anything currently measures.
+
+**How I4 gets gated once the geometry is decided**, and it does not need the VM to reach any
+text: drive `drawString` directly the way `probe_draw` drives one polygon - poke a string id,
+a colour and a position, compare the page against the reference. Deterministic, and the same
+shape as `check-readmachine`.
+
+**One trap earned here.** Hunting for text overwrote `trace.bin` and `ops.txt`, which I2's
+and I3's gates both rest on. They were copied to `preflight/hostprobe/keep/` first and
+restored after, and both gates re-run clean - but the document already warned about exactly
+this ("Two runs, two output files, one name") and it nearly happened again.
+
 #### I4. Text
 
 `drawString` (`video.cpp:267`) looks a string id up in `_stringsTableEng`
