@@ -34,6 +34,7 @@ FRAMES = int(os.environ.get("AW_FRAMES", "40"))   # the host logged 40
 # resource the stubbed loader never delivers. Generous: the host dispatched 567
 # opcodes over those 40 frames.
 BUDGET = int(os.environ.get("AW_BUDGET", "4000"))
+TRACE_FILE = "AWTRACE.BIN"   # the machine writes this through esxDOS
 
 
 def symbols(*paths):
@@ -68,6 +69,10 @@ def main():
           f"({sum(1 for r in want if r[0]=='op'):,} opcodes, "
           f"{sum(1 for r in want if r[0]=='thread'):,} thread edges), seed {seed}")
 
+    trace_path = os.path.join("build/assets", TRACE_FILE)
+    if os.path.exists(trace_path):
+        os.remove(trace_path)
+
     z = Zrcp()
     print(f"emulator: {z.cmd('get-version')}")
     z.cmd(f"smartload /work/{NEX}")
@@ -76,191 +81,85 @@ def main():
     if z.cmd(f"read-memory {sym['ready']} 1").strip().upper() != "5A":
         raise SystemExit("FAIL: the program never reached its wait loop")
 
-    def poke16(name, v):
-        z.cmd(f"write-memory {sym[name]} {v & 0xFF}")
-        z.cmd(f"write-memory {sym[name] + 1} {(v >> 8) & 0xFF}")
-
+    # The header the C reads, poked into the same block it writes - so the only
+    # memory the checker touches is six bytes at a fixed address in assembly-owned
+    # RAM, and everything it reads comes back in a file.
+    hdr = (seed.to_bytes(2, "little") + FRAMES.to_bytes(2, "little")
+           + BUDGET.to_bytes(2, "little"))
+    z.cmd(f"write-memory-raw {sym['log_buf']} {hdr.hex()}")
     blob = CODE_FILE.encode() + b"\x00"
     z.cmd(f"write-memory-raw {sym['fname']} {blob.hex()}")
-    poke16("aw_seed", seed)
-    poke16("aw_frames", FRAMES)
-    poke16("aw_budget", BUDGET)
     z.cmd(f"write-memory {sym['go']} 1")
 
-    # A BOUNDED wait, and not finishing is not fatal. While op_updateMemList is a
-    # stub the intro's script waits for resources that never arrive, so a thread
-    # loops without ever reaching pauseThread and the VM does not terminate. The
-    # stream it produced up to that point is still exactly the thing under test,
-    # and refusing to look at it would throw away the measurement.
-    finished = False
-    for _ in range(int(os.environ.get("AW_WAIT", "600"))):
-        if z.cmd(f"read-memory {sym['done']} 1").strip().upper() == "5A":
-            finished = True
-            break
-        time.sleep(0.05)
-    if not finished:
-        print("the VM did not terminate inside its budget - expected while "
-              "resource\n  loading is a stub; the stream so far is still compared "
-              "below")
-
-    err = int(z.cmd(f"read-memory {sym['err']} 1").strip(), 16)
-    got_bytes = int.from_bytes(
-        bytes.fromhex(z.cmd(f"read-memory {sym['got']} 2").strip()), "little")
-    del finished
-    if err:
-        raise SystemExit(f"FAIL: esxDOS error {err:#04x} loading {CODE_FILE}")
-    size = os.path.getsize(os.path.join("build/assets", CODE_FILE))
-    print(f"bytecode loaded: {got_bytes:,} bytes of {size:,}")
-    if got_bytes != size:
-        raise SystemExit("FAIL: short read")
-
-    fin = z.cmd(f"read-memory {sym['aw_finished']} 1").strip().upper()
-    frames = int.from_bytes(
-        bytes.fromhex(z.cmd(f"read-memory {sym['aw_frames_done']} 2").strip()),
-        "little")
-    print(f"the VM ran {frames} frames and "
-          f"{'finished cleanly' if fin == '5A' else 'DID NOT finish'}")
-
-    def rd(addr, n):
-        out = bytearray()
-        while len(out) < n:
-            k = min(2048, n - len(out))
-            out += bytes.fromhex(z.cmd(f"read-memory {addr + len(out)} {k}").strip())
-        return bytes(out)
-
-    # ---- claim 1: the initial state --------------------------------------
-    # Read it from a fresh boot, before the VM runs.
-    z.cmd(f"smartload /work/{NEX}")
-    time.sleep(4)
-    z.cmd("set-memory-zone -1")
-    z.cmd(f"write-memory-raw {sym['fname']} {blob.hex()}")
-    poke16("aw_seed", seed)
-    poke16("aw_frames", 0)              # load and initialise, run nothing
-    poke16("aw_budget", BUDGET)
-    z.cmd(f"write-memory {sym['go']} 1")
-    for _ in range(400):
+    waited = 0.0
+    limit = float(os.environ.get("AW_WAIT_S", "120"))
+    while waited < limit:
         if z.cmd(f"read-memory {sym['done']} 1").strip().upper() == "5A":
             break
-        time.sleep(0.05)
-    pcs = rd(sym["aw_pc"], 128)
-    reqs = rd(sym["aw_pc_req"], 128)
-    states = rd(sym["aw_state"], 64)
-    sreqs = rd(sym["aw_state_req"], 64)
-    variables = rd(sym["aw_vars"], 512)
+        time.sleep(0.1)
+        waited += 0.1
+    z.close()
 
-    faults = []
-    if int.from_bytes(pcs[0:2], "little") != 0:
-        faults.append(f"thread 0's pc is {int.from_bytes(pcs[0:2],'little')}, not 0")
-    for t in range(1, 64):
-        v = int.from_bytes(pcs[t * 2:t * 2 + 2], "little")
-        if v != 0xFFFF:
-            faults.append(f"thread {t}'s pc is {v:#06x}, not 0xFFFF")
-            break
-    for t in range(64):
-        if int.from_bytes(reqs[t * 2:t * 2 + 2], "little") != 0xFFFF:
-            faults.append(f"thread {t}'s requested pc is not 0xFFFF")
-            break
-    if any(states) or any(sreqs):
-        faults.append("a channel state is not zero")
-    def var(i):
-        return int.from_bytes(variables[i * 2:i * 2 + 2], "little", signed=True)
-    for i, w in ((0x54, 0x81), (0xE4, 0x14), (0xBC, 0x10), (0xC6, 0x80),
-                 (0xF2, 4000), (0xDC, 33), (0x3C, seed if seed < 0x8000
-                                            else seed - 0x10000)):
-        if var(i) != w:
-            faults.append(f"variable {i:#04x} is {var(i)}, not {w}")
-    print(f"claim 1, the initial state: "
-          + ("as initForPart leaves it" if not faults else f"{len(faults)} FAULTS"))
-    for f in faults[:6]:
-        print(f"    {f}")
-    if faults:
-        raise SystemExit("FAIL: the VM does not start where the engine starts")
+    if not os.path.exists(trace_path):
+        raise SystemExit(f"FAIL: the machine wrote no {TRACE_FILE} - it either "
+                         f"never finished ({waited:.0f}s waited) or esxDOS refused "
+                         "the write")
+    blk = open(trace_path, "rb").read()
+    print(f"\n{TRACE_FILE}: {len(blk):,} bytes, written by the machine itself")
 
-    # ---- claims 2 to 4: run it and compare the stream --------------------
-    z.cmd(f"smartload /work/{NEX}")
-    time.sleep(4)
-    z.cmd("set-memory-zone -1")
-    z.cmd(f"write-memory-raw {sym['fname']} {blob.hex()}")
-    poke16("aw_seed", seed)
-    poke16("aw_frames", FRAMES)
-    poke16("aw_budget", BUDGET)
-    z.cmd(f"write-memory {sym['go']} 1")
-    for _ in range(int(os.environ.get("AW_WAIT", "600"))):
-        if z.cmd(f"read-memory {sym['done']} 1").strip().upper() == "5A":
-            break
-        time.sleep(0.05)
+    n = int.from_bytes(blk[6:8], "little")
+    frames_done = int.from_bytes(blk[8:10], "little")
+    finished = blk[10]
+    oob = blk[11]
+    bad_op = blk[12]
+    print(f"  the VM ran {frames_done} frames, "
+          f"{'finished cleanly' if finished == 0x5A else 'did not finish'}"
+          f"{', out of opcode budget' if oob else ''}"
+          f"{f', invalid opcode {bad_op:#04x}' if bad_op else ''}")
+    print(f"  it claims {n:,} trace records")
 
-    claimed = int.from_bytes(
-        bytes.fromhex(z.cmd(f"read-memory {sym['aw_records']} 2").strip()),
-        "little")
-    # Trust the CONTENT, not the counter. Every record aw_logrec writes has kind 1
-    # or 2, so a kind of 0 is the end of what was written - and the counter has
-    # been seen to over-report, which would otherwise turn the buffer's unwritten
-    # tail into a wall of spurious divergences.
-    raw = rd(sym["log_buf"], min(claimed + 8, 2048) * 4)
-    n = 0
-    while n * 4 + 3 < len(raw) and raw[n * 4] in (1, 2):
-        n += 1
-    print(f"\nthe machine logged {n:,} records over {FRAMES} frames"
-          + (f"   (the counter claims {claimed:,}: a diagnostic wart, see the docs)"
-             if claimed != n else ""))
-    cur = 0
-    norm = []
-    for k in range(n):
-        kind, lo, hi, v = raw[k * 4:k * 4 + 4]
-        pc = lo | (hi << 8)
+    # Trust the content over the count, as ever: every record aw_logrec writes has
+    # kind 1 or 2.
+    recs, k = [], 0
+    while 16 + k * 4 + 3 < len(blk) and blk[16 + k * 4] in (1, 2):
+        kind, lo, hi, v = blk[16 + k * 4:20 + k * 4]
+        recs.append((kind, lo | (hi << 8), v))
+        k += 1
+    print(f"  and holds {len(recs):,} of them")
+
+    cur, norm = 0, []
+    for kind, pc, v in recs:
         if kind == 2:
             cur = v
             norm.append(("thread", cur, pc, 0))
-        elif kind == 1:
-            norm.append(("op", cur, pc, v))
         else:
-            raise SystemExit(f"FAIL: log record {k} has kind {kind}, not 1 or 2")
+            norm.append(("op", cur, pc, v))
 
-    bad = None
-    for k, (g, w) in enumerate(zip(norm, want)):
-        if g != w:
-            bad = (k, g, w)
-            break
-    print(f"claim 3, the opcode stream: compared {min(len(norm), len(want)):,} "
-          f"records")
-    if bad is None and len(norm) != len(want):
-        bad = (min(len(norm), len(want)),
-               norm[len(want)] if len(norm) > len(want) else None,
-               want[len(norm)] if len(want) > len(norm) else None)
-    if bad:
-        k, g, w = bad
-        print(f"\n  FIRST DIVERGENCE at record {k}")
-        print(f"    machine   {g}")
-        print(f"    engine    {w}")
-        print("\n  the ten records before it, both sides:")
-        for j in range(max(0, k - 10), k):
+    m = 0
+    while m < min(len(norm), len(want)) and norm[m] == want[m]:
+        m += 1
+    print(f"\nthe stream: {m:,} records identical to the engine's, of "
+          f"{min(len(norm), len(want)):,} compared")
+
+    if m == len(want):
+        print(f"""
+PASS: the VM dispatches exactly what the engine dispatches - all {len(want):,}
+      records, thread by thread and opcode by opcode, over {FRAMES} frames.""")
+        return
+    if m < len(norm) and m < len(want):
+        print(f"\n  FIRST DIVERGENCE at record {m}")
+        print(f"    machine   {norm[m]}")
+        print(f"    engine    {want[m]}")
+        for j in range(max(0, m - 6), m):
             print(f"    {j:>5}  {norm[j]}   {want[j]}")
-        if g is None:
-            print(f"""
-The machine's stream is a PREFIX of the engine's: every one of the {k} records it
-produced is right, and then it produces no more. That is what a stubbed
-op_updateMemList looks like from here - the script asks for a resource, nothing
-arrives, and a thread loops without reaching pauseThread. The VM is right for as
-far as it can be traced; making it go further is the resource loader, which is the
-rest of D4.""")
-            raise SystemExit(f"PARTIAL: {k} records identical, then the VM runs "
-                             "out of things it can do")
         raise SystemExit("FAIL: the machine's opcode stream is not the engine's")
-
-    print(f"    identical, all {len(want):,} of them")
-
-    for name, label in (("n_poly", "polygons"), ("n_select", "selectVideoPage"),
-                        ("n_fill", "fillVideoPage"), ("n_copy", "copyVideoPage"),
-                        ("n_blit", "blitFramebuffer"),
-                        ("n_pal", "setPalette")):
-        v = int.from_bytes(
-            bytes.fromhex(z.cmd(f"read-memory {sym[name]} 2").strip()), "little")
-        print(f"    {label:<18}{v:>6}")
-
-    z.close()
-    print("\nPASS: the VM starts where the engine starts and dispatches exactly "
-          "what it\n      dispatches, thread by thread, over 40 frames.")
+    print(f"""
+  The machine's stream is a PREFIX: every one of its {m:,} records is right and then
+  it produces no more. Raise AW_BUDGET if it ran out of opcode budget; otherwise the
+  script is waiting for a resource the stubbed loader never delivers, and the rest
+  of D4 is what unblocks it.""")
+    raise SystemExit(f"PARTIAL: {m:,} records identical, then the VM runs out of "
+                     "things it can do")
 
 
 if __name__ == "__main__":

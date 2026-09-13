@@ -50,29 +50,33 @@ extern void aw_set_palette(uint8_t id) __z88dk_fastcall;
  */
 #define AW_LOG_BUF      ((volatile uint8_t *)0xC000)
 
-/* And the control values are ordinary C globals again, which is the arrangement
- * that worked: 354 of 354 records identical to the engine's. Two attempts to move
- * them into assembly-owned memory - an `extern uint8_t x[]` against a defc, then a
- * cast address constant - both came back reading four different fields as the same
- * value, and neither was worth more time than it had already taken. The checker
- * finds them through z88dk's map, which it already parses for everything else. */
-uint16_t aw_seed;
-uint16_t aw_frames;
-uint16_t aw_budget;
-uint16_t aw_records;
-uint16_t aw_frames_done;
-uint8_t aw_finished;
-uint8_t aw_out_of_budget;
-uint8_t aw_bad_op;
-
-#define CTL_SEED          aw_seed
-#define CTL_FRAMES        aw_frames
-#define CTL_BUDGET        aw_budget
-#define CTL_RECORDS       aw_records
-#define CTL_FRAMES_DONE   aw_frames_done
-#define CTL_FINISHED      aw_finished
-#define CTL_OUT_OF_BUDGET aw_out_of_budget
-#define CTL_BAD_OP        aw_bad_op
+/* THE CONTROL VALUES LIVE IN THE SAME BLOCK, and the whole block goes out through
+ * a FILE rather than being read out of memory.
+ *
+ * That is the change that closes Gate D. Every previous arrangement had the checker
+ * read the C's state over the debug protocol, and the results were not repeatable -
+ * the same inputs gave 0, 64, 122 and 354 matching records on different runs. One
+ * cause was found (smartload does not clear RAM, so statics do not start at zero)
+ * and fixed, and it was not sufficient.
+ *
+ * So the channel goes. The C writes everything into one 8K block at $C000 - which
+ * it has demonstrably always been able to write, since records appeared there
+ * correctly - and the assembly writes that block to a file through esxDOS after
+ * main returns. Step 5 proved that path byte-exact. A file either holds the records
+ * or it does not; there is nothing left to be flaky.
+ *
+ * The header is sixteen bytes: the checker pokes the first six, the C writes the
+ * rest, and the records start after it.
+ */
+#define CTL_SEED        (*(volatile uint16_t *)(0xC000))
+#define CTL_FRAMES      (*(volatile uint16_t *)(0xC002))
+#define CTL_BUDGET      (*(volatile uint16_t *)(0xC004))
+#define CTL_RECORDS     (*(volatile uint16_t *)(0xC006))
+#define CTL_FRAMES_DONE (*(volatile uint16_t *)(0xC008))
+#define CTL_FINISHED    (*(volatile uint8_t *)(0xC00A))
+#define CTL_OUT_OF_BUDGET (*(volatile uint8_t *)(0xC00B))
+#define CTL_BAD_OP      (*(volatile uint8_t *)(0xC00C))
+#define AW_RECORDS      ((volatile uint8_t *)0xC010)
 
 /* Parameters for aw_draw_poly, because a fastcall takes one argument. */
 uint16_t aw_draw_off;
@@ -147,7 +151,7 @@ static uint16_t fetch_word(void)
 }
 
 /* ---- the trace log ------------------------------------------------------- */
-#define LOG_RECS 2048
+#define LOG_RECS 2040           /* 8K less the header, in four-byte records */
 uint16_t aw_log_count;
 
 /* Four bytes a record: kind, the program counter as a word, then the opcode or
@@ -157,7 +161,7 @@ static void aw_logrec(uint8_t kind, uint16_t pc, uint8_t v)
     volatile uint8_t *p;
     if (aw_log_count >= LOG_RECS)
         return;
-    p = AW_LOG_BUF + (aw_log_count << 2);
+    p = AW_RECORDS + (aw_log_count << 2);
     p[0] = kind;
     p[1] = (uint8_t)pc;
     p[2] = (uint8_t)(pc >> 8);

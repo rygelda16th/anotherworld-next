@@ -179,6 +179,21 @@ void instrPolyHier(int childs) {
 
 void instrBitmap(void) { ++gBitmaps; }
 
+static int gBitmapId = -1;
+static int gBitmapsDumped = 0;
+
+void instrBitmapId(int id) { gBitmapId = id; }
+
+void instrBitmapDump(const unsigned char *page0) {
+    if (gBitmapsDumped >= 4) return;         /* a few are plenty to compare */
+    char nm[48];
+    snprintf(nm, sizeof nm, "bmp_engine_%02X.bin", gBitmapId);
+    FILE *f = fopen(nm, "wb");
+    if (f) { fwrite(page0, 1, 320 * 200 / 2, f); fclose(f); }
+    printf("dumped the engine's page 0 after bitmap resource %#04x\n", gBitmapId);
+    ++gBitmapsDumped;
+}
+
 void instrHeap(unsigned used, int type, int size) {
     if (used > gHeapPeak) gHeapPeak = used;
     if (gSnd) fprintf(gSnd, "load %u %u %d %d %u\n", gNow, gFrameNo, type, size, used);

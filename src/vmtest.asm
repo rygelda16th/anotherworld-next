@@ -50,6 +50,8 @@ NR_MMU7         EQU $57
 F_OPEN          EQU $9A
 F_CLOSE         EQU $9B
 F_READ          EQU $9D
+F_WRITE         EQU $9E
+FA_WRITE_NEW    EQU $0E                 ; write, create, truncate
 FA_READ         EQU $01
 ESX_DRIVE       EQU '*'
 
@@ -86,6 +88,7 @@ start:
         jr      nz, .stop
 
         call    CC_ORG                  ; the C virtual machine, once
+        call    write_trace             ; and the whole block out to a file
 .stop:
         ld      a, $5A
         ld      (done), a
@@ -228,6 +231,47 @@ load_code:
         ret
 
 ;-----------------------------------------------------------------------------
+; write_trace - the whole 8K block at $C000 out to a file.
+;
+; This is what closes Gate D. Reading the C's state over the debug protocol was
+; never repeatable; a file is. Step 5 proved this path byte-exact, and the block
+; carries its own header so the checker needs nothing from memory at all.
+;-----------------------------------------------------------------------------
+write_trace:
+        ; PUT THE ROM BACK FIRST. The virtual machine has been paging bytecode over
+        ; $0000-$3FFF through MMU0 and MMU1, and esxDOS is reached by RST $08 - which
+        ; needs the ROM at $0000 and pages its own memory over the bottom 16K besides.
+        ; $FF is the MMU value that means "the ROM".
+        nextreg NR_MMU0, $FF
+        nextreg NR_MMU1, $FF
+
+        ld      a, ESX_DRIVE
+        ld      ix, trace_name
+        ld      hl, trace_name
+        ld      b, FA_WRITE_NEW
+        rst     $08
+        db      F_OPEN
+        ret     c                       ; no file, no trace; the checker will say so
+        ld      (handle), a
+
+        ; 8,192 bytes in one call. esxDOS takes the buffer in IX for a machine-code
+        ; caller and HL for a BASIC one, so set both - the trap wolf3d-next paid for
+        ; when CSpect wrote a filename over the code that followed it.
+        ld      a, (handle)
+        ld      ix, $C000
+        ld      hl, $C000
+        ld      bc, $2000
+        rst     $08
+        db      F_WRITE
+
+        ld      a, (handle)
+        rst     $08
+        db      F_CLOSE
+        ret
+
+trace_name:     db "AWTRACE.BIN", 0
+
+;-----------------------------------------------------------------------------
         EXPORT ready
 ready:          db 0
         EXPORT go
@@ -264,9 +308,10 @@ last_pal:       db 0
         ORG     $C000
         ; log_buf fills MMU6 exactly, $C000-$DFFF, and the stack lives above it in
         ; MMU7. Nothing pages either during the run.
-; The C writes here directly - src/aw/jumptab.asm declares the address to it.
+; One 8K block: sixteen bytes of header, then four-byte records. The C writes all
+; of it and write_trace sends the lot to a file.
         EXPORT log_buf
-log_buf:        ds LOG_RECS * 4
+log_buf:        ds 16 + 2040 * 4
 
         ; log_buf sits ABOVE the stack, at $C000-$DFFF, which is fine: the stack
         ; grows DOWN from $BF00. The bound here is the top of memory, not the stack.

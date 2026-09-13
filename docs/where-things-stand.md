@@ -1317,6 +1317,14 @@ is the target's default rather than the effective origin, so `__Start` is the sy
 to read; and z88dk emits one CODE section here with BSS inside it, so no DATA
 section is missing from the INCBIN.
 
+**Two SDCC warnings are worth naming, because both sit exactly where a fault would
+hurt.** `warning 110: conditional flow changed by optimizer` fires on `op_condJmp`'s
+`switch (op & 7)` and on the bit-7 form's diagonal slide - a signed comparison and a
+signed clamp, which is where the plan already said the overflow-aware form matters.
+Neither is investigated further, because Gate D's stream exercises `condJmp` heavily
+and a signedness fault would show as a divergence rather than as a warning. That is
+the argument for the gate, and it only holds while the gate runs.
+
 **What is NOT established is a repeatable full-stream comparison**, and the reason
 is the channel between the C and the checker rather than the VM. Reading the C's
 state back has been unreliable in a way several attempts did not pin down: a trace
@@ -1344,13 +1352,19 @@ presented as something other than a memory-map problem:
 and its opcode stream has been observed identical for 354 consecutive records - but
 not repeatably.** It is the one gate of nine that does not pass.
 
-**What to try next, in order of expected value.** Write the trace to a FILE through
-esxDOS rather than reading it out of memory: step 5 proved that path works, it needs
-no ZRCP reads at all, and a file either has the records or it does not. Then load
-resources for real, so the VM terminates of its own accord and can be read at rest.
-Both are ordinary work; neither needs another day of bisecting memory layouts, which
-is what the last several hours were and is why this is written down rather than
-continued.
+**So the channel went.** The C now writes everything - the header the checker pokes
+and the records it reads - into one 8K block at `$C000`, which it has demonstrably
+always been able to write since records appeared there correctly all along. After
+`main` returns, the assembly writes that block to `AWTRACE.BIN` through esxDOS, the
+path step 5 proved byte-exact. The checker reads the file. **The only memory it
+touches now is six bytes of header at a fixed address in assembly-owned RAM.** A
+file either holds the records or it does not.
+
+**And the ROM has to go back before that write.** The virtual machine has been
+paging bytecode over `$0000-$3FFF` through MMU0 and MMU1, and esxDOS is reached by
+`RST $08`, which needs the ROM at `$0000` and pages its own memory over the bottom
+16K besides. `$FF` is the MMU value that means the ROM. Without it the write simply
+produced no file, which is at least an honest failure.
 
 The seed is taken from the host's own run, because the reference sets variable
 `0x3C` from `time(0)` and the two streams would diverge the first time the

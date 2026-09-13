@@ -69,6 +69,16 @@ extern void instrSeed(int seed);
  */
 extern int instrJumpPart(unsigned frame);
 extern unsigned instrFrameNow(void);
+
+/* ---- sixth round: the full-screen bitmap path ---------------------------
+ * Step 9 found where these live - 70 of them load in the arena - so the deplaner
+ * in tools/mkassets.py can finally be compared against the engine's own, which is
+ * the only part of the asset pipeline that has never been checked against
+ * anything. instrBitmapId records which resource it is; instrBitmapDump writes the
+ * engine's page 0 straight after copyPage has filled it.
+ */
+extern void instrBitmapId(int id);
+extern void instrBitmapDump(const unsigned char *page0);
 extern void instrPace(int slices);   /* vmVariables[0xFF] at each blit */
 extern void instrTick(unsigned ms);   /* the virtual clock, for sound.txt */
 #endif
