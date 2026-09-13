@@ -1360,11 +1360,23 @@ path step 5 proved byte-exact. The checker reads the file. **The only memory it
 touches now is six bytes of header at a fixed address in assembly-owned RAM.** A
 file either holds the records or it does not.
 
-**And the ROM has to go back before that write.** The virtual machine has been
-paging bytecode over `$0000-$3FFF` through MMU0 and MMU1, and esxDOS is reached by
-`RST $08`, which needs the ROM at `$0000` and pages its own memory over the bottom
-16K besides. `$FF` is the MMU value that means the ROM. Without it the write simply
-produced no file, which is at least an honest failure.
+**Two things had to be right before it would write at all**, and both are worth
+carrying:
+
+**The ROM has to go back first.** The virtual machine has been paging bytecode over
+`$0000-$3FFF` through MMU0 and MMU1, and esxDOS is reached by `RST $08`, which needs
+the ROM at `$0000` and pages its own memory over the bottom 16K besides. `$FF` is the
+MMU value that means the ROM.
+
+**And the open mode is `$0C` alone, not `$0C | $02`.** ZEsarUX's handler switches on
+the mode byte as a whole rather than testing bits, and the cases it knows are `$01`
+read, `$03` read-write, `$06` create-if-absent-and-write, `$0A`
+open-or-create-and-write, and `$0C` create-or-truncate **on its own**. `$0E` - that
+last one OR'd with the write bit, which is what the bit names suggest - is not a case
+it knows, and it refuses the open. Read the emulator's accepted modes rather than the
+ones that seem to follow from the constants. Both failures produced no file and no
+message until `write_trace` was made to record the error code and which call refused
+it.
 
 The seed is taken from the host's own run, because the reference sets variable
 `0x3C` from `time(0)` and the two streams would diverge the first time the

@@ -51,7 +51,12 @@ F_OPEN          EQU $9A
 F_CLOSE         EQU $9B
 F_READ          EQU $9D
 F_WRITE         EQU $9E
-FA_WRITE_NEW    EQU $0E                 ; write, create, truncate
+; $0C is ESXDOS_MODE_CREAT_TRUNC - create, or replace an existing file - and it is
+; accepted ON ITS OWN. $0E, which is that OR'd with the write bit and looks like the
+; obvious thing to ask for, is not one of the cases the handler's switch knows and it
+; refuses the open outright. Read the emulator's accepted modes, not the ones that
+; seem to follow from the bit names.
+FA_WRITE_NEW    EQU $0C
 FA_READ         EQU $01
 ESX_DRIVE       EQU '*'
 
