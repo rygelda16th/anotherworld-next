@@ -290,6 +290,7 @@ setup_voices:
 
 ;-----------------------------------------------------------------------------
         EXPORT ready
+vol_now:    db VOLUME       ; which volume scale_byte is building for
 ready:      db 0
         EXPORT go
 go:         db 0

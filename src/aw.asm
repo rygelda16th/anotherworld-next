@@ -73,7 +73,7 @@ STACK_FLOOR     EQU $CF00
 ; Code ABOVE the C's image, in the tail the stack vacated when it moved into MMU6. The C is
 ; 7.8K from $9C00 and ends near $BB50, so this is the 1,100-odd bytes between that and $BF00 -
 ; which used to be stack and is now the only resident space left. Asserted at both ends.
-MUSIC_CODE      EQU $BC00
+MUSIC_CODE      EQU $BB50   ; just past the C's image, which ends at $BB45
 INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
 ; I3's tables, in MMU6's page rather than the resident region, which the rasteriser and
 ; the C had already filled: 584 bytes of resource table and 146 of load state is 730, and
@@ -214,7 +214,18 @@ SRC_PAGE        EQU 0
 DST_P0          EQU (L2_BASE_BANK + DST_PAGE * 3) * 2
 SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * 3) * 2
 SAMPLE          EQU $DE00
-SAMPLE_LEN      EQU 512
+SAMPLE_LEN      EQU 256                 ; halved to make room for the quiet volume table
+; TWO VOLUME TABLES, which is David's decision of 2026-09-14 and not an omission. The mixer
+; scales through a 256-byte table and only two page-aligned slots were free here, against nine
+; distinct instrument volumes and effects that move them further. The alternatives were a
+; multiply per sample - exact, and about nine percent more of a machine whose worst measured
+; frame is already 74% - or four quantised levels needing a restructure. Two now, revisited at
+; I10 once a real playthrough has been measured.
+;
+; VOLTAB is the loud one and it is the table check-snd already gates, built with VOLUME 48.
+VOLTAB_QUIET    EQU $DF00
+VOLUME_QUIET    EQU 24
+VOL_SPLIT       EQU 32                  ; at or below this, quiet
 
 ; 22,050 output samples a second at 50 frames is 441 a frame. blocklen is a byte, so
 ; it goes in two: 221 and 220.
@@ -728,7 +739,19 @@ publish_input:
 ; Setup, once, at boot.
 ;-----------------------------------------------------------------------------
 build_voltab:
+        ; the loud table, then the quiet one - the same scale_byte check-mix verified, at two
+        ; different volumes
+        ld      a, VOLUME
+        ld      (vol_now), a
         ld      hl, VOLTAB
+        call    build_one
+        ld      a, VOLUME_QUIET
+        ld      (vol_now), a
+        ld      hl, VOLTAB_QUIET
+        call    build_one
+        ret
+
+build_one:
         ld      b, 0
 .vt:    ld      a, b
         push    bc
@@ -772,7 +795,7 @@ init_voices:
         ld      b, 4
         ld      c, 0
 .one:
-        ld      (ix + V_ACTIVE), 1
+        ld      (ix + V_ACTIVE), 0      ; SILENT until a note says otherwise
         ld      (ix + V_FRAC), 0
         ld      (ix + V_POS), SAMPLE & $FF
         ld      (ix + V_POS + 1), SAMPLE >> 8
@@ -1510,6 +1533,12 @@ music_tick:
 ; the volume up and down, clamped to 0x3F.
 ;-----------------------------------------------------------------------------
 mus_pattern:
+        ; THE CHANNEL GOES IN MEMORY FIRST. This routine loads note_2's low byte into C, which
+        ; is where the caller put the channel number - so mus_voice indexed the voice array by
+        ; a note operand and wrote all four voices to whatever offset that happened to be. It
+        ; showed as every channel reporting the same increment.
+        ld      a, c
+        ld      (mp_chan), a
         ld      d, (hl)                 ; note_1, big-endian
         inc     hl
         ld      e, (hl)
@@ -1517,7 +1546,7 @@ mus_pattern:
         ld      b, (hl)                 ; note_2
         inc     hl
         ld      a, (hl)
-        ld      c, a                    ; BC = note_2 - C is reused, the caller saved it
+        ld      c, a                    ; BC = note_2; the channel is in (mp_chan) now
         ld      (mp_note1), de
         ld      (mp_note2), bc
 
@@ -1550,6 +1579,223 @@ mus_pattern:
         ld      hl, (n_mus_note)
         inc     hl
         ld      (n_mus_note), hl
+        jp      mus_voice
+
+;-----------------------------------------------------------------------------
+; mus_voice - turn the decoded row into a live voice. C = the channel.
+;
+; handlePattern's second half: the instrument is the top nibble of note_2, and a zero there
+; means "keep whatever this channel already has" rather than "silence". Effects 5 and 6 in the
+; next nibble move the volume up and down, clamped to 0x3F.
+;
+; The sample's shape comes from its own first four bytes, both big-endian words doubled:
+; sampleLen at 0 and loopLen at 2, with the data starting at byte 8. The reference plays
+; 0..sampleLen and then jumps to loopPos = sampleLen for loopLen - which is the same thing as
+; playing 0..sampleLen+loopLen once and looping back to sampleLen, so that is what this sets.
+;-----------------------------------------------------------------------------
+mus_voice:
+        ; IX = &voices[channel]
+        ld      hl, VOICES
+        ld      a, (mp_chan)
+        or      a
+        jr      z, .got_ix
+        ld      de, V_SIZE
+.mul_ix:
+        add     hl, de
+        dec     a
+        jr      nz, .mul_ix
+.got_ix:
+        push    hl
+        pop     ix
+
+        ; A NOTE ONLY PLAYS IF THIS ROW NAMES AN INSTRUMENT. handlePattern's `pat` is a local
+        ; struct memset to zero on every call, so pat.sampleBuffer is set only inside the
+        ; `if (sample != 0)` block - and the play at the bottom is guarded by
+        ; `else if (pat.sampleBuffer != 0)`. So a zero instrument nibble means the row is
+        ; IGNORED, not "keep the previous sample", which is what the first version assumed.
+        ; The gate caught it: two channels came out at the wrong frequency because the machine
+        ; had updated their pitch from a row the reference discards.
+        ld      a, (mp_note2 + 1)       ; note_2's high byte
+        and     $F0
+        ret     z
+        rrca
+        rrca
+        rrca
+        rrca                            ; the instrument number, 1..15
+        dec     a
+        add     a, a                    ; two bytes an entry
+        ld      e, a
+        ld      d, 0
+        ld      hl, MUS_INSTR_AT
+        add     hl, de
+        ld      a, (hl)                 ; the instrument's resource
+        or      a
+        ret     z                       ; an unused slot: no sample, so nothing plays
+        ld      (mv_res), a
+        inc     hl
+        ld      a, (hl)
+        ld      (mv_vol), a
+
+        ; where did aw_load_res put it?
+        ld      a, (mv_res)
+        ld      h, 0
+        ld      l, a
+        ld      de, res_page
+        add     hl, de
+        ld      a, (hl)
+        or      a
+        jr      nz, .have_page
+        ld      hl, (n_mus_nores)
+        inc     hl
+        ld      (n_mus_nores), hl
+        ret
+.have_page:
+        ld      (mv_page), a
+
+        ; BORROW MMU7 to read the sample's header. MMU7 is the Layer 2 draw band, and this runs
+        ; at the frame boundary where no draw is in progress - but the interrupt mixes through
+        ; the same slot, so it is saved and restored rather than assumed.
+        ld      bc, $243B
+        ld      a, NR_SAMP_MMU
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        ld      (mv_saved), a
+        ld      a, (mv_page)
+        nextreg NR_SAMP_MMU, a
+        ld      a, (SAMP_WIN + 0)       ; sampleLen, big-endian, doubled
+        ld      h, a
+        ld      a, (SAMP_WIN + 1)
+        ld      l, a
+        add     hl, hl
+        ld      (mv_len), hl
+        ld      a, (SAMP_WIN + 2)       ; loopLen, likewise
+        ld      h, a
+        ld      a, (SAMP_WIN + 3)
+        ld      l, a
+        add     hl, hl
+        ld      (mv_loop), hl
+        ld      a, (mv_saved)
+        nextreg NR_SAMP_MMU, a
+
+        ; total = 8 + sampleLen + loopLen
+        ld      hl, (mv_len)
+        ld      de, (mv_loop)
+        add     hl, de
+        ld      de, 8
+        add     hl, de
+        ld      (mv_total), hl
+
+        ld      a, (mv_page)
+        ld      (ix + V_PAGE), a
+        ld      (ix + V_POS), (SAMP_WIN + 8) & $FF
+        ld      (ix + V_POS + 1), (SAMP_WIN + 8) >> 8
+        ld      (ix + V_FRAC), 0
+
+        ; does it all fit in one window?
+        ld      hl, (mv_total)
+        ld      de, $2000
+        or      a
+        sbc     hl, de
+        jr      nc, .spans
+        add     hl, de
+        ld      de, SAMP_WIN
+        add     hl, de
+        ld      (ix + V_END), l
+        ld      (ix + V_END + 1), h
+        ld      (ix + V_LEFT), 0
+        ld      (ix + V_LEFT + 1), 0
+        jr      .loop_point
+.spans:
+        ld      (ix + V_LEFT), l        ; what is left after this window
+        ld      (ix + V_LEFT + 1), h
+        ld      (ix + V_END), (SAMP_WIN + $2000) & $FF
+        ld      (ix + V_END + 1), (SAMP_WIN + $2000) >> 8
+.loop_point:
+        ; the loop begins at 8 + sampleLen, and only if it is reachable in this window - a loop
+        ; point on a later page is not modelled and the voice simply stops instead. Recorded
+        ; rather than faked: n_mus_farloop counts it.
+        ld      hl, (mv_loop)
+        ld      a, h
+        or      l
+        jr      z, .no_loop
+        ld      hl, (mv_len)
+        ld      de, 8
+        add     hl, de
+        ld      de, $2000
+        or      a
+        sbc     hl, de
+        jr      nc, .far_loop
+        add     hl, de
+        ld      de, SAMP_WIN
+        add     hl, de
+        ld      (ix + V_LOOP), l
+        ld      (ix + V_LOOP + 1), h
+        jr      .volume
+.far_loop:
+        ld      hl, (n_mus_farloop)
+        inc     hl
+        ld      (n_mus_farloop), hl
+.no_loop:
+        ld      (ix + V_LOOP), 0
+        ld      (ix + V_LOOP + 1), 0
+.volume:
+        ; effects 5 and 6 move the instrument's volume, clamped to 0x3F
+        ld      a, (mp_note2 + 1)
+        and     $0F
+        ld      b, a                    ; the effect
+        ld      a, (mv_vol)
+        ld      c, a
+        ld      a, b
+        cp      5
+        jr      nz, .not_up
+        ld      a, (mp_note2)           ; note_2's low byte is the amount
+        add     a, c
+        jr      nc, .clamp
+        ld      a, $3F
+.clamp:
+        cp      $40
+        jr      c, .set_vol
+        ld      a, $3F
+        jr      .set_vol
+.not_up:
+        cp      6
+        jr      nz, .plain_vol
+        ld      a, c
+        ld      b, a
+        ld      a, (mp_note2)
+        neg
+        add     a, b
+        jr      nc, .set_vol
+        xor     a                       ; it went below zero
+        jr      .set_vol
+.plain_vol:
+        ld      a, c
+.set_vol:
+        ld      (mv_vol), a
+        cp      VOL_SPLIT + 1
+        jr      c, .quiet
+        ld      a, VOLTAB >> 8
+        jr      .store_vol
+.quiet:
+        ld      a, VOLTAB_QUIET >> 8
+.store_vol:
+        ld      (ix + V_VOL), a
+
+        ; the increment, and the voice goes live
+        ; The 8.8 increment: H is the integer part and L the fraction. V_INCI is a WORD, so its
+        ; high byte is cleared - an increment above 255 bytes a sample cannot happen, because
+        ; the shortest period 0x37 gives 761.
+        ld      hl, (mp_inc)
+        ld      a, l
+        ld      (ix + V_INCF), a
+        ld      a, h
+        ld      (ix + V_INCI), a
+        ld      (ix + V_INCI + 1), 0
+        ld      (ix + V_ACTIVE), 1
+        ld      hl, (n_mus_voice)
+        inc     hl
+        ld      (n_mus_voice), hl
         ret
 
 ;-----------------------------------------------------------------------------
@@ -1608,6 +1854,28 @@ probe_walk:
         ld      a, (probe_ticks)
         or      a
         ret     z
+        ; LOAD THE INSTRUMENTS THE MODULE NAMES. The bytecode would have asked for them through
+        ; op_updateMemList long before it played any music; the probe loads the module alone, so
+        ; without this every note found its sample absent, counted n_mus_nores and left the voice
+        ; at its boot values - which read as "every channel has increment 256" because that is
+        ; what init_voices leaves.
+        ld      hl, MUS_INSTR_AT
+        ld      b, 15
+.ins:
+        ld      a, (hl)
+        or      a
+        jr      z, .next_ins
+        push    bc
+        push    hl
+        ld      l, a
+        ld      h, 0
+        call    aw_load_res
+        pop     hl
+        pop     bc
+.next_ins:
+        inc     hl
+        inc     hl
+        djnz    .ins
         ld      b, a
         ld      a, 1
         ld      (mus_frames), a
@@ -1863,6 +2131,7 @@ n_blit:     dw 0
         EXPORT n_pal
 n_pal:      dw 0
 
+vol_now:    db VOLUME       ; which volume scale_byte is building for
 jt_arg:     dw 0                        ; whichever callback's argument, stashed
         EXPORT pg_ptr1
 ; PAGE 2, NOT PAGE 0. Video::init sets ptr3 to page 1 and ptr2 to page 2 and then calls
@@ -1947,10 +2216,29 @@ n_mus_note:     dw 0            ; notes decoded
 n_mus_stop:     dw 0            ; channel stops seen
         EXPORT mus_mark
 mus_mark:       dw 0            ; what a 0xFFFD row wrote, for variable 0xF4
+mp_chan:        db 0
 mp_note1:       dw 0
 mp_note2:       dw 0
         EXPORT mp_inc
 mp_inc:         dw 0
+mv_res:         db 0
+        EXPORT mv_vol
+mv_vol:         db 0
+        EXPORT mv_page
+mv_page:        db 0
+mv_saved:       db 0
+        EXPORT mv_len
+mv_len:         dw 0
+        EXPORT mv_loop
+mv_loop:        dw 0
+        EXPORT mv_total
+mv_total:       dw 0
+        EXPORT n_mus_voice
+n_mus_voice:    dw 0
+        EXPORT n_mus_nores
+n_mus_nores:    dw 0
+        EXPORT n_mus_farloop
+n_mus_farloop:  dw 0
         EXPORT n_mus
 n_mus:          dw 0
         EXPORT n_mus_miss
@@ -2025,6 +2313,8 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
         ASSERT RING_ADDR + RING_LEN <= VOLTAB
         ASSERT VOLTAB + 256 <= VOICES
         ASSERT VOICES + V_SIZE * 4 <= SAMPLE
+        ASSERT SAMPLE + SAMPLE_LEN <= VOLTAB_QUIET
+        ASSERT VOLTAB_QUIET + 256 <= $E000
         ASSERT SAMPLE + SAMPLE_LEN <= $E000
         ; the vector table and its trampoline, in the gap the expected stream leaves
         ; EVERY small block asserted, because STR_BLOCK sat inside DRAW_LOG's 200 bytes

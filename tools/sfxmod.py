@@ -93,6 +93,67 @@ def walk(blob, pos=0, ticks=1):
             "notes": notes, "stops": stops, "marks": marks, "playing": playing}
 
 
+def voices(blob, sample_of, pos=0, ticks=1, split=32):
+    """What the four voices should look like after a walk. The model for I5's voice setup.
+
+    sample_of(res) must return that resource's own bytes, because a sample's shape is in its
+    first four bytes: sampleLen at 0 and loopLen at 2, both big-endian words doubled, with the
+    data starting at byte 8. The reference plays 0..sampleLen and then jumps to loopPos =
+    sampleLen for loopLen, which is the same as playing 0..sampleLen+loopLen once and looping
+    back to sampleLen.
+    """
+    m = parse(blob)
+    chans = [dict(active=0, inc=0, total=0, loop=0, vol=0) for _ in range(4)]
+    cur_order, cur_pos, playing = pos, 0, True
+    for _ in range(ticks):
+        if not playing:
+            break
+        order = m["order"][cur_order]
+        base = 0xC0 + cur_pos + order * 1024
+        for ch in range(4):
+            o = base + ch * 4
+            n1, n2 = be16(blob, o), be16(blob, o + 2)
+            if n1 == 0xFFFE:
+                chans[ch]["active"] = 0
+                continue
+            if n1 in (0, 0xFFFD):
+                continue
+            # A NOTE ONLY PLAYS IF THIS ROW NAMES AN INSTRUMENT. handlePattern's pat is a
+            # local memset to zero each call, so pat.sampleBuffer is set only inside the
+            # `if (sample != 0)` block and the play is guarded by `sampleBuffer != 0`. A zero
+            # instrument nibble means the row is ignored - there is no carry-over.
+            idx = (n2 & 0xF000) >> 12
+            if not idx:
+                continue
+            ins = m["instruments"][idx - 1]
+            if not ins["res"]:
+                continue
+            data = sample_of(ins["res"])
+            if data is None:
+                continue
+            slen = be16(data, 0) * 2
+            llen = be16(data, 2) * 2
+            vol = ins["volume"] & 0xFF
+            eff = (n2 & 0x0F00) >> 8
+            amt = n2 & 0xFF
+            if eff == 5:
+                vol = min(0x3F, vol + amt)
+            elif eff == 6:
+                vol = max(0, vol - amt)
+            chans[ch]["total"] = 8 + slen + llen
+            chans[ch]["loop"] = (8 + slen) if llen and (8 + slen) < 0x2000 else 0
+            chans[ch]["vol"] = vol
+            chans[ch]["inc"] = 41891 // n1
+            chans[ch]["active"] = 1
+        cur_pos += 16
+        if cur_pos >= 1024:
+            cur_pos = 0
+            cur_order += 1
+            if cur_order == m["num_order"]:
+                playing = False
+    return chans
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "build/assets/RES07.BIN"
     blob = open(path, "rb").read()

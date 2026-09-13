@@ -2694,6 +2694,33 @@ the ones that had it worked.
   from `$C0A0` sat inside it. Nothing corrupted - `ds` only reserves - but no assert in that
   page was measuring anything real. Also fixed, also not the cause.
 
+**THE VOICE SETUP IS WRITTEN AND ITS GATE FAILS, and this is exactly where.** `make check-mus`
+covers the header, the event walk and the tuning - all passing - and now the four voice records,
+which do not. The minimal reproducer is **one event**:
+
+| | |
+|---|---|
+| at boot, all four voices | **inactive**, `V_INCI = 1`, as `init_voices` leaves them |
+| the first event's four rows | a stop on channel 1, and `(0,0)` on the other three |
+| the model after it | all four still inactive - correct |
+| the machine after it | **all four ACTIVE** |
+
+**So the machine is reading different bytes, not misjudging the same ones.** A row of `(0,0)`
+returns immediately at `ld a,d / or e / ret z`, and a row of `$FFFE` takes the stop path, so
+nothing in that event can activate anything. Established by measurement, not inference: the boot
+state is right, the checker's 15-byte stride is right, and channel 0's other fields - increment
+97, page 77, `V_LEFT` 18,936 against a 27,128-byte sample - all agree with the model at 65 and
+70 events.
+
+**The signature is pairs.** After 70 events channels 0 and 1 hold byte-identical records, as do
+2 and 3 - two distinct notes across four records.
+
+**The next step is to read what the machine reads.** Have the probe dump the four channel words
+`music_tick` fetches for event 1 and compare them against the file's bytes at `0xC0`. If they
+differ, the fault is the MMU2 mapping or `mus_page`; if they match, it is in `mus_pattern`'s
+decode. That is one instrument and one run, and it settles which half to look at - where three
+successive inferences from the symptom did not.
+
 **What I5 still needs:** the player on the machine, driven at `delay * 60 / 7050` ms;
 `op_playSound` and `op_playMusic` reaching it; and a gate. The gate wants the probe's own
 `note` records, and the input-free 45-frame trace has **none** - the timer never fires in a

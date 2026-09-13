@@ -16,7 +16,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp      # noqa: E402
-from sfxmod import parse, walk    # noqa: E402
+from sfxmod import parse, walk, voices    # noqa: E402
 
 NEX = "build/aw.nex"
 EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
@@ -147,6 +147,66 @@ def main():
             print(f"  RES{res:02X} from order {pos}, {ticks} events: order {g['order']}, "
                   f"pos {g['pos']}, {g['notes']} notes, {g['stops']} stops"
                   + ("" if g["playing"] else ", finished") + "  IDENTICAL")
+
+    # THE VOICES: what the walk leaves in the four voice records. The last piece of I5.
+    VOICES_AT, V_SIZE = 0xDD00, 15
+    for res, pos, ticks in ((0x07, 0, 1), (0x07, 0, 70), (0x8A, 2, 100)):
+        z.cmd(f"smartload /work/{NEX}")
+        time.sleep(3.2)
+        z.cmd("set-memory-zone -1")
+        z.cmd(f"write-memory-raw {sym['fname']} {(b'RES18.BIN' + bytes(1)).hex()}")
+        z.cmd(f"write-memory {sym['probe_mus']} {res}")
+        z.cmd(f"write-memory {sym['probe_ticks']} {ticks}")
+        z.cmd(f"write-memory-raw {MUS_BLOCK} {bytes([res, 0, 0, pos]).hex()}")
+        z.cmd(f"write-memory {sym['go']} 1")
+        for _ in range(600):
+            if read(sym["done"], 1)[0] == 0x5A:
+                break
+            time.sleep(0.05)
+        raw = read(VOICES_AT, V_SIZE * 4)
+        made = int.from_bytes(read(sym["n_mus_voice"], 2), "little")
+        nores = int.from_bytes(read(sym["n_mus_nores"], 2), "little")
+        farloop = int.from_bytes(read(sym["n_mus_farloop"], 2), "little")
+
+        def sample_of(rid):
+            try:
+                return open(f"build/assets/RES{rid:02X}.BIN", "rb").read()
+            except OSError:
+                return None
+
+        want = voices(open(f"build/assets/RES{res:02X}.BIN", "rb").read(),
+                      sample_of, pos, ticks)
+        fails = []
+        for ch in range(4):
+            e = raw[ch * V_SIZE:(ch + 1) * V_SIZE]
+            got_active = e[11]
+            got_inc = e[4] | (e[5] << 8)          # V_INCI, the integer part
+            got_frac = e[3]                        # V_INCF
+            got_inc88 = (got_inc << 8) | got_frac
+            w = want[ch]
+            if got_active != w["active"]:
+                fails.append(f"ch{ch} active {got_active} vs {w['active']}")
+            if w["active"] and w["inc"] and got_inc88 != w["inc"]:
+                fails.append(f"ch{ch} increment {got_inc88} vs {w['inc']}")
+        if nores:
+            fails.append(f"{nores} notes wanted a resource that was not resident")
+        if fails:
+            print(f"  RES{res:02X} voices after {ticks} events: " + "; ".join(fails[:4]))
+            for ch in range(4):
+                e = raw[ch * V_SIZE:(ch + 1) * V_SIZE]
+                w = want[ch]
+                print(f"      ch{ch} machine active={e[11]} inc={(e[4] | (e[5] << 8)) << 8 | e[3]:>4} "
+                      f"page={e[12]} pos={e[1] | (e[2] << 8):#06x} end={e[7] | (e[8] << 8):#06x} "
+                      f"left={e[13] | (e[14] << 8):>6} vol_page={e[6]:#04x}")
+                print(f"           model   active={w['active']} inc={w['inc']:>4} "
+                      f"total={w['total']:>6} loop={w['loop']:#06x} vol={w['vol']}")
+            bad += fails
+        else:
+            live = sum(1 for w in want if w["active"])
+            print(f"  RES{res:02X} voices after {ticks} events: {live} live, "
+                  f"{made} set up, increments exact"
+                  + (f", {farloop} loop points past the window" if farloop else "")
+                  + "  IDENTICAL")
 
     # The period-to-increment divide, over the whole valid range and the awkward ends.
     RATE = 875000 // 40

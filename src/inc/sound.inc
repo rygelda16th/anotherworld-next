@@ -305,7 +305,7 @@ voice_run:
         ret
 
 ;-----------------------------------------------------------------------------
-; scale_byte - A read as int8, returns clamp(A * VOLUME / 64). Init time only.
+; scale_byte - A read as int8, returns clamp(A * (vol_now) / 64). Init time only.
 ; Magnitude then sign, because MUL D,E is unsigned.
 ;-----------------------------------------------------------------------------
 scale_byte:
@@ -320,7 +320,12 @@ scale_byte:
         ret
 .mul:
         ld      e, a
-        ld      d, VOLUME
+        ; THE VOLUME IS A VARIABLE, not the constant it was. The game builds two tables at two
+        ; volumes - see VOLTAB_QUIET in src/aw.asm - and check-mix gates the arithmetic at
+        ; VOLUME 48, which vol_now still holds by default, so nothing about that gate changes.
+        ld      a, (vol_now)
+        ld      d, a
+        ld      a, e
         mul     d, e
         ld      a, e
         ld      b, d
