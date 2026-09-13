@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-map check-aw check-input check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
+        check-map check-aw check-input check-draw check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
         toolchain-diff
 
 help:
@@ -171,7 +171,7 @@ AW_DRAW      ?= 0xD310
 
 # The game's C sits HIGHER than the harness's, because the rasteriser and the reader
 # are resident alongside it: see the CC_ORG comment in src/aw.asm.
-AW_VM_ORG    ?= 0x9800
+AW_VM_ORG    ?= 0x9900
 
 cc-game: | $(BUILD)
 	@echo "  CC  src/aw/vm.c -> the game"
@@ -261,6 +261,12 @@ check-aw: cc-game
 	$(MAKE) asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkaw.py'
+
+# I2's gate: the game's own picture against the engine's, aligned on a blit.
+check-draw: cc-game
+	$(MAKE) asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkdraw.py'
 
 # I1a: the game reads a real keyboard and a Kempston joystick, and the reference's
 # mapping survives the trip. Driven by the emulator's own keys, not by a poke.

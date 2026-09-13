@@ -48,7 +48,7 @@
 ; C's stack is the number to watch: $BF00 down to the end of its image. Gate D needed
 ; more than 779 bytes and was given 4,500; this is less, and if it is not enough the
 ; symptom is now a known one.
-CC_ORG          EQU $9800               ; must match VM_ORG in the Makefile
+CC_ORG          EQU $9900               ; must match VM_ORG in the Makefile
 NR_TURBO        EQU $07
 NR_MMU0         EQU $50
 NR_MMU1         EQU $51
@@ -186,6 +186,10 @@ start:
 
         ; MMU6 is deliberately NOT touched: bank 0's first half is where the ring
         ; and the tables already are, loaded by the .nex.
+        ; the rasteriser's band base has to agree with pg_ptr1 before the first draw
+        ld      a, (pg_ptr1)
+        call    page_to_p0
+        ld      (dst_p0), a
         call    build_voltab
         call    silence_ring
         call    ramp_sample
@@ -711,6 +715,24 @@ aw_blit:
         ld      hl, (n_blit)
         inc     hl
         ld      (n_blit), hl
+        ; STOPPING AT A BLIT is how the picture gets compared. A blit is the one moment
+        ; both the machine and the reference agree what the frame IS - the VM's frames and
+        ; the probe's frames are different quantities, since instrFrame hangs off
+        ; updateDisplay and counts blits. So the checker names a blit and the C's own
+        ; out-of-budget flag stops the frame loop cleanly after it.
+        ld      de, (stop_blit)
+        ld      a, d
+        or      e
+        jr      z, .no_stop
+        ld      a, l
+        cp      e
+        jr      nz, .no_stop
+        ld      a, h
+        cp      d
+        jr      nz, .no_stop
+        ld      a, 1
+        ld      (CTL + $0B), a          ; CTL_OUT_OF_BUDGET: the loop breaks on it
+.no_stop:
         ld      a, (jt_arg)
         cp      $FE
         jr      z, .palette             ; $FE: no page change at all
@@ -933,12 +955,25 @@ n_pal:      dw 0
 
 jt_arg:     dw 0                        ; whichever callback's argument, stashed
         EXPORT pg_ptr1
-pg_ptr1:    db 0                        ; the page drawing goes into
+; PAGE 2, NOT PAGE 0. Video::init sets ptr3 to page 1 and ptr2 to page 2 and then calls
+; changePagePtr1($FE) - video.cpp:56-60 - and $FE resolves to ptr2, so drawing starts on
+; page 2. Starting it at 0 put every early polygon in the wrong page, which check-draw
+; showed as our content in page 0 and the engine's in pages 1 and 2.
+pg_ptr1:    db 2                        ; the page drawing goes into
         EXPORT pg_ptr2
-pg_ptr2:    db 1                        ; the page being displayed - video.cpp:56-57
+; THESE TWO WERE THE WRONG WAY ROUND. video.cpp:56-57 is
+;     _curPagePtr3 = getPage(1);
+;     _curPagePtr2 = getPage(2);
+; so ptr2 is page 2 and ptr3 is page 1, and I had them swapped. The cost: `copy dst=$FF`
+; resolves through ptr3, so the intro's page-0-to-page-1 copies went to page 2 instead,
+; and every display swap after that was offset by one. check-draw showed it as the
+; engine's content in pages 1 and 2 against zeros in ours.
+pg_ptr2:    db 2                        ; the page being displayed
         EXPORT pg_ptr3
-pg_ptr3:    db 2                        ; the other display page
+pg_ptr3:    db 1                        ; the other display page
 fill_col:   db 0
+        EXPORT stop_blit
+stop_blit:  dw 0            ; stop the frame loop after this many blits; 0 = never
 saved_mmu0: db 0
         EXPORT n_video2
 n_video2:   dw 0        ; draws that wanted the video2 segment, which is not loaded yet

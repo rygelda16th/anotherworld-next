@@ -495,13 +495,19 @@ def read_trace(path):
             raise ValueError(f"unknown trace record {kind} at offset {o-1}")
 
 
-def replay(path, on_frame=None, font=None):
-    """Run a trace through the reference and return the RefVideo."""
+def replay(path, on_frame=None, font=None, cls=None, stop_after=None):
+    """Run a trace through the reference and return the RefVideo.
+
+    `cls` picks the geometry: RefVideo for the engine's own 320x200 4bpp, which is what
+    Gate A compares, or RefVideo8 for the Next's 256x192 8bpp, which is what the machine
+    has to reproduce. `stop_after` ends the replay after that many blits, so a comparison
+    can be aligned on a blit - the one moment where both sides agree what the picture is.
+    """
     if font is None:
         d = os.path.dirname(os.path.abspath(path))
         fp = os.path.join(d, "font.bin")
         font = open(fp, "rb").read() if os.path.exists(fp) else None
-    v = RefVideo()
+    v = (cls or RefVideo)()
     frames = 0
     for kind, a in read_trace(path):
         if kind == "poly":
@@ -527,6 +533,8 @@ def replay(path, on_frame=None, font=None):
             frames += 1
             if on_frame:
                 on_frame(frames, v)
+            if stop_after is not None and frames >= stop_after:
+                break
     return v, frames
 
 

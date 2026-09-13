@@ -2235,7 +2235,42 @@ which `op_copyVideoPage` does not yet pass, scaled into our 192-line geometry; t
 skipped. **Neither gap blocks the intro:** over its first 45 frames `n_video2` is 0 and
 `cp_unimpl` is 0.
 
-**And the gate itself is not yet run.** What exists proves the callbacks are reached and
+**I2's GATE IS BUILT AND RUNNING, and it reports a real difference.** `make check-draw`
+aligns the two sides on a **blit** - the one instant where both agree what the frame is,
+since the VM's frames and the probe's frames are different quantities - stops the machine
+after its Kth blit through the C's own out-of-budget flag, replays the engine's trace to
+its Kth through `RefVideo8`, and compares all four 49,152-byte pages.
+
+At blit 8 it says:
+
+| | machine | engine |
+|---|---|---|
+| polygon **opcodes** | 55 | **55** |
+| polygon **leaves** | - | 276 |
+| fills | 3 | 3 |
+| copies | 5 | 4 |
+| page 3 | identical | identical |
+| page 0 | 61.8% differs | |
+
+**The opcode counts match exactly**, which puts the VM and the reader in the clear -
+`draw=55` in the engine's trace against `poly=55` on the machine, expanding to 276
+leaves. What differs is WHERE they draw: the machine's drawing page is 2 and the engine
+put its 270 leaves into page 0.
+
+**The trace carries no `select` records**, which is why this could not be inferred from
+it: `replay()` is TOLD each polygon's page by the trace, while the machine DERIVES it
+from `selectVideoPage`. Seven selects happened on the machine's side. Resolving it wants
+the per-draw bisect `checkpoly.py` already does for the rasteriser - stop after N draws,
+compare, halve - rather than more hypotheses.
+
+**Two page-pointer bugs were found and fixed on the way, and neither was this one.**
+`Video::init` calls `changePagePtr1($FE)`, so drawing starts on the page `ptr2` names, not
+on page 0 - and `video.cpp:56-57` is `_curPagePtr3 = getPage(1); _curPagePtr2 = getPage(2)`,
+which I had the other way round, so `copy dst=$FF` resolved to page 2 instead of page 1
+and every display swap was offset. Both are now right against the source and neither
+changed this comparison by a byte, which is itself worth knowing.
+
+**And the gate as originally described is not yet passed.** What exists proves the callbacks are reached and
 that pixels change. What I2 claims is the intro's pages **byte for byte against the
 engine**, and that needs the reference replaying the same frames through `refvideo.py` -
 the shape `check-readmachine` already uses, but driven by the VM rather than by a poked
