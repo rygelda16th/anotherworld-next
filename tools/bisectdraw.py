@@ -56,25 +56,33 @@ def machine(n):
     z.cmd(f"write-memory-raw {CTL} {hdr.hex()}")
     z.cmd(f"write-memory-raw {sym['fname']} {(b'RES18.BIN'+bytes(1)).hex()}")
     z.cmd(f"write-memory-raw {sym['stop_draw']} {n.to_bytes(2,'little').hex()}")
+    import os
+    z.cmd(f"write-memory {sym['snd_off']} {os.environ.get('AW_SND_OFF', '0')}")
     z.cmd(f"write-memory {sym['go']} 1")
     for _ in range(600):
         if read(CTL + 10, 1)[0] == 0x5A: break
         time.sleep(0.05)
     got = int.from_bytes(read(sym["n_poly"], 2), "little")
-    out = bytearray()
-    for band in range(6):
-        z.cmd(f"tbblue-set-register {NR_MMU7} {24 + band}")
-        out += read(DWIN, 8192)
-    return got, bytes(out[:PAGE])
+    pages = []
+    for pg in range(4):
+        out = bytearray()
+        for band in range(6):
+            z.cmd(f"tbblue-set-register {NR_MMU7} {(12 + pg * 3) * 2 + band}")
+            out += read(DWIN, 8192)
+        pages.append(bytes(out[:PAGE]))
+    return got, pages
 
 def same(n):
+    """ALL FOUR pages, not just page 0 - a copy that goes wrong leaves page 0 perfect and
+    the fault somewhere the comparison was not looking."""
     got, mp = machine(n)
     ref, _ = replay(trace, cls=RefVideo8, stop_draws=n)
-    rp = bytes(ref.pages[0])
-    d = sum(1 for i in range(PAGE) if mp[i] != rp[i])
+    ds = [sum(1 for i in range(PAGE) if mp[p][i] != bytes(ref.pages[p])[i])
+          for p in range(4)]
     print(f"  after {n:>3} draws (machine dispatched {got}): "
-          + ("identical" if d == 0 else f"{d:,} bytes differ"))
-    return d == 0, mp, rp
+          + ("all four identical" if not any(ds)
+             else "  ".join(f"p{p}={d:,}" for p, d in enumerate(ds) if d)))
+    return not any(ds), mp[0], bytes(ref.pages[0])
 
 lo, hi = 0, min(total, 55)
 ok, _, _ = same(hi)

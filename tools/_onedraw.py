@@ -14,7 +14,12 @@ def symbols(*paths):
     return out
 sym = symbols("build/aw.exp", "build/aw_vm_c.exp")
 
+import os
+FILL = int(os.environ.get("AW_FILL", "-1"))     # -1 = leave page 0 blank
 ref = RefVideo8(); ref.cur1 = 0
+if FILL >= 0:
+    ref.fill_page(0, FILL)
+ref.cur1 = 0
 ref.read_and_draw_polygon(open("build/assets/RES19.BIN","rb").read(), OFF, COL, ZOOM, X, Y)
 want = bytes(ref.pages[0])
 
@@ -34,6 +39,7 @@ blk = (OFF.to_bytes(2,"little") + ZOOM.to_bytes(2,"little")
 z.cmd(f"write-memory-raw 54032 {blk.hex()}")          # DRAW_BLOCK = $D310
 z.cmd(f"write-memory {sym['pg_ptr1']} 0")
 z.cmd(f"write-memory {sym['probe_draw']} 1")
+z.cmd(f"write-memory {sym['probe_fill']} {0 if FILL < 0 else FILL + 1}")
 z.cmd(f"write-memory-raw {sym['fname']} {(b'RES18.BIN'+bytes(1)).hex()}")
 z.cmd(f"write-memory {sym['go']} 1")
 for _ in range(400):
@@ -45,7 +51,8 @@ for band in range(6):
     got += read(0xE000, 8192)
 got = bytes(got[:PAGE])
 d = [i for i in range(PAGE) if got[i] != want[i]]
-print(f"one record through the reader, no VM: off={OFF} zoom={ZOOM} x={X} y={Y} col={COL:#04x}")
+print(f"one record through the reader, no VM, page 0 "
+      f"{'blank' if FILL < 0 else f'filled with {FILL}'}: off={OFF} zoom={ZOOM} x={X} y={Y} col={COL:#04x}")
 print(f"  n_poly={int.from_bytes(read(sym['n_poly'],2),'little')}, "
       f"rd_bad={int.from_bytes(read(sym['rd_bad'],2),'little')}, "
       f"rd_deep={int.from_bytes(read(sym['rd_deep'],2),'little')}")

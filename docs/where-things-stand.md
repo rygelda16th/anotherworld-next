@@ -2341,10 +2341,32 @@ differ in blocks; this differs in a ribbon.
 passing: with a blank page the copy-mode fill this record uses - `$FF` selects `drawLineP`,
 which reads `_pages[0]` (`video.cpp:352`) - copies zeros over zeros and cannot be wrong.
 
-**THE NEXT EXPERIMENT is therefore to make the probe path reproduce it**: run the fills
-before the single draw, or pre-fill page 0 from the checker, so there is a no-VM one-record
-reproducer that FAILS. That can be single-stepped, which nothing about the current failure
-can.
+**THE PROBE STILL WILL NOT REPRODUCE IT, and the eliminations are the useful product.**
+Everything below has been tested, not reasoned about:
+
+| tested | result |
+|---|---|
+| all four pages before any draw | **identical** - the fills and copies are right |
+| page 0's content before draw 1 | **uniform colour 2 on both sides** |
+| the record's five operands | **identical** |
+| the destination page | **identical** |
+| the reader on the record, page 0 blank | **identical** |
+| the reader on the record, page 0 **pre-filled with 2** | **identical** |
+| the mixer inside the interrupt (`snd_off=1`) | **makes no difference** |
+| `RES19.BIN` against the engine's `seg_cine_0.bin` | **byte-identical** |
+| the reference reading `RES19.BIN` vs the engine's own leaf | **identical** |
+
+So the one-record probe, given what looks like the identical starting state, draws the record
+correctly - and the VM, from the same state with the same operands, does not. **The probe is
+therefore not equivalent for a reason not yet found**, and that is the thing to chase.
+
+**THE NEXT INSTRUMENT should compare SPANS, not pixels.** 2,756 bytes over 121 rows is a
+ribbon about 23 bytes wide - which is what a per-row endpoint being one or two out looks
+like, not a wrong shape. Log `(row, x1, x2)` per span for draw 1 on the machine, take the
+same from the reference's `_span_*` calls, and diff those: it separates the polygon's
+geometry from the filling of it, which the page comparison cannot. `checkpoly.py` already
+proves the fill modes byte-exact over 39 coverage polygons, so a geometry difference is the
+likelier half.
 
 **`SRC_PAGE` was wrong and is now fixed, and it did not change this.** The rasteriser's
 copy-mode fill reads page 0 and only page 0; the harness had `SRC_PAGE 2` because its own

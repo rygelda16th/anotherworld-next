@@ -281,6 +281,18 @@ start:
         ld      (dst_p0), a
         ld      a, 255
         ld      (cur_band), a
+        ; OPTIONALLY FILL PAGE 0 FIRST, because that is the difference between the probe
+        ; passing and the VM failing. A colour of $FF selects the copy-mode fill, which
+        ; reads page 0 - so over a blank page it copies zeros onto zeros and cannot be
+        ; wrong. probe_fill holds colour+1, so 0 means "leave it blank".
+        ld      a, (probe_fill)
+        or      a
+        jr      z, .no_prefill
+        dec     a
+        ld      h, a
+        ld      l, 0                    ; page 0, colour in H - aw_fill_page's argument
+        call    aw_fill_page
+.no_prefill:
         call    aw_draw_poly
         jr      .stop
 .run_vm:
@@ -569,10 +581,18 @@ isr:
         call    do_input
         call    publish_input
 
+        ; snd_off exists to answer one question: does the mixing inside this interrupt
+        ; disturb a draw in progress? The rasteriser and the mixer both patch immediate
+        ; operands in their own code, and both use the shadow registers, so the question
+        ; is a fair one and no gate has ever asked it.
+        ld      a, (snd_off)
+        or      a
+        jr      nz, .no_mix
         ld      a, BLK_A
         call    mix_block
         ld      a, BLK_B
         call    mix_block
+.no_mix:
 
         pop     hl
         pop     de
@@ -1063,6 +1083,12 @@ pg_ptr3:    db 1                        ; the other display page
 fill_col:   db 0
         EXPORT stop_blit
 stop_blit:  dw 0            ; stop the frame loop after this many blits; 0 = never
+        EXPORT snd_off
+snd_off:    db 0            ; 1 = the interrupt ticks but does not mix: a discriminator
+        EXPORT cur_band_x
+cur_band_x: db 0
+        EXPORT probe_fill
+probe_fill: db 0            ; colour+1 to fill page 0 with before the probe draw
         EXPORT probe_draw
 probe_draw: db 0            ; 1 = do one draw from DRAW_BLOCK and stop, no VM
         EXPORT stop_draw
