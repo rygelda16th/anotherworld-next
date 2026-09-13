@@ -10,6 +10,9 @@
 ; sndtest.asm's voltab and sampbuf live INSIDE the banked page it maps at MMU1, and
 ; moving them would have broken a passing gate to tidy a file.
 ;
+; voice_run is the block-splitting the design always described and never did. See its own
+; comment: the inner loop has no end-of-sample test and must not run past V_END.
+;
 ; THE INCLUDER MUST PROVIDE:
 ;
 ;   RING_ADDR        where the ring is, and where the DMA reads it. IT MUST BE
@@ -151,6 +154,93 @@ voice_save:
         ld      (ix + V_POS), l
         ld      (ix + V_POS + 1), h
         ld      (ix + V_FRAC), c
+        ret
+
+;-----------------------------------------------------------------------------
+; voice_run - how many of (blocklen) samples this voice may mix before it reaches
+; V_END. IX = the voice. Returns A = the count, and Z if it is zero.
+;
+; THE INNER LOOP HAS NO END-OF-SAMPLE TEST, BY DESIGN - a test costs 18 T a voice a sample
+; and the design says to cut the block short instead. But that cut was only ever DESCRIBED:
+; sndtest.asm's setup_voices copies fields and never performs it, and check-snd never caught
+; the omission because its sample is 1,024 bytes against blocks that never reach the end. So
+; the mixer has been gated for its arithmetic and not for the lifecycle of a sample, and I1
+; found out the hard way when a voice ran off its 512-byte ramp, past V_END, and started
+; reading the RING as sample data and writing the result back over it.
+;
+; The bound: with an integer increment of zero the pointer advances less than one byte a
+; sample, so V_END - V_POS samples is always safe. Otherwise divide by the integer part,
+; which UNDER-estimates because the fraction also advances - safe, and it only means the
+; caller loops again.
+;-----------------------------------------------------------------------------
+voice_run:
+        ld      l, (ix + V_POS)
+        ld      h, (ix + V_POS + 1)
+        ld      e, (ix + V_END)
+        ld      d, (ix + V_END + 1)
+        ex      de, hl
+        or      a
+        sbc     hl, de                  ; HL = V_END - V_POS, the bytes left
+        ret     c                       ; already past the end: nothing, and NC->C says so
+        ld      a, h
+        or      l
+        ret     z                       ; exactly at the end
+
+        ld      a, (ix + V_INCI + 1)
+        or      a
+        jr      nz, .huge               ; an increment above 255 bytes a sample
+        ld      a, (ix + V_INCI)
+        or      a
+        jr      z, .whole               ; below 1:1 - every sample advances under a byte
+
+        ; HL / A, sixteen by eight, the schoolbook way: ~16 shifts, once a block a voice
+        ; against 18 T a sample a voice for the test it replaces.
+        ld      c, a
+        ld      de, 0
+        ld      b, 16
+.div:
+        add     hl, hl
+        rl      e
+        rl      d
+        ld      a, e
+        sub     c
+        ld      a, d
+        sbc     a, 0
+        jr      c, .nofit
+        ld      a, e
+        sub     c
+        ld      e, a
+        ld      a, d
+        sbc     a, 0
+        ld      d, a
+        inc     l                       ; the quotient builds in HL's low bits
+.nofit:
+        djnz    .div
+        ; HL now holds the quotient; cap it at a byte and at blocklen
+        ld      a, h
+        or      a
+        jr      z, .cap
+        ld      l, 255
+.cap:
+        ld      a, l
+        jr      .limit
+.whole:
+        ld      a, h
+        or      a
+        jr      z, .cap_l
+        ld      l, 255
+.cap_l:
+        ld      a, l
+        jr      .limit
+.huge:
+        ld      a, 1                    ; more than 255 bytes a sample: one at a time
+.limit:
+        ld      hl, blocklen
+        cp      (hl)
+        jr      c, .done
+        ld      a, (hl)
+.done:
+        or      a
         ret
 
 ;-----------------------------------------------------------------------------

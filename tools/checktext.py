@@ -24,7 +24,7 @@ from mkstrings import ENTRY, unescape       # noqa: E402
 
 NEX = "build/aw.nex"
 EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
-STR_BLOCK = 0xD330
+STR_BLOCK = 0xC3A0
 W, H = 256, 192
 PAGE = W * H
 NR_MMU7, DWIN = 0x57, 0xE000

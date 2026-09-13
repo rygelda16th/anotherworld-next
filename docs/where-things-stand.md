@@ -2579,6 +2579,19 @@ text: drive `drawString` directly the way `probe_draw` drives one polygon - poke
 a colour and a position, compare the page against the reference. Deterministic, and the same
 shape as `check-readmachine`.
 
+**A trap that cost an hour and nearly a pointless refactor.** `IN_BLOCK` and `DRAW_BLOCK` are
+fixed addresses **set in two files** - `AW_IN` and `AW_DRAW` in the Makefile, the constants in
+`src/aw.asm` - and there is no way to assert agreement across two toolchains. Moving the
+assembly's without the Makefile's left the C writing its polygon parameters to `$D310` while
+the assembly read `$C390`. All zeros, so the reader was called 151 times and drew nothing, and
+`check-aw` said *"the reader draws nothing"* with no hint that an address was the cause.
+
+**What it nearly cost:** the stack was down to 1,191 bytes at the time and I took the three
+failures as proof it had run out, and was most of the way into re-laying MMU6's whole page to
+move the stack there. It was not the stack. **1,191 bytes is enough** - all twelve gates pass
+on it - and the refactor was unnecessary. Measure which of two changes broke something before
+redesigning around one of them.
+
 **One trap earned here.** Hunting for text overwrote `trace.bin` and `ops.txt`, which I2's
 and I3's gates both rest on. They were copied to `preflight/hostprobe/keep/` first and
 restored after, and both gates re-run clean - but the document already warned about exactly
@@ -2640,6 +2653,16 @@ written.
 
 Its six instruments reference resources `0x01` to `0x06` - which `check-res` already shows
 the machine loading - at volumes 63, 63, 63, 15, 51 and 45.
+
+**`voice_run` is in, which is the block-splitting the design always described and never did.**
+The mixer's inner loop deliberately has no end-of-sample test - one costs 18 T a voice a
+sample - and the design says to cut the block short instead. `sndtest.asm` never cut it, and
+`check-snd` could not notice because its sample is 1,024 bytes against blocks that never reach
+the end. `voice_run` returns how many samples a voice may mix before `V_END`: the bytes
+remaining when the integer increment is zero, since each sample then advances under a byte,
+and a 16-by-8 divide by the integer part otherwise - which under-estimates, because the
+fraction advances too, so it is safe and merely means the caller loops again. One divide a
+block a voice against 18 T a sample a voice.
 
 **What I5 still needs:** the player on the machine, driven at `delay * 60 / 7050` ms;
 `op_playSound` and `op_playMusic` reaching it; and a gate. The gate wants the probe's own

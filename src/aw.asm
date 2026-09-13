@@ -48,7 +48,7 @@
 ; C's stack is the number to watch: $BF00 down to the end of its image. Gate D needed
 ; more than 779 bytes and was given 4,500; this is less, and if it is not enough the
 ; symptom is now a known one.
-CC_ORG          EQU $9B00               ; must match VM_ORG in the Makefile
+CC_ORG          EQU $9C00               ; must match VM_ORG in the Makefile
 NR_TURBO        EQU $07
 NR_MMU0         EQU $50
 NR_MMU1         EQU $51
@@ -86,8 +86,14 @@ PAL_SEL_L2      EQU %00010000
 RING_ADDR       EQU $D400               ; permanently mapped; see the header
 VOLTAB          EQU $DC00
 VOICES          EQU $DD00
-IN_BLOCK        EQU $D300               ; the six input words the C reads
-DRAW_BLOCK      EQU $D310               ; aw_draw_poly's six parameters, from the C
+; THE C AND THE ASSEMBLY MUST AGREE ON THESE, and they are set in two files: AW_IN and
+; AW_DRAW in the Makefile, IN_BLOCK and DRAW_BLOCK here. Moving one without the other made
+; the C write its polygon parameters to $D310 while this read $C390 - all zeros, so the
+; reader was called 151 times and drew nothing, and check-aw reported "the reader draws
+; nothing" with no hint that the address was the problem. There is no way to assert across
+; two toolchains, so they are named together here instead.
+IN_BLOCK        EQU $C380               ; the six input words the C reads; = AW_IN
+DRAW_BLOCK      EQU $C390               ; aw_draw_poly's parameters; = AW_DRAW
 ; TEN BYTES A DRAW: the page, and the five parameters the C computed from the opcode.
 ;
 ; This replaced a one-byte-a-draw page log, which did its job and proved the pages right -
@@ -111,7 +117,7 @@ STR_INDEX_AT    EQU $E300
 ; the code uses those. The first version guessed $E53C for the blob where the index's 556
 ; bytes actually put it at $E52C, which would have made every string sixteen bytes adrift
 ; with nothing to say so.
-STR_BLOCK       EQU $D330               ; colour, x, y, id - what the C leaves for us
+STR_BLOCK       EQU $C3A0               ; colour, x, y, id - what the C leaves for us
 DRAW_LOG        EQU $D320
 DRAW_LOG_MAX    EQU 20                  ; 20 x 10 bytes, all that fits before the ring
 
@@ -1564,7 +1570,15 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
         ; the vector table and its trampoline, in the gap the expected stream leaves
         ASSERT VEC_TABLE + 257 <= VEC_TRAMP
         ASSERT VEC_TRAMP + 3 <= RING_ADDR
-        ASSERT IN_BLOCK + 12 <= VEC_TABLE || IN_BLOCK >= VEC_TRAMP + 3
+        ; EVERY small block asserted, because STR_BLOCK sat inside DRAW_LOG's 200 bytes
+        ; for three commits and only escaped notice because the two probe paths that use
+        ; them never run together.
+        ASSERT IN_BLOCK    >= RES_TABLE_AT + RES_COUNT + RES_COUNT * 4
+        ASSERT DRAW_BLOCK  >= IN_BLOCK + 12
+        ASSERT STR_BLOCK   >= DRAW_BLOCK + 10
+        ASSERT INTERP_AT   >= STR_BLOCK + 10
+        ASSERT DRAW_LOG    >= VEC_TRAMP + 3
+        ASSERT DRAW_LOG + DRAW_LOG_MAX * 10 <= RING_ADDR
 
         ; I4's font and dictionary, in bank 0's second half. Mapped at MMU2 during text.
         ORG FONT6_AT

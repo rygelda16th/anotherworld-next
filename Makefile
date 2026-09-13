@@ -166,12 +166,12 @@ CC_RUN     := docker run --rm -v "$(CURDIR):/work" -w /work $(CC_IMAGE)
 AW_CTL       ?= 0xC000
 AW_EXP       ?= 0        # the game compares PICTURES, not streams: see src/aw.asm
 AW_LOG_RECS  ?= 32       # the game's trace buffer: small on purpose, see RES_TABLE_AT
-AW_IN        ?= 0xD300
-AW_DRAW      ?= 0xD310
+AW_IN        ?= 0xC380
+AW_DRAW      ?= 0xC390
 
 # The game's C sits HIGHER than the harness's, because the rasteriser and the reader
 # are resident alongside it: see the CC_ORG comment in src/aw.asm.
-AW_VM_ORG    ?= 0x9B00
+AW_VM_ORG    ?= 0x9C00
 
 cc-game: | $(BUILD)
 	@echo "  CC  src/aw/vm.c -> the game"

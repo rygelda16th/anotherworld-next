@@ -30,7 +30,7 @@ for t in range(8):
     b = rd(0xC000, 24)
     print(f"  t={t*0.4:>4.1f} frames_done={int.from_bytes(b[8:10],'little'):>4} "
           f"fin={b[10]:#04x} flt={b[13]} recs={int.from_bytes(b[6:8],'little'):>4} "
-          f"IN=${rd(0xD300,12).hex()} varFA={int.from_bytes(rd(va+0xFA*2,2),'little')} "
+          f"IN=${rd(0xC380,12).hex()} varFA={int.from_bytes(rd(va+0xFA*2,2),'little')} "
           f"varFE={int.from_bytes(rd(va+0xFE*2,2),'little')}")
 z.cmd("send-keys-event 128 0 nomenu")
 z.close()

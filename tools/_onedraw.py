@@ -36,7 +36,7 @@ z.cmd("set-memory-zone -1")
 blk = (OFF.to_bytes(2,"little") + ZOOM.to_bytes(2,"little")
        + X.to_bytes(2,"little",signed=True) + Y.to_bytes(2,"little",signed=True)
        + bytes([COL, 0]))
-z.cmd(f"write-memory-raw 54032 {blk.hex()}")          # DRAW_BLOCK = $D310
+z.cmd(f"write-memory-raw 50064 {blk.hex()}")          # DRAW_BLOCK = $C390
 z.cmd(f"write-memory {sym['pg_ptr1']} 0")
 z.cmd(f"write-memory {sym['probe_draw']} 1")
 z.cmd(f"write-memory {sym['probe_fill']} {0 if FILL < 0 else FILL + 1}")

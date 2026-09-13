@@ -23,7 +23,7 @@ from zrcp import Zrcp  # noqa: E402
 
 NEX = "build/aw.nex"
 EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
-IN_BLOCK = 0xD300
+IN_BLOCK = 0xC380
 CTL = 0xC000
 
 # The keys read_keys reads, and the mask bit each sets. ZEsarUX's send-keys-event
