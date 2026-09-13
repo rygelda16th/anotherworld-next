@@ -2050,21 +2050,39 @@ convenience. The integrated program cannot keep all those choices, and the quest
 underneath is not tidiness - it is whether all of this can be **resident at the same
 time**:
 
-- the bytecode window, a 16K sliding view over a segment up to 65,230 bytes
-- the polygon/cinematic segment window, a **second** 16K sliding view over another
-  segment - and I2 needs both live at once, which no harness has ever needed
-- the C virtual machine, 7,683 bytes of code plus its data
+- the bytecode window, a 16K sliding view over a segment up to **62,683** bytes
+- the polygon/cinematic segment window, a **second** 16K sliding view over a segment
+  up to **65,230** bytes - and I2 needs both live at once, which no harness has ever
+  needed
+- the C virtual machine, `$8C00..$A9FF` = **7,681 bytes** of code and data, from
+  z88dk's own map
 - the rasteriser, the polygon reader and the interpolation tables
-- the Layer 2 pages the engine's page model needs
+- **four** Layer 2 pages, because the reference keeps four (`video.h:70`,
+  `uint8_t *_pages[4]`) and ours are 49,152 bytes each rather than the original's
+  32,000: **196,608 bytes, twelve 16K banks**
 - the mixer, the volume table, the ring the zxnDMA drains, and the samples
 - the music player and its instruments
-- the resource heap - the reference's script-heap high-water mark is **305,919
-  bytes** across the parts measured
+- the resource heap - the reference's own allocation high-water across the parts
+  measured is **305,919 bytes, 38 pages of 8K, 19 banks**, and that figure includes
+  the two segments above because the reference allocates them out of the same block
 - the stack; the ZX system variables esxDOS needs at `$5B00`; and the ROM, which has
   to be back at `$0000` for `RST $08`
 
-The memory map in `src/vmtest.asm` was learned the hard way and is the starting
-point, but it was settled for a program with **one** window and no sound.
+**The arithmetic says capacity is not the problem.** Four framebuffers at 196,608
+plus the heap's 305,919 is **502,527 bytes** before our own code, the ring, the
+volume table, the instruments and the font - about half of a 1MB machine and a
+quarter of a 2MB one. So I1 is **not** a question of whether the game fits in RAM.
+It is a question of whether the eight 8K slots of the Z80's 64K can be arranged so
+that all of it is *reachable when needed*: two sliding windows, the C and its data,
+the rasteriser, the sound player's own page, the ROM for `RST $08`, and bank 5's
+system variables, which `src/vmtest.asm` already records as unusable.
+
+That map was learned the hard way and is the starting point, but it was settled for a
+program with **one** window and no sound. **What the resident code costs is still
+unknown**, and deliberately not estimated here: the harnesses' listings do not
+separate emitted code from `ds` reservations, so any total taken off them would be a
+guess dressed as a measurement. The experiment below is how to find out, and it is
+cheaper than the estimate would be worth.
 
 **The cheapest experiment that would kill I1 early**, and it should be run before a
 line of the integrated program is written: a paper slot map, then a thirty-line
