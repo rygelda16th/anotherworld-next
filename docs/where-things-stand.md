@@ -26,7 +26,7 @@ measurement that is the **only** thing that needs to be.
 | D - the virtual machine | **done**, Gate D passed, 763 records identical, repeatably |
 | E - pacing, input, sound | **built and gated** |
 | F - the rest of the game | **scoped**, three known gaps |
-| **integration - a playable game** | **not started.** Chain 2, eleven steps |
+| **integration - a playable game** | **not started.** Chain 2, thirteen steps |
 
 **The end goal is a fully playable Another World with sound**, and the state of that
 is: **nothing is playable yet.** Every `.nex` in `build/` is a single-purpose test
@@ -2032,14 +2032,16 @@ had failed to find in dozens.
 | # | do this | because | gate |
 |---|---|---|---|
 | **I1** | **one program, and the memory map that lets it exist** | the last thing that could force a redesign | everything resident at once and a frame runs: Gate D re-run *inside* the integrated program, with the frame interrupt and the sound interrupt both live, for 60 seconds |
+| **I1a** | **read a real keyboard** - and a joystick behind the same mask | NOTHING in this project reads input yet; `petest.asm` is handed a poked byte | the six VM variables track real keys, with `check-pace`'s existing mapping table as the oracle |
 | **I2** | **the VM draws** - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
 | **I3** | **resources arrive at runtime** - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
 | **I4** | **text** - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
-| **I5** | **sound in the game** - `op_playSound` and `op_playMusic` reach the gated player | the gate in Chain 1 proved the player, not the wiring | SFX and music events fire at the same frames as the engine's `sound.txt`, and the mixer output stays byte-exact |
+| **I5** | **sound in the game** - `op_playSound` and `op_playMusic` reach the gated player, **and the music module is parsed** | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | SFX and music events fire at the same frames as the engine's `sound.txt`, the mixer output stays byte-exact **on real sound resources**, and the module's order table and patterns match `sfxplayer.cpp`'s reading of them |
 | **I6** | **part transitions** - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
 | **I7** | **the full-screen bitmap path** | 70 of them load in the arena and no gate covers the machine half | the arena's bitmaps, on the machine, against the engine's pages |
 | **I8** | **the code screen, and its bypass** | "fully playable" includes it, and the bypass keeps the gates comparable to the reference build | the screen renders and accepts a correct code; with the flag set the sequence is skipped exactly as `BYPASS_PROTECTION` skips it |
 | **I9** | **save and load** | in the definition of done, and the reference has a format to match | save mid-part, reload, and both the VM state and the opcode stream from that point match a run that never saved |
+| **I9a** | **the whole suite, on the game** | every gate in Chain 1 was run against a HARNESS, not against the integrated binary | all twelve checkers pass against `aw.nex` rather than their own `.nex`, and the four narrow gates below pass against a gameplay part |
 | **I10** | **playable to the end** - every part, real input | this is the goal | **a full playthrough under the patched ZEsarUX**, recorded, with the per-frame budget re-measured on the real thing against the per-part table |
 | **H1** | **real hardware** - card boot, joystick wiring, timing on metal | follow-on; its gate cannot be run until the KS3 arrives | it boots from a card and plays, and the timings hold without the three local emulator patches |
 
@@ -2091,7 +2093,7 @@ of each. If two of them cannot coexist, that is known in an hour instead of afte
 week of integration - and it is exactly the shape of experiment that has worked
 here before.
 
-### Three gates are narrower than they sound, and must be re-run before I10
+### Four gates are narrower than they sound, and must be re-run before I10
 
 Every gate in Chain 1 that used bytecode used **the intro's** bytecode. The intro is
 a cinematic: it draws polygons, blits, and pauses. It does not exercise what gameplay
@@ -2104,10 +2106,28 @@ exercises.
   reaches 303 and the widest fan-out across all parts is 99 children in one record.
 - **I4's and I5's gates** will cover the intro's strings and the intro's sound
   events only.
+- **Gate E's sound claim is the narrowest of the four, and the wording here has been
+  too generous about it.** `make check-snd` proves the mixer's arithmetic - four
+  voices byte-exact at three block lengths, nine ring wraps - but `src/sndtest.asm`
+  feeds it **a synthetic ramp**, chosen deliberately so that a wrong pointer shows as
+  a wrong value. It has never mixed one of the game's own sound resources, and
+  nothing anywhere has parsed a music module. "Four voices byte-exact" is true of the
+  arithmetic and says nothing about the data.
 
 So I2, I4, I5 and Gate D itself each get a second run against a **gameplay** part
 before I10 is allowed to pass. That is cheap - the reference length is a parameter
 now - and it is the difference between "the intro works" and "the game works".
+
+### Decisions and measurements still owed
+
+None of these is integration work, and that is exactly why they had no place in the
+chain and were about to be lost. Each one says who owns it and what it blocks.
+
+| | owner | what it blocks |
+|---|---|---|
+| **the PUSH-versus-stores crossover, re-measured against GAMEPLAY's span distribution.** The 12-byte crossover was established on the intro, where 88% of spans are longer. In gameplay 96% are under 47 bytes and the median is far shorter, so *the fallback may be the common path, not the exception* - this document already says to re-check it before trusting it | mine | nothing until the budget is tight; then it decides whether the two optional optimisations help or hurt |
+| **F4, the palette question.** RGB444 to RGB333: 44.4% of palettes lose nothing, 35.1% lose one colour, the worst loses five of sixteen. A quantiser that nudged colliding entries apart would trade hue for separation at no run-time cost | **David's** | not a gate - page comparisons are on indices, not colours - but it decides what a player actually sees, so it wants settling before I10 |
+| **F5, the 320x256 mode**, decided against in decision 1 | **David's** | a re-read, not a task. It would change the rasteriser's geometry, so it must stay decided-against or be reopened before I2, not after |
 
 ### What could still stop this, worst first
 
