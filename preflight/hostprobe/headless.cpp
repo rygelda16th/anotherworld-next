@@ -92,6 +92,42 @@ void instrSegments(const unsigned char *cine, int cineSize,
     ++gSegDump;
 }
 
+/* The opcode stream, as a separate file: it is far larger than the video trace
+ * and only the first frames of it are wanted. Text, because it is read once by a
+ * checker and being able to look at it matters more than its size. */
+static FILE *gOps = NULL;
+static uint32_t gOpFrames = 0;
+
+void instrOpcode(int thread, int pc, int opcode) {
+    if (gOps && gFrameNo < gOpFrames)
+        fprintf(gOps, "op %u %d %d %d\n", gFrameNo, thread, pc, opcode);
+}
+
+void instrThread(int thread, int pc) {
+    if (gOps && gFrameNo < gOpFrames)
+        fprintf(gOps, "thread %u %d %d\n", gFrameNo, thread, pc);
+}
+
+void instrFrameEdge(void) {
+    if (gOps && gFrameNo < gOpFrames)
+        fprintf(gOps, "frame %u\n", gFrameNo);
+}
+
+void instrSeed(int seed) {
+    if (gOps) fprintf(gOps, "seed %d\n", seed);
+    printf("random seed: %d\n", seed);
+}
+
+void instrBytecode(const unsigned char *code, int size) {
+    if (!gOpFrames) return;
+    static int n = 0;
+    char nm[48];
+    snprintf(nm, sizeof nm, "bytecode_%d.bin", n++);
+    FILE *f = fopen(nm, "wb");
+    if (f) { fwrite(code, 1, size, f); fclose(f); }
+    printf("dumped bytecode %d: %d bytes\n", n - 1, size);
+}
+
 void instrOp(int kind, int a, int b, int c) {
     if (!gTrace || gFrameNo >= gTraceFrames) return;
     w8(kind);
@@ -360,10 +396,18 @@ int main(int argc, char **argv) {
         if (ff) { fwrite(Video::_font, 1, 768, ff); fclose(ff); }
     }
     gSnd = fopen("sound.txt", "w");
+    /* The opcode stream, for the first few frames only: it is about 40 bytes an
+     * opcode and the engine dispatches thousands a frame in gameplay. */
+    if (gTraceFrames) {
+        gOpFrames = gTraceFrames < 40 ? gTraceFrames : 40;
+        gOps = fopen("ops.txt", "w");
+    }
     Engine *e = new Engine(stub, data, "/tmp");
     e->init();
     e->run();
     if (gSnd) { fclose(gSnd); gSnd = NULL; }
+    if (gOps) { fclose(gOps); gOps = NULL;
+                printf("ops.txt written for the first %u frames\n", gOpFrames); }
     if (gTrace) {
         fclose(gTrace);
         printf("trace.bin written for the first %u frames\n", gTraceFrames);

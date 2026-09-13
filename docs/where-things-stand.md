@@ -1260,7 +1260,66 @@ Also worth carrying: `op_updateMemList` loads ONE resource inside a frame, and t
 largest is 65,230 bytes. That is a frame the pacing has to be told about however
 fast the card is.
 
-### D5. Gate D
+### D5. Gate D - built, and the VM is right as far as it is traced
+
+`make check-boot`. The C virtual machine is written - 426 lines, **7,095 bytes of
+code**, which puts risk 6 to rest - and it loads a bytecode segment off the card
+through the esxDOS path step 5 verified, runs the scheduler, and logs every opcode
+it dispatches.
+
+**Claim 1 passes.** The thread table and the initial variables are exactly what
+`initForPart` leaves: thread 0's pc at 0, all 63 others at `0xFFFF`, every
+requested pc `0xFFFF`, both channel-state arrays zero, and `0x54 = 0x81`,
+`0xE4 = 0x14` plus the four values the original game code and executable set
+rather than the bytecode.
+
+**Claim 3 passes as far as the trace runs.** The machine's stream is a **prefix**
+of the engine's: **nineteen records, every one identical** - the thread edge, then
+`call`, `movConst`, `jmp`, `condJmp`, `setSetVect`, `selectVideoPage`,
+`fillVideoPage`, `blitFramebuffer` and `pauseThread` across the first frame, then
+the second frame's thread edge and its run of five `updateMemList` calls. Every
+field: thread, program counter, opcode.
+
+The seed is taken from the host's own run, because the reference sets variable
+`0x3C` from `time(0)` and the two streams would diverge the first time the
+bytecode read it.
+
+#### Gate D: nineteen records, and a corrupted counter
+
+After the nineteenth record the machine stops logging, and three C globals read
+back wrong. This is the open fault in Phase D. The evidence, because it narrows
+the search a great deal:
+
+| symbol | address | reads | should be |
+|---|---|---|---|
+| `aw_log_count` | `$BBCD` | 129 | 19 |
+| `aw_finished` | `$BBD3` | `0x81` | `0x5A` |
+| `aw_frames_done` | `$BBD4` | 0 | the frame count |
+| `aw_bad_op` | `$BBC4` | `0x19` | 0 |
+
+- **It is not frame-dependent.** Identical at 2, 3, 5 and 10 frames: nineteen
+  records, all matching, the same three wrong values. So it is not a progressive
+  overrun driven by how much work is done.
+- **The addresses are right**, straight from z88dk's map, and the two globals the
+  checker POKES - `aw_seed` at `$BBAE` and `aw_frames` - are read correctly by the
+  C, because the opcode stream is right and the frame loop runs.
+- **The symbols that read wrong are the four HIGHEST in the C's data**, in address
+  order down from the stack at `$BF00`, and the C's data ends at about `$BBD6`.
+  That is 810 bytes of gap, and the pattern is what a stack growing into its own
+  data looks like.
+- **Pinning `CRT_STACK_ADDRESS` to `$BF00` changed nothing**, so either the runtime
+  was already using that stack or the pragma is not the lever.
+- `0x81` is a value this VM writes - `vmVariables[0x54]` - which suggests
+  something copying rather than the stack, but `aw_vars` is at `$B61F` and 512
+  bytes long, nowhere near.
+
+**The fault is in the diagnostic, not in the machine**: what has been proved is
+that the VM dispatches exactly what the engine dispatches for as long as it can
+say so. The next step is to find where those four bytes are written, and the
+cheapest experiment is a ZEsarUX memory breakpoint on `$BBCD` rather than any more
+reasoning - which is the tool this project has not needed until now.
+
+### D5a. Gate D, the rest of it
 
 `make check-boot`, in four claims, each of which fails loudly on its own:
 

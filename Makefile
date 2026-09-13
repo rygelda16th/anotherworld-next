@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-poly check-mix check-polycost check-reader check-readmachine check-load \
+        check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot \
         toolchain-diff
 
 help:
@@ -47,6 +47,7 @@ help:
 	@echo "make check-reader   Gate C4: the reference reader IS the engine's"
 	@echo "make check-readmachine  Gate C4: the Z80N reader, pixel-exact"
 	@echo "make check-load     Step 5: how fast esxDOS reads, and what a part costs"
+	@echo "make check-boot     Gate D: the VM dispatches exactly what the engine does"
 	@echo "make toolchain-diff has the shared toolchain drifted from wolf3d-next?"
 
 certs:
@@ -126,6 +127,12 @@ voices:
 CC_IMAGE   ?= z88dk/z88dk:20260907
 CFLAGS_ZXN := +zxn -vn -SO3 -clib=sdcc_iy -m --list
 CC_ORG     ?= 0xA000
+# Told to the CRT as well, not just set by the assembly before it calls in. The VM
+# carries about 1,400 bytes of data - 256 variables, four 64-entry thread tables
+# and a 256-deep call stack - and left to itself the runtime put its stack where
+# that data lives, so globals were corrupted intermittently: a trace counter read
+# 129 when nineteen records had been written.
+CC_STACK   ?= 0xBF00
 CC_RUN     := docker run --rm -v "$(CURDIR):/work" -w /work $(CC_IMAGE)
 
 # Build order is C first, then assembly: the jump table the C calls sits at an
@@ -133,11 +140,20 @@ CC_RUN     := docker run --rm -v "$(CURDIR):/work" -w /work $(CC_IMAGE)
 #
 # NOTE the _c suffix on the .exp: sjasmplus writes <name>.exp for the same base
 # name, and without it the assembly symbols silently overwrite the C's.
+# Each C program is compiled with the jump table that belongs beside it: the
+# preflight one for ctest, src/aw/jumptab.asm for the virtual machine.
 cc: | $(BUILD)
 	@set -e; for f in preflight/cc/*.c src/*.c; do \
 		[ -e "$$f" ] || continue; b=$$(basename "$$f" .c); echo "  CC  $$f"; \
 		$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(CC_ORG) \
 		    -o $(BUILD)/$$b "$$f" preflight/cc/jumptab.asm; \
+		python3 tools/mkexp.py $(BUILD)/$$b.map $(BUILD)/$${b}_c.exp; \
+	done
+	@set -e; for f in src/aw/*.c; do \
+		[ -e "$$f" ] || continue; b=$$(basename "$$f" .c); echo "  CC  $$f"; \
+		$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(CC_ORG) \
+		    -pragma-define:CRT_STACK_ADDRESS=$(CC_STACK) \
+		    -o $(BUILD)/$$b "$$f" src/aw/jumptab.asm; \
 		python3 tools/mkexp.py $(BUILD)/$$b.map $(BUILD)/$${b}_c.exp; \
 	done
 
@@ -178,6 +194,11 @@ check-polycost: | $(BUILD)
 	@$(MAKE) --no-print-directory asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkpolycost.py'
+
+# Gate D: the VM's opcode stream against the engine's. Needs `make assets`.
+check-boot: cc asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkboot.py'
 
 # Step 5: how fast does esxDOS read? Needs `make assets` first.
 check-load: asm

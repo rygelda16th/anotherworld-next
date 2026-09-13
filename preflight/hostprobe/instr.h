@@ -45,6 +45,19 @@ extern void instrMusic(int resNum, int delay, int pos);
 extern void instrDraw(int useVideo2, int off, int colour, int zoom, int x, int y);
 extern void instrSegments(const unsigned char *cine, int cineSize,
                           const unsigned char *v2, int v2Size);
+
+/* ---- fourth round: the opcode stream ------------------------------------
+ * Gate D's third claim. A VM that is wrong in one opcode is a VM that renders
+ * almost correctly, which is the worst kind of wrong to debug at the end - so
+ * the stream is compared thread by thread and opcode by opcode before any
+ * picture is. This logs (thread, pc, opcode) as the engine dispatches them, plus
+ * the bytecode segment itself, so the port can be fed exactly the same input.
+ */
+extern void instrOpcode(int thread, int pc, int opcode);
+extern void instrThread(int thread, int pc);
+extern void instrFrameEdge(void);
+extern void instrBytecode(const unsigned char *code, int size);
+extern void instrSeed(int seed);
 extern void instrPace(int slices);   /* vmVariables[0xFF] at each blit */
 extern void instrTick(unsigned ms);   /* the virtual clock, for sound.txt */
 #endif
