@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
+        check-map check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
         toolchain-diff
 
 help:
@@ -47,6 +47,7 @@ help:
 	@echo "make check-reader   Gate C4: the reference reader IS the engine's"
 	@echo "make check-readmachine  Gate C4: the Z80N reader, pixel-exact"
 	@echo "make check-load     Step 5: how fast esxDOS reads, and what a part costs"
+	@echo "make check-map      I1: the game's five windows and its code coexist"
 	@echo "make check-boot     Gate D: the VM dispatches exactly what the engine does"
 	@echo "make check-pace     Gate E: the input mapping, and pacing to its deadline"
 	@echo "make check-snd      Gate E: four voices byte-exact, and the DMA's rate"
@@ -230,6 +231,13 @@ check-pace: asm
 		sleep 3; python3 tools/checkpace.py'
 
 # Gate D: the VM's opcode stream against the engine's. Needs `make assets`.
+# I1's killing experiment: can the game's five windows and its resident code coexist,
+# and does the second window survive being stood down for esxDOS? Run this before
+# building anything on the slot map.
+check-map: asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkmap.py'
+
 # The engine's own stream ships IN the .nex and the VM checks itself against it as
 # it runs, so the expected data has to be regenerated before the assembly that
 # embeds it - a stale .inc would be compared confidently against the wrong run, and

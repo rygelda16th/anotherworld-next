@@ -1359,7 +1359,7 @@ presented as something other than a memory-map problem:
 | | |
 |---|---|
 | `$0000-$3FFF` | the bytecode window; the ROM until first mapped, and esxDOS pages itself here during a file call |
-| `$4000-$7FFF` | **not available.** Bank 5 holds the ZX system variables from `$5B00`, which esxDOS needs: staging a read here loaded 68 bytes and then failed |
+| `$4000-$7FFF` | **not available DURING A DOS CALL** - bank 5 holds the ZX system variables from `$5B00`, which esxDOS needs, and staging a read here loaded 68 bytes and then failed. Outside a DOS call it is ours, and **I1 proved it**: `make check-map` |
 | `$8000-$82xx` | `vmtest.asm`: jump table, code, data |
 | `$8C00-$AExx` | the C and its data, low on purpose |
 | `$BF00` | the stack. What SAVENEX declares; moving it to `$FF00` broke the load |
@@ -2031,7 +2031,7 @@ had failed to find in dozens.
 
 | # | do this | because | gate |
 |---|---|---|---|
-| **I1** | **one program, and the memory map that lets it exist** | the last thing that could force a redesign | everything resident at once and a frame runs: Gate D re-run *inside* the integrated program, with the frame interrupt and the sound interrupt both live, for 60 seconds |
+| **I1** | **one program, and the memory map that lets it exist** - slot map **PROVEN**, `make check-map` | the last thing that could force a redesign | everything resident at once and a frame runs: Gate D re-run *inside* the integrated program, with the frame interrupt and the sound interrupt both live, for 60 seconds |
 | **I1a** | **read a real keyboard** - and a joystick behind the same mask | NOTHING in this project reads input yet; `petest.asm` is handed a poked byte | the six VM variables track real keys, with `check-pace`'s existing mapping table as the oracle |
 | **I2** | **the VM draws** - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
 | **I3** | **resources arrive at runtime** - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
@@ -2086,12 +2086,34 @@ separate emitted code from `ds` reservations, so any total taken off them would 
 guess dressed as a measurement. The experiment below is how to find out, and it is
 cheaper than the estimate would be worth.
 
-**The cheapest experiment that would kill I1 early**, and it should be run before a
-line of the integrated program is written: a paper slot map, then a thirty-line
-program that pages every region named above in turn and reads a signature back out
-of each. If two of them cannot coexist, that is known in an hour instead of after a
-week of integration - and it is exactly the shape of experiment that has worked
-here before.
+**That experiment has been run, and I1's arrangement holds.** `make check-map`:
+eight banked pages each given a distinct signature, the whole arrangement mapped at
+once, every signature read back - and then the one thing known to break it, an esxDOS
+call with the ROM back over the bottom 16K and bank 5 back at `$4000`, followed by
+reading every signature again. All twelve sampled bytes correct both times.
+
+**The settled slot map, and it has one genuinely new claim in it:**
+
+| slot | | contents |
+|---|---|---|
+| MMU0, MMU1 | `$0000-$3FFF` | the bytecode window; the ROM during a DOS call |
+| **MMU2, MMU3** | **`$4000-$7FFF`** | **the polygon/cinematic window** - the second window, in the region this document called "not available" |
+| MMU4, MMU5 | `$8000-$BFFF` | resident code: the assembly, the C, the stack |
+| MMU6 | `$C000-$DFFF` | the Layer 2 band being drawn |
+| MMU7 | `$E000-$FFFF` | the mixer's sample window, and the loader's staging |
+
+**`$4000-$7FFF` is usable, and the old note was right for the wrong duration.** Bank 5
+holds the system variables esxDOS needs, so the region must be handed back for the
+length of a file call - which the experiment does and recovers from. Outside a call it
+is sixteen kilobytes of address space the project had written off, and it is where the
+second window goes. Without it there is no slot for it and I2 could not be built.
+
+**The experiment accused the machine before it cleared it**, which is worth recording
+because it is now the third time. The first run reported the arrangement broken at
+`$4000` and `$7FFF` - reading 165 and 90 where it wanted 66 and 67. 165 is `$A5` and
+90 is `$5A`: exactly the two bytes the test's own write-probe had written, at exactly
+the two addresses it wrote them to. The paging was correct throughout. A probe that
+modifies what it later samples has to put it back.
 
 ### The steps in full
 
