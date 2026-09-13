@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-poly check-mix check-polycost check-reader check-readmachine \
+        check-poly check-mix check-polycost check-reader check-readmachine check-load \
         toolchain-diff
 
 help:
@@ -46,6 +46,7 @@ help:
 	@echo "make check-polycost Step 2: T a polygon and T a span, fitted apart"
 	@echo "make check-reader   Gate C4: the reference reader IS the engine's"
 	@echo "make check-readmachine  Gate C4: the Z80N reader, pixel-exact"
+	@echo "make check-load     Step 5: how fast esxDOS reads, and what a part costs"
 	@echo "make toolchain-diff has the shared toolchain drifted from wolf3d-next?"
 
 certs:
@@ -177,6 +178,11 @@ check-polycost: | $(BUILD)
 	@$(MAKE) --no-print-directory asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkpolycost.py'
+
+# Step 5: how fast does esxDOS read? Needs `make assets` first.
+check-load: asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkload.py'
 
 # Gate C4 on the machine: the Z80N reader against the reference reader.
 check-readmachine: | $(BUILD)

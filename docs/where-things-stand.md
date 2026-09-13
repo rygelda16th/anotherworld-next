@@ -50,6 +50,7 @@ are now optional. See *What has been measured*.
     make check-poly    Gate C: the rasteriser, pixel-exact vs the reference
     make check-reader  Gate C4: the reference reader IS the engine's reader
     make check-readmachine  Gate C4: the Z80N reader, pixel-exact
+    make check-load    step 5: esxDOS reads correctly; its speed needs hardware
     make check-mix     step 1: what one output sample of the mixer costs
     make check-polycost step 2: T a polygon and T a span, measured apart
     make frame-load    every frame against the pause its own script asked for
@@ -1235,12 +1236,29 @@ Two traps are already paid for on the other project and cost nothing to avoid he
   caller's. wolf3d-next's `fs_*` set both after CSpect wrote a filename over the
   code following it.
 
-**Unmeasured, and the first thing D4 should measure:** the read rate. A 155,000-byte
-part load at an unknown rate is the only number in Phase D with no evidence behind
-it. `make check-load` - open, read a part's four resources into their pages, time it
-with the frame counter - answers it before any of the rest is built, because if a
-part load takes four seconds that is a loading-screen design decision, not an
-implementation detail.
+**The loading path is built and verified; the rate is not measurable here.**
+`make check-load` opens a resource, reads it into banked pages 8K at a time through
+a buffer in IX with the code at `$8000`, and checks the length against the host's.
+Seven files from 9,871 to 65,230 bytes, every byte arriving, the largest across
+eight pages.
+
+**But ZEsarUX's esxDOS handler does its I/O on the host and charges the emulated
+CPU nothing**, so the time a read takes does not depend on how much is read. Over
+those seven files, size against time comes out at **r = -0.518** - negative - and
+the smallest file costs more emulated time than the largest. What such a
+measurement records is the checker's own polling interval while the program spins
+in its wait loop. The checker detects this and says so rather than reporting a
+rate; it would have reported 99 KB/s, and that number would have been fiction.
+
+So the read rate joins the short list of things only the KS3 can answer, beside
+whether the DMA honours `$123B`. Phase D is designed against an assumed rate, and
+the assumption is stated where it is used: **at any rate above 100 KB/s the worst
+part - 154,971 bytes - loads in under two seconds, which a held frame covers with
+no loading screen.** Below that it becomes a design decision rather than a detail.
+
+Also worth carrying: `op_updateMemList` loads ONE resource inside a frame, and the
+largest is 65,230 bytes. That is a frame the pacing has to be told about however
+fast the card is.
 
 ### D5. Gate D
 
@@ -1472,7 +1490,7 @@ unblocked only once the one it names has produced a number.
 | 3 | ~~C4, the polygon reader~~ **DONE, both halves** | nothing renders a real scene without it | `check-reader`: 10,700 draws, 64,897 fills, field for field. `check-readmachine`: **49,152/49,152 pixels** over 771 polygons at 55 distinct zooms |
 | 3a | ~~C5a, widen the geometry to 16 bits~~ **DONE** | the machine reader was blocked on it: the trace reaches 483 and the rasteriser held bytes | Gate C with a `wide` bucket reaching 303, and `calc_step` **576 of 576** exact as words |
 | 4 | ~~C6, the segment window~~ **DONE** | a 65,230-byte segment cannot be mapped flat | the same gate: the whole 65,230-byte segment is read through a two-page window at `$0000` |
-| 5 | **D4's read rate**, before any of D is built | a four-second part load is a design decision, not a detail | `make check-load` |
+| 5 | ~~D4's read rate~~ **DONE, and the answer is "not here"** | a four-second part load is a design decision, not a detail | `make check-load`: the path works and every byte arrives; the rate is r = -0.518 against size, so the emulator cannot time it |
 | 6 | **D2 and D3, the scheduler and opcodes** | the rest of the port hangs off them | Gate D, and D3's opcode trace before D4's picture |
 | 7 | **E1 and E2, pacing and input** | the game is unplayable without them and they are small | `check-pace`, `check-input` |
 | 8 | **E3, sound** | priced at step 1, and the ring is already proven on the other project | `check-mix` against a host reference mixer |

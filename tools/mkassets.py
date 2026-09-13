@@ -194,10 +194,26 @@ def main():
               f"{len(small):,} bytes  ({DST_W}x{DST_H}, "
               f"{len(used)} of 16 indices used)")
 
-    print(f"\nwrote {len(pal_res)} palette and {len(anim)} bitmap blobs to "
-          f"{out_dir}")
-    print("Bytecode and polygon resources are not converted: they go to the "
-          "machine as they are.")
+    # ---- every other resource, decompressed and flat ---------------------
+    # Phase D's decision: the Next never runs byte-killer. Decoding here trades
+    # 1,730,258 bytes of SD card - the whole game - for the entire decompressor
+    # and its 32-bit reservoir, and `make check-data` has already proved every
+    # resource's CRC cancels. One file an id, so the loader's index IS the
+    # engine's: RES18.BIN is resource 0x18.
+    written, total = 0, 0
+    for e in es:
+        if e["type"] in (RT_PALETTE, RT_POLY_ANIM) or not e["bank"]:
+            continue                    # converted above, or absent
+        raw = read_resource(e, banks[e["bank"]])
+        path = os.path.join(out_dir, f"RES{e['id']:02X}.BIN")
+        open(path, "wb").write(raw)
+        written += 1
+        total += len(raw)
+    print(f"\nresources, decompressed and flat: {written} files, {total:,} bytes")
+
+    print(f"\nwrote {len(pal_res)} palette and {len(anim)} bitmap blobs plus "
+          f"{written} raw\nresources to {out_dir}")
+    print("Nothing on the Next decompresses anything.")
 
 
 if __name__ == "__main__":
