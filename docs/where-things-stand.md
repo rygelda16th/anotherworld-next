@@ -2315,18 +2315,41 @@ for draw 1. So the asset is right, the reader is right, and the fault is the mac
   which made it look like proof that the machine was right and the host wrong. It was a
   coincidence of magnitude, not a match.
 
-**THE NEXT TEST, and it is sharp.** Drive that one record through `check-readmachine`'s
-mechanism - poke `off=2096, colour=$FF, zoom=64, x=192, y=59` as a one-entry draw list - and
-see whether the machine's reader gets it wrong without the VM involved at all:
+**THAT TEST HAS BEEN RUN, and the reader is right.** `src/aw.asm` gained a probe path -
+`probe_draw`, one draw from a poked `DRAW_BLOCK` with the C never entered - because no
+existing gate separates the reader from its setup: `check-readmachine` drives the reader
+from a poked list in the **harness**, `check-draw` drives it from the VM in the **game**,
+and the question is which of those two differs. Driven directly with
+`off=2096, colour=$FF, zoom=64, x=192, y=59` into page 0, the machine is **IDENTICAL** to
+the reference.
 
-- **wrong** - a reader fault on this record, reproducible with no VM, and `check-readmachine`
-  simply never drew it. Its 17 draws are a different set.
-- **right** - then the fault is in how `aw_draw_poly` sets the reader up: `rd_col` for the
-  bit-7 form's `$FF`, `seg_base`, `rd_depth`, or the MMU0 borrow for the copy-mode fill.
+**So everything in the chain is individually correct and the combination is not:**
 
-The record is the reference's own black full-screen polygon - `vm.cpp` comments it as
-"probably draws a black polygon over all the screen" - so it is large, it reaches the right
-edge at x=192, and 2,756 differing bytes in rows 0..120 is about 5.6% of the page.
+| | |
+|---|---|
+| the fills and copies before any draw | identical (`bisect-draw` at 0 draws) |
+| the record's operands | identical (`check-draw`'s per-draw log) |
+| the destination page | identical |
+| the reader on this record, page 0 blank | identical (the probe path) |
+| the reader on this record, page 0 **filled** | **2,756 bytes wrong** |
+
+**The last line is the whole remaining fault, and the shape says something.** 2,756 bytes
+over 121 rows is about 23 a row - a thin sliver, not a wrong polygon. A wrong shape would
+differ in blocks; this differs in a ribbon.
+
+**And it only shows when page 0 already has content**, which is what the probe path proves by
+passing: with a blank page the copy-mode fill this record uses - `$FF` selects `drawLineP`,
+which reads `_pages[0]` (`video.cpp:352`) - copies zeros over zeros and cannot be wrong.
+
+**THE NEXT EXPERIMENT is therefore to make the probe path reproduce it**: run the fills
+before the single draw, or pre-fill page 0 from the checker, so there is a no-VM one-record
+reproducer that FAILS. That can be single-stepped, which nothing about the current failure
+can.
+
+**`SRC_PAGE` was wrong and is now fixed, and it did not change this.** The rasteriser's
+copy-mode fill reads page 0 and only page 0; the harness had `SRC_PAGE 2` because its own
+test drew from page 2, and the game inherited the number. Correct per `video.cpp:352`,
+irrelevant to the symptom - the fourth such fix this step.
 
 **Two wrong attempts at the bisect itself, both worth keeping.** Stopping the machine by
 setting the out-of-budget flag AFTER a draw does not stop at that draw: it ends the frame

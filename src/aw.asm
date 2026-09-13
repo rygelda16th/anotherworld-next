@@ -139,11 +139,18 @@ L2_PORT         EQU $123B
 L2_VISIBLE      EQU %00000010
 SCR_W           EQU 256
 SCR_H           EQU 192
-; The engine keeps FOUR pages and selects among them; these two constants are what the
-; harness had, and I2's page model is what replaces them. For now they name page 1 as
-; the destination and page 2 as the source, which is what the intro's first frames use.
+; The engine keeps FOUR pages and selects among them, so DST_P0 is only a starting value -
+; dst_p0 tracks selectVideoPage from then on.
+;
+; SRC_PAGE IS PAGE 0 AND IT IS NOT A CHOICE. The rasteriser's copy-mode fill - the one a
+; colour of $FF selects - reads its source from page 0 and nothing else: video.cpp:352 is
+; `colb = *(_pages[0] + off)`. The harness had SRC_PAGE 2 because its own test drew from
+; page 2, and inheriting that number put the game's copy-fill on the wrong source. It cost
+; 2,756 wrong bytes on the intro's very first record, which is a full-screen black polygon
+; drawn in exactly that mode - and it was invisible until page 0 had anything in it, which
+; is why a one-record probe into a blank page came out identical.
 DST_PAGE        EQU 1
-SRC_PAGE        EQU 2
+SRC_PAGE        EQU 0
 DST_P0          EQU (L2_BASE_BANK + DST_PAGE * 3) * 2
 SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * 3) * 2
 SAMPLE          EQU $DE00
@@ -261,6 +268,22 @@ start:
         ld      hl, (got)
         ld      (CTL + $10), hl         ; the segment length, for the pc guard
 
+        ; A PROBE PATH: one draw from a poked DRAW_BLOCK, with the C never entered.
+        ; It exists to settle one question - whether the reader gets a particular record
+        ; wrong on its own, or whether aw_draw_poly sets it up wrong. Those need separating
+        ; and no existing gate separates them: check-readmachine drives the reader from a
+        ; poked list in the HARNESS, and check-draw drives it from the VM in the GAME.
+        ld      a, (probe_draw)
+        or      a
+        jr      z, .run_vm
+        ld      a, (pg_ptr1)            ; the checker chooses the page
+        call    page_to_p0
+        ld      (dst_p0), a
+        ld      a, 255
+        ld      (cur_band), a
+        call    aw_draw_poly
+        jr      .stop
+.run_vm:
         call    CC_ORG                  ; and the C runs the frame loop
         di                              ; the CRT's exit does `im 1 / ei / ret`
 .stop:
@@ -1040,6 +1063,8 @@ pg_ptr3:    db 1                        ; the other display page
 fill_col:   db 0
         EXPORT stop_blit
 stop_blit:  dw 0            ; stop the frame loop after this many blits; 0 = never
+        EXPORT probe_draw
+probe_draw: db 0            ; 1 = do one draw from DRAW_BLOCK and stop, no VM
         EXPORT stop_draw
 stop_draw:  dw $FFFF        ; refuse the draw once this many have happened; $FFFF = no limit
 saved_mmu0: db 0
