@@ -49,6 +49,7 @@ are now optional. See *What has been measured*.
     make check-cc      Gate B: C calls assembly at a fixed address and returns
     make check-poly    Gate C: the rasteriser, pixel-exact vs the reference
     make check-mix     step 1: what one output sample of the mixer costs
+    make check-polycost step 2: T a polygon and T a span, measured apart
     make frame-load    every frame against the pause its own script asked for
     make voices        how many mixer voices are live, and at what rates
     make toolchain-diff  has the shared toolchain drifted from wolf3d-next?
@@ -492,29 +493,37 @@ five refreshes, 2.24 to 2.80 million T-states, not 560,000.
 
 ### What that does to the rasteriser's verdict
 
-`make frame-load` scores every frame against the pause **it itself asked for**,
-using the measured 672 T span and sweeping the per-polygon setup cost because that
-one has not been measured on the machine yet:
+`make frame-load` scores every frame against the pause **it itself asked for**.
+Both cost terms are now measured rather than swept - step 2, `make check-polycost` -
+and there are two models, because which applies is a decision about how much
+optimising gets done rather than a fact about the game:
 
-| | p50 | p90 | p99 | worst | frames that overrun | mean load |
+| gameplay | p50 | p90 | p99 | worst | frames that overrun | mean load |
 |---|---|---|---|---|---|---|
-| intro | 0.18 | 0.46 | 1.52 | 13.3 | 0.07% | 6.6% |
-| gameplay | 0.76 | 1.94 | 2.43 | 9.95 | **0.73%** | **24.8%** |
+| **as built** | 1.25 | 4.00 | 5.57 | 18.79 | **12.72%** | **48.4%** |
+| **with the two optimisations** | 0.71 | 1.74 | 2.15 | 9.13 | **0.73%** | **22.6%** |
 
-In refreshes, at 3,000 T a polygon. Swept from 1,500 to 4,500 T the overrun rate
-does not move from 0.73% at all, because the frames that miss are the handful of
-enormous ones and nothing near the median is close to its deadline.
+| intro | p50 | p90 | p99 | worst | frames that overrun | mean load |
+|---|---|---|---|---|---|---|
+| as built | 0.18 | 0.69 | 3.28 | 31.88 | 0.52% | 9.6% |
+| with the two optimisations | 0.18 | 0.42 | 1.38 | 11.62 | 0.06% | 6.4% |
 
-**So the rasteriser is comfortably fast enough.** It uses a quarter of the time
-the scripts give it, the 99th percentile has 40% spare against a four-slice pause,
-and fewer than one frame in a hundred overruns. The frames that do overrun are
-room entries and part restarts, where a long frame reads as a load rather than as
-a stutter.
+In refreshes, at 2,974 T a polygon and a 22-byte opaque span at either 2,037 T as
+the code stands or 552 T optimised.
 
-The previous reading - "the worst frame clears its budget by about 4%, passing but
-not comfortable" - was the worst frame of the whole run set against a **one**-slice
-pause that the scripts almost never request. The arithmetic was right and the
-comparison was wrong.
+**The rasteriser is comfortably fast enough once it is optimised, and not before.**
+Optimised it uses just over a fifth of the time the scripts give it, the 99th
+percentile has nearly half a four-slice pause spare, and one frame in 137
+overruns - room entries and part restarts, where a long frame reads as a load
+rather than a stutter. As built it uses half the time and one frame in eight
+overruns.
+
+Two earlier readings of this were both wrong, in opposite directions. "The worst
+frame clears its budget by about 4%, passing but not comfortable" set the worst
+frame of the whole run against a **one**-slice pause the scripts almost never
+request. The correction to that, published earlier the same day, used 672 T a
+span - which is step 0's purpose-built span row rather than the rasteriser, and so
+described code that does not exist yet. The figures above are the rasteriser.
 
 ### Structure, heap and voices
 
@@ -581,13 +590,13 @@ them per scanline, which is most of the 433 T; and unroll the blend and copy fil
 as the opaque one already is, taking blend from 32 to about 19 T/byte and copy from
 37.5 to about 24. Both are techniques already measured here, not guesses.
 
-**Neither is on the critical path any more.** They were, while the worst frame was
-being compared against one refresh. They now buy smoothness on room entries.
-Before either, measure the thing that gameplay actually spends its time on: the
-**per-polygon setup cost**, which no measurement here has isolated. `check-poly`
-already takes a polygon limit, so fitting cost against limit over several runs
-gives it for almost nothing - the same fitting method `check-span` used for cost
-per byte.
+**Both are required, and step 2 established that by measuring the alternative.**
+For a while they looked optional, which was the consequence of budgeting a span at
+this file's 433 T entry plus a PUSH fill when the rasteriser uses neither.
+`make check-polycost` charges the real code at 1,570 T entry and 21.3 T an opaque
+byte, and these two optimisations are exactly what closes that gap. The
+per-polygon cost the same run measures, 2,974 T, landed inside the range the plan
+had swept, so that half of the budget was sound all along.
 
 **Stores versus PUSH cross at 12 bytes**, and 88% of the intro's spans are longer,
 so the fill should be PUSH with a store fallback below that. In gameplay 96% of
@@ -652,6 +661,65 @@ a sample.
 
 Additivity holds to 8.9%: one store plus three saturating voices predicts 296 T
 against 325 measured for the rolled version.
+
+### The rasteriser, decomposed - and the plan's span cost was three times too low
+
+`make check-polycost`, step 2. It draws **windows** of the Gate C vector rather
+than prefixes, because taking prefixes leaves the polygon count and the span count
+at r = 0.96 and a fit cannot then tell the two costs apart.
+
+**The per-polygon cost is measured, not fitted.** One window draws a single polygon
+that produces no spans at all, so its whole pass is the per-polygon path - the
+bounding-box test, the walk's setup, the record advance:
+
+    per polygon                      2,974 T
+
+With that subtracted the span terms are well posed:
+
+| | measured here | step 0, by another method |
+|---|---|---|
+| per span entry | 1,570 T | 433 T (its own span row) |
+| per opaque byte | 21.3 T | 5.4 PUSH, 10.7 unrolled |
+| per blend or copy byte | **32.0 T** | **32.2** and 37.6 |
+
+**The blend term agreeing to 0.6% by two entirely different methods is the evidence
+that this decomposition means anything.** The opaque term matches `span_opaque` as
+written - `ld (hl),a` / `inc l` / `djnz` is 24 T a byte in theory and 21.3
+measured, the difference being `djnz`'s cheaper last iteration.
+
+**And that is the finding.** The plan budgeted 672 T a span. That figure is step
+0's *purpose-built span row with a PUSH fill*, not the rasteriser. The rasteriser
+as it stands charges **1,570 + 22 x 21.3 = 2,037 T** for the same 22-byte opaque
+span - three times as much.
+
+Re-run against every frame the host measured, at each frame's own requested pause:
+
+| gameplay | mean load | p90 | p99 | worst | frames overrunning |
+|---|---|---|---|---|---|
+| **as built** | **48.4%** | 4.00 | 5.57 | 18.79 | **12.72%** |
+| **with the two optimisations** | **22.6%** | 1.74 | 2.15 | 9.13 | **0.73%** |
+
+The earlier "24.8% and 0.73%" in this document was, by coincidence, almost exactly
+the *optimised* model - because 672 T a span is close to the 552 T the
+optimisations would actually achieve. The conclusion "the rasteriser is comfortably
+fast enough" was therefore right about the destination and wrong about where the
+code is.
+
+**So the two deferred optimisations are required, and they are sufficient.**
+
+- hold the four accumulator words in registers across a trapezoid: entry from
+  1,570 T towards step 0's measured 433
+- a PUSH fill instead of the `djnz` store loop: 21.3 T a byte towards 5.4
+
+Both are techniques step 0 already measured on this machine. Together they take a
+span from 2,037 T to 552 T, the gameplay mean from 48.4% of its pause to 22.6%, and
+the overrun rate from one frame in eight to one in 137. With the mixer's 23.2% on
+top that is 46% of the machine rather than 72%.
+
+The copy-byte term is **not** measured here: copy-mode bytes never exceed 952 in any
+window and are zero in most, so fitted freely the coefficient came out at minus 243
+T a byte. They are folded in with blend, which step 0 measured at 32.2 against
+copy's 37.6.
 
 ### Palette loss
 
@@ -1269,7 +1337,8 @@ unblocked only once the one it names has produced a number.
 | # | do this | because | gate |
 |---|---|---|---|
 | 1 | ~~price the mixer's inner loop~~ **DONE** | it was the largest unpriced cost, and it decided the output rate | `make check-mix`: **295 T a sample for four voices**, 23.2% of the machine at the reference's own 22,050 Hz |
-| 2 | **measure the per-polygon setup cost** by fitting `check-poly` over several polygon limits | gameplay spends its time there and every budget number carries it as a guess | a fitted T-per-polygon |
+| 2 | ~~measure the per-polygon setup cost~~ **DONE** | gameplay spends its time there, and every budget number carried it as a guess | `make check-polycost`: **2,974 T a polygon**, and it found the span cost had been understated threefold |
+| 2a | **the two rasteriser optimisations**: accumulators in registers, PUSH fill | required, not optional - step 2 measured the alternative at one frame in eight overrunning | `check-polycost` again: entry towards 433 T, opaque bytes towards 5.4 T, and Gate C still pixel-exact |
 | 3 | **C4, the polygon reader** | nothing renders a real scene without it | the Gate C vector, redrawn from the autoplay trace so bit-6 records with real zooms are covered |
 | 4 | **C6, the segment window** | a 65,230-byte segment cannot be mapped flat | a read of the last byte of the largest cinematic segment |
 | 5 | **D4's read rate**, before any of D is built | a four-second part load is a design decision, not a detail | `make check-load` |
@@ -1284,8 +1353,16 @@ can proceed in parallel with them.
 
 **Step 1 came back under its threshold.** 23.2% of the machine at the reference's
 own rate against a 35% limit, so sound keeps its fidelity: 22,050 Hz, four voices,
-the volume table rather than `MUL`, and no interpolation. The thing that would have
-changed the plan wholesale did not happen, and the plan is unchanged below.
+the volume table rather than `MUL`, and no interpolation.
+
+**Step 2 changed one thing.** The per-polygon cost it set out to measure came in at
+2,974 T, inside the range the plan had swept, so that was sound. But measuring it
+required decomposing the rasteriser, and that showed the plan's 672 T a span
+describes step 0's purpose-built span row rather than the rasteriser, which charges
+2,037 T. So **step 2a is now the two optimisations**, which are required rather
+than optional and which measurement says are sufficient: they take the gameplay
+mean from 48.4% of its pause to 22.6% and the overrun rate from one frame in eight
+to one in 137.
 
 ---
 
@@ -1310,12 +1387,17 @@ that had been estimated.
    of those two parts. **Cheapest experiment:** the probe types a level code at the
    password screen, which `inp_handleSpecialKeys` already reaches, and the same
    reports run over a later part.
-3. **The per-polygon setup cost has never been measured**, and gameplay spends its
-   time there rather than in the span fill - 956 polygons at 3.8 spans each in the
-   heaviest frame. Every frame-budget number above carries it as a swept parameter
-   instead. The conclusion survives 1,500 to 4,500 T, but a setup cost of 15,000 T
-   would change it. **Cheapest experiment:** `check-poly` already takes a polygon
-   limit; time several limits and fit, exactly as `check-span` fitted cost per byte.
+3. ~~**The per-polygon setup cost has never been measured.**~~ **Closed, and it
+   opened a bigger one.** `make check-polycost` measures 2,974 T a polygon, inside
+   the swept range. But decomposing the rasteriser to get it showed that **the
+   plan's 672 T a span was step 0's purpose-built span row, not this code**, which
+   charges 2,037 T for the same 22-byte opaque span. As built, one gameplay frame
+   in eight overruns its own deadline and the mean load is 48.4%, not 24.8%. The
+   two optimisations step 0 measured are required and sufficient - 552 T a span,
+   22.6% mean, one frame in 137 - so this is scheduled work rather than an open
+   question. **The residual risk is that they do not reach their measured
+   targets in the real rasteriser**, where the accumulators are shared with the
+   trapezoid walk rather than being a benchmark's four words.
 4. **The full-screen bitmap path is unverified and its host port unchecked.** Zero
    `RT_POLY_ANIM` loads in 72,000 frames, so Gate A's byte-exactness covers none of
    it, and `mkassets.py`'s deplaner has never been compared against

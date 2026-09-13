@@ -57,6 +57,21 @@ class RefVideo:
 
     def __init__(self):
         self.pages = [bytearray(self.PAGE) for _ in range(4)]
+        # Accounting only. These cannot change a byte of output - `make check-ref`
+        # is re-run to prove it - and step 2 of the plan needs them: separating
+        # per-polygon setup cost from per-span cost on the machine requires the
+        # span count of a polygon PREFIX, and the reference is the only thing
+        # that knows it.
+        self.n_polys = 0
+        self.n_spans = 0
+        self.n_span_bytes = 0
+        self.n_points = 0
+        # Per fill mode, because step 0 measured the three at 5.4, 32 and 37.6 T
+        # a byte independently. Splitting them turns a fit that could trade cost
+        # between its terms into one whose terms can be checked against constants
+        # measured by another method. Index 0 opaque, 1 blend, 2 copy.
+        self.n_mode_spans = [0, 0, 0]
+        self.n_mode_bytes = [0, 0, 0]
         # Video::init(): curPagePtr2 = page 2, curPagePtr3 = page 1,
         # then changePagePtr1(0xFE) points the work page at curPagePtr2.
         self.cur2 = 2
@@ -255,6 +270,8 @@ class RefVideo:
 
     def fill_polygon(self, colour, ptx, pty, bbw, bbh, points):
         n = len(points)
+        self.n_polys += 1
+        self.n_points += n
         if bbw == 0 and bbh == 1 and n == 4:
             self._point(colour, ptx, pty)
             return
@@ -274,11 +291,11 @@ class RefVideo:
         j -= 1
 
         if colour < 0x10:
-            span = self._span_opaque
+            span, mode = self._span_opaque, 0
         elif colour > 0x10:
-            span = self._span_copy
+            span, mode = self._span_copy, 2
         else:
-            span = self._span_blend
+            span, mode = self._span_blend, 1
 
         cpt1 = (x1 << 16) & 0xFFFFFFFF
         cpt2 = (x2 << 16) & 0xFFFFFFFF
@@ -313,6 +330,11 @@ class RefVideo:
                                 sx1 = 0
                             if sx2 > self.W - 1:
                                 sx2 = self.W - 1
+                            self.n_spans += 1
+                            nb = abs(sx2 - sx1) + 1
+                            self.n_span_bytes += nb
+                            self.n_mode_spans[mode] += 1
+                            self.n_mode_bytes[mode] += nb
                             span(sx1, sx2, colour)
                     cpt1 = (cpt1 + step1) & 0xFFFFFFFF
                     cpt2 = (cpt2 + step2) & 0xFFFFFFFF

@@ -12,21 +12,40 @@ never asks for. The scripts ask for 80 ms three quarters of the time. So the
 question is not "does the worst frame fit one refresh", it is "how many frames
 overrun their own deadline", and that is what this prints.
 
-Costs are the measured ones from `make check-span`, so this is a model with one
-free parameter: the per-polygon setup cost, which has not been measured on the
-machine yet. It is swept rather than guessed, and the conclusion turns out not
-to depend on it.
+Costs are all measured now - `make check-span` for the fill modes and
+`make check-polycost` for the per-polygon and per-span figures. Two models are
+reported, because which applies is a decision about how much optimising gets done
+rather than a fact about the game: the rasteriser as it stands, and the same with
+the two optimisations step 0 measured and this project deferred.
 
-    python3 tools/frameload.py frames.txt [per-polygon-T ...]
+    python3 tools/frameload.py frames.txt
 """
 
 import sys
 
 REFRESH = 560_000        # T-states in one 20 ms refresh at 28 MHz
-SPAN = 672               # measured end to end, src/span.asm via make check-span
 OPCODE = 400             # C dispatch, measured in Phase B
 COPY = 49_152 * 2        # a whole 256x192 page, PUSH/POP pairs; upper bound
 FILL = int(49_152 * 1.5)
+
+# Two cost models, both measured, because which one applies is a decision about
+# how much optimising gets done rather than a fact about the game.
+#
+#   "as built"  - what src/polytest.asm charges today, from make check-polycost:
+#                 2,974 T a polygon measured directly, and a 22-byte opaque span
+#                 at 1,570 T entry + 22 x 21.3 T a byte. The fill is a plain
+#                 ld (hl),a / inc l / djnz loop.
+#   "optimised" - the same with the two optimisations step 0 already measured:
+#                 accumulators held in registers across a trapezoid (433 T entry)
+#                 and a PUSH fill (5.4 T a byte). Both are measured techniques,
+#                 not guesses, and check-polycost showed they are needed.
+#
+# The plan's earlier figures used 672 T a span, which is step 0's purpose-built
+# span row rather than the rasteriser - a three-fold understatement.
+MODELS = {
+    "as built":  (2974, 1570 + 22 * 21.3),
+    "optimised": (2974, 433 + 22 * 5.4),
+}
 
 
 def pctile(v, q):
@@ -45,7 +64,6 @@ def load(path):
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "frames.txt"
-    sweep = [int(v) for v in sys.argv[2:]] or [1500, 3000, 4500]
     rows = load(path)
     if not rows:
         raise SystemExit(f"{path} is empty")
@@ -66,19 +84,19 @@ def main():
         print(f"  {p} slices ({p*20:>3} ms) {pace[p]:>8,}  "
               f"{100*pace[p]/len(rows):5.1f}%")
 
-    print(f"\n{'per-poly':>9} {'p50':>7} {'p90':>7} {'p99':>7} {'max':>7} | "
-          f"{'missed':>7} {'>2x':>6} | {'mean load':>9}")
-    for pp in sweep:
+    print(f"\n{'model':>10} {'T/poly':>7} {'T/span':>7} | {'p50':>6} {'p90':>6} "
+          f"{'p99':>6} {'max':>6} | {'missed':>7} {'>2x':>6} | {'mean load':>9}")
+    for name, (pp, sp) in MODELS.items():
         cost, load_, miss, bad = [], [], 0, 0
         for _, ops, polys, spans, fill, copy, p in rows:
-            t = spans * SPAN + polys * pp + ops * OPCODE + copy * COPY + fill * FILL
+            t = spans * sp + polys * pp + ops * OPCODE + copy * COPY + fill * FILL
             budget = max(p, 1) * REFRESH
             cost.append(t / REFRESH)
             load_.append(t / budget)
             miss += t > budget
             bad += t > 2 * budget
-        print(f"{pp:>7} T {pctile(cost,.50):>7.2f} {pctile(cost,.90):>7.2f} "
-              f"{pctile(cost,.99):>7.2f} {max(cost):>7.2f} | "
+        print(f"{name:>10} {pp:>7.0f} {sp:>7.0f} | {pctile(cost,.50):>6.2f} "
+              f"{pctile(cost,.90):>6.2f} {pctile(cost,.99):>6.2f} {max(cost):>6.2f} | "
               f"{100*miss/len(rows):>6.2f}% {100*bad/len(rows):>5.2f}% | "
               f"{sum(load_)/len(load_):>8.1%}")
 
@@ -87,15 +105,15 @@ def main():
           "pause used.")
 
     if len(byparts) > 1:
-        print("\nby part (at the middle per-polygon cost):")
-        pp = sweep[len(sweep) // 2]
-        for part in sorted(byparts):
-            rs = byparts[part]
-            c = [(s * SPAN + pl * pp + o * OPCODE + cp * COPY + fl * FILL)
-                 / (max(p, 1) * REFRESH)
-                 for _, o, pl, s, fl, cp, p in rs]
-            print(f"  part {part:<3} {len(rs):>7,} frames   mean load "
-                  f"{sum(c)/len(c):>6.1%}   worst {max(c):>5.2f}x its deadline")
+        print("\nby part:")
+        for name, (pp, sp) in MODELS.items():
+            for part in sorted(byparts):
+                rs = byparts[part]
+                c = [(s * sp + pl * pp + o * OPCODE + cp * COPY + fl * FILL)
+                     / (max(p, 1) * REFRESH)
+                     for _, o, pl, s, fl, cp, p in rs]
+                print(f"  {name:<10} part {part:<3} {len(rs):>7,} frames   mean load "
+                      f"{sum(c)/len(c):>6.1%}   worst {max(c):>6.2f}x its deadline")
 
 
 if __name__ == "__main__":

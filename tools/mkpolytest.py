@@ -125,7 +125,20 @@ def main():
                  "colour, ptx, pty (signed words), bbw, bbh,\n; npoints, then "
                  "npoints pairs of (x, y) offsets within the box.\n")
         fh.write(f"PAGE0_SEED      EQU ${PAGE0_SEED:02X}\n")
-        fh.write(f"POLY_COUNT      EQU {len(picked)}\n\npoly_data:\n")
+        fh.write(f"POLY_COUNT      EQU {len(picked)}\n\n")
+        # An offset per record, so a program can start at record N without
+        # walking to it. tools/checkpolycost.py draws WINDOWS of the vector to
+        # decorrelate polygon count from span count, and walking to the window
+        # put a cost proportional to the start index into every measurement -
+        # a confound that looked like a huge per-polygon cost.
+        off, offs = 0, []
+        for _, a in picked:
+            offs.append(off)
+            off += 1 + 2 + 2 + 1 + 1 + 1 + 2 * len(a["points"])
+        fh.write("poly_index:\n")
+        for k in range(0, len(offs), 8):
+            fh.write("        dw      " + ", ".join(str(v) for v in offs[k:k + 8]) + "\n")
+        fh.write("\npoly_data:\n")
         for bucket, a in picked:
             pts = [(R.sx(x), R.sy(y)) for x, y in a["points"]]
             fh.write(f"        ; {bucket}: colour {a['colour']:#04x}, "

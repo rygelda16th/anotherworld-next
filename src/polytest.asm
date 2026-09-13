@@ -126,11 +126,34 @@ start:
         call    fill_page
 
         ; Draw them all.
-        ld      hl, poly_data
+        ;
+        ; Step 2 needs a WINDOW, not just a prefix. Taking prefixes alone leaves
+        ; the polygon count and the span count almost perfectly correlated, and a
+        ; two-variable fit cannot then tell the two costs apart - whichever varies
+        ; more absorbs the other. Drawing [poly_first, poly_first + poly_limit)
+        ; lets the checker pick three point polygons against three large ones and
+        ; decorrelate them on purpose.
+.draw_all:
         ld      a, (poly_limit)
         or      a
         jr      z, .drawn               ; a limit of zero draws nothing
         ld      b, a
+        ; Start at record (poly_first) through the generated offset table, NOT by
+        ; walking records. Walking put a cost proportional to the start index
+        ; into every measurement, and since the checker's windows start
+        ; everywhere and all hold four polygons, that confound landed entirely
+        ; in the per-polygon term and inflated it by an order of magnitude.
+        ld      a, (poly_first)
+        add     a, a
+        ld      e, a
+        ld      d, 0
+        ld      hl, poly_index
+        add     hl, de
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        ld      hl, poly_data
+        add     hl, de
 .each:
         push    bc
         push    hl
@@ -157,6 +180,19 @@ start:
         pop     bc
         djnz    .each
 .drawn:
+        ; Step 2 of the plan wants the cost of drawing N polygons, and the fills
+        ; above cost two whole pages, so bench mode loops the DRAW only. Page 0
+        ; keeps the seed the copy mode reads; page 1 accumulates, which changes
+        ; the picture and not the work, since every fill mode writes the same
+        ; number of bytes whatever is already there.
+        ld      a, (bench)
+        or      a
+        jr      z, .finish
+        ld      hl, (passes)
+        inc     hl
+        ld      (passes), hl
+        jp      .draw_all
+.finish:
         ld      a, $5A
         ld      (done), a
 .hold:  jr      .hold                   ; the checker reads Layer 2 from here
@@ -813,6 +849,12 @@ done:           db 0
         ; never which shape made it wrong.
         EXPORT poly_limit
 poly_limit:     db POLY_COUNT
+        EXPORT bench
+bench:          db 0            ; 1 = redraw forever and count passes
+        EXPORT poly_first
+poly_first:     db 0            ; the first record to draw, via poly_index
+        EXPORT passes
+passes:         dw 0
         EXPORT go
 go:             db 0
         EXPORT cs_done
