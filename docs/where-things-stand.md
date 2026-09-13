@@ -2617,6 +2617,40 @@ Chain 2.
 same frames as the engine's `sound.txt` log; and the mixer's output stays byte-exact
 **on the game's own sound resources**, not on a ramp.
 
+#### I5: the module format is decoded, which is where it had to start
+
+**Nothing in this project parsed a module**, and the plan had I5 down as wiring. It is not:
+`sfxplayer.cpp` reads a format with no counterpart here, so `tools/sfxmod.py` decodes it
+first - there has to be something that says what the right answer is before any Z80 is
+written.
+
+**The layout, from `loadSfxModule` and `prepareInstruments`, big-endian throughout:**
+
+| offset | |
+|---|---|
+| `0x00` | delay, a word - the default if `op_playMusic` passes zero, then `* 60 / 7050` for ms |
+| `0x02` | fifteen instruments of four bytes: a resource number and a volume, both words |
+| `0x3E` | `numOrder`, a word: how many order entries are played |
+| `0x40` | the order table, `0x80` bytes, each selecting a 1024-byte pattern block |
+| `0xC0` | the pattern blocks - 64 rows of four channels of four bytes |
+
+**And the parser validates itself against the data.** `RES07.BIN` is 15,552 bytes; from
+`numOrder` 16 and an order table using blocks 0 to 14, the patterns need `0xC0 + 15 * 1024`
+= **exactly 15,552**. A format guessed wrongly would not land on the file's own length.
+
+Its six instruments reference resources `0x01` to `0x06` - which `check-res` already shows
+the machine loading - at volumes 63, 63, 63, 15, 51 and 45.
+
+**What I5 still needs:** the player on the machine, driven at `delay * 60 / 7050` ms;
+`op_playSound` and `op_playMusic` reaching it; and a gate. The gate wants the probe's own
+`note` records, and the input-free 45-frame trace has **none** - the timer never fires in a
+run that short - so it needs an autoplay run, the same problem I4 had with text.
+
+**And the standing warning about `check-snd` applies here.** It proves four voices byte-exact
+against **a synthetic ramp**, and `sndtest.asm` has no end-of-sample or loop handling at all -
+the cut the design describes is described in a comment and never performed. Real samples have
+loop points; I1 found that the hard way when a voice walked off its ramp into the ring.
+
 #### I6. Part transitions
 
 `aw_part_req` is set and never acted on. The reference acts on it between frames -
