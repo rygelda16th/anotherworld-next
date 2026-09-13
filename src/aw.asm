@@ -77,6 +77,17 @@ VOLTAB          EQU $DC00
 VOICES          EQU $DD00
 IN_BLOCK        EQU $D300               ; the six input words the C reads
 DRAW_BLOCK      EQU $D310               ; aw_draw_poly's six parameters, from the C
+; TEN BYTES A DRAW: the page, and the five parameters the C computed from the opcode.
+;
+; This replaced a one-byte-a-draw page log, which did its job and proved the pages right -
+; every one of 55 draws went where the engine's went. So the remaining suspect is the one
+; thing nothing has ever compared: Gate D proves the opcode STREAM - thread, pc, opcode -
+; and says nothing about the OPERANDS the C derives from it. The two polygon forms compute
+; an offset, a zoom, a centre and a colour, with a diagonal slide in one of them and a
+; zoom applied before the scale in the other, and the engine's trace records exactly those
+; five for every draw.
+DRAW_LOG        EQU $D320
+DRAW_LOG_MAX    EQU 20                  ; 20 x 10 bytes, all that fits before the ring
 
 ; Layer 2. The destination band goes at MMU7, because MMU2/MMU3 are the polygon window
 ; and the reader is reading it at the moment the rasteriser writes a band. The source
@@ -662,7 +673,15 @@ aw_copy_page:
         ld      a, (jt_arg)
         ld      c, a                    ; C = src as given
         ld      a, (jt_arg + 1)
-        ld      b, a                    ; B = dst as given
+        ld      (cp_dstid), a           ; the destination id, in MEMORY not in B -
+                                        ; page_to_p0 uses B (`ld b, a`) and clobbered it,
+                                        ; so the `ld a, b` meant to recover the
+                                        ; destination read rubbish and both ends resolved
+                                        ; to page 0. The copy then copied page 0 onto
+                                        ; itself and pages 1 and 2 stayed empty. This
+                                        ; project's own traps list warns about exactly
+                                        ; this - helpers that build an index clobber the
+                                        ; register you were holding a value in.
         cp      c
         ret     z                       ; src == dst: the reference returns
         ld      a, c
@@ -677,7 +696,7 @@ aw_copy_page:
         call    resolve_page
         call    page_to_p0
         ld      (cp_src), a
-        ld      a, b
+        ld      a, (cp_dstid)
         call    resolve_page
         call    page_to_p0
         ld      (cp_dst), a
@@ -863,6 +882,33 @@ aw_draw_poly:
         inc     hl
         ld      (n_poly), hl
 
+        ; log this draw's page and parameters, while HL still holds the count
+        ; HL is the count AFTER incrementing, so the index is one less - and the bound
+        ; has to be tested on the index, not the count, or the last slot is never written.
+        ; It showed as draw 19 of 20 reading back as zeros.
+        dec     hl                      ; zero-based index
+        ld      de, DRAW_LOG_MAX
+        or      a
+        sbc     hl, de
+        jr      nc, .no_log
+        add     hl, de
+        ld      d, h
+        ld      e, l
+        add     hl, hl                  ; * 10
+        add     hl, hl
+        add     hl, de
+        add     hl, hl
+        ld      de, DRAW_LOG
+        add     hl, de
+        ex      de, hl                  ; DE = this entry
+        ld      a, (pg_ptr1)
+        ld      (de), a
+        inc     de
+        ld      hl, DRAW_BLOCK
+        ld      bc, 10 - 1              ; off, zoom, x, y, colour, video2 - 9 of 10
+        ldir
+.no_log:
+
         ; THE COPY-MODE FILL'S SOURCE BAND BORROWS MMU0, which is the bytecode window,
         ; so what was there is saved and put back before the C runs another instruction.
         ; Reading a NextReg back needs the register selected on $243B and the value read
@@ -977,8 +1023,11 @@ stop_blit:  dw 0            ; stop the frame loop after this many blits; 0 = nev
 saved_mmu0: db 0
         EXPORT n_video2
 n_video2:   dw 0        ; draws that wanted the video2 segment, which is not loaded yet
+        EXPORT cp_src
 cp_src:     db 0
+        EXPORT cp_dst
 cp_dst:     db 0
+cp_dstid:   db 0
         EXPORT cp_unimpl
 cp_unimpl:  db 0                        ; a scrolled copy was asked for: I2 remainder
         EXPORT pal_req

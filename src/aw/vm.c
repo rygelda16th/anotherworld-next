@@ -505,8 +505,20 @@ static void poly_bit7(uint8_t opcode)
     int16_t x, y, h;
     aw_draw_off = (uint16_t)(((uint16_t)opcode << 8) | fetch_byte()) * 2;
     aw_draw_video2 = 0;
-    x = (int8_t)fetch_byte();
-    y = (int8_t)fetch_byte();
+    /* UNSIGNED, and this was wrong for the whole of Phase D without anything noticing.
+     *
+     * vm.cpp's bit-7 form is `int16_t x = _scriptPtr.fetchByte();` - fetchByte returns
+     * uint8_t, so assigning it to int16_t ZERO-extends. An (int8_t) cast sign-extends
+     * instead, and every coordinate at or above 128 came out 256 too small: the engine's
+     * x=192 was our x=-64, its 247 our -9, its y=143 our -113.
+     *
+     * Nothing caught it until I2's page comparison. Gate D proves the opcode STREAM -
+     * thread, pc, opcode - and says nothing about the operands the C derives from it.
+     * check-readmachine proves the reader against a draw list a checker POKED, so it
+     * never saw the C compute one. The bug lived exactly in the seam between two passing
+     * gates, which is the argument for comparing the picture and not the stream. */
+    x = (int16_t)fetch_byte();
+    y = (int16_t)fetch_byte();
     /* A DIAGONAL slide, not two clamps: h goes into x as well. */
     h = y - 199;
     if (h > 0) {

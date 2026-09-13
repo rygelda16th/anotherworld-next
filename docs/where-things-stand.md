@@ -2252,23 +2252,42 @@ At blit 8 it says:
 | page 3 | identical | identical |
 | page 0 | 61.8% differs | |
 
-**The opcode counts match exactly**, which puts the VM and the reader in the clear -
-`draw=55` in the engine's trace against `poly=55` on the machine, expanding to 276
-leaves. What differs is WHERE they draw: the machine's drawing page is 2 and the engine
-put its 270 leaves into page 0.
+**The opcode counts match exactly** - `draw=55` in the engine's trace against `poly=55`
+on the machine, expanding to 276 leaves - and so do the OPERANDS for every draw the log
+holds, and so do the destination pages. The gate has walked the fault backwards through
+four suspects and found three real bugs doing it.
 
-**The trace carries no `select` records**, which is why this could not be inferred from
-it: `replay()` is TOLD each polygon's page by the trace, while the machine DERIVES it
-from `selectVideoPage`. Seven selects happened on the machine's side. Resolving it wants
-the per-draw bisect `checkpoly.py` already does for the rasteriser - stop after N draws,
-compare, halve - rather than more hypotheses.
+**THE BUG THAT MATTERED: the bit-7 polygon form read its coordinates SIGNED.** `vm.cpp`
+has `int16_t x = _scriptPtr.fetchByte();` and `fetchByte` returns `uint8_t`, so the
+assignment **zero**-extends. Our `(int8_t)` cast sign-extended, and every coordinate at or
+above 128 came out 256 too small: the engine's `x=192` was our `-64`, its `247` our `-9`,
+its `y=143` our `-113`. Page 0's error went from **61.8% to 36.1%** when it was fixed.
 
-**Two page-pointer bugs were found and fixed on the way, and neither was this one.**
-`Video::init` calls `changePagePtr1($FE)`, so drawing starts on the page `ptr2` names, not
-on page 0 - and `video.cpp:56-57` is `_curPagePtr3 = getPage(1); _curPagePtr2 = getPage(2)`,
-which I had the other way round, so `copy dst=$FF` resolved to page 2 instead of page 1
-and every display swap was offset. Both are now right against the source and neither
-changed this comparison by a byte, which is itself worth knowing.
+**Nothing had caught it, and the reason is the shape of the other gates.** Gate D proves
+the opcode **stream** - thread, program counter, opcode - and says nothing about the
+operands the C derives from it. `check-readmachine` proves the reader against a draw list
+a **checker poked**, so it has never seen the C compute one. The fault lived exactly in
+the seam between two passing gates, which is the whole argument for comparing a picture
+rather than a stream.
+
+**And a register clobber, of precisely the kind this document's traps list warns about.**
+`aw_copy_page` held the destination page id in B and called `page_to_p0`, which uses B -
+so `ld a, b` read rubbish, both ends resolved to page 0, the copy copied page 0 onto
+itself, and pages 1 and 2 stayed empty. With it fixed all three pages show the **identical
+36.10%**, which is the useful signal: the copies faithfully propagate page 0 and exactly
+one fault is left, in page 0's drawn content.
+
+**Two page-pointer bugs were found and fixed on the way, and neither was the fault.**
+`Video::init` calls `changePagePtr1($FE)` so drawing starts on the page `ptr2` names, and
+`video.cpp:56-57` is `_curPagePtr3 = getPage(1); _curPagePtr2 = getPage(2)`, which I had
+the other way round. Both are now right against the source and neither changed the
+comparison by a single byte. Two plausible fixes, both correct, both irrelevant - which is
+why the next step is the per-draw pixel bisect and not another hypothesis.
+
+**WHAT IS LEFT: page 0 differs by 36.10% with every input proven equal.** The tool for it
+is the bisect `checkpoly.py` already does for the rasteriser - stop the machine after N
+draws, replay the reference to the same N, halve - which needs a `stop_draw` beside the
+`stop_blit` that is already there.
 
 **And the gate as originally described is not yet passed.** What exists proves the callbacks are reached and
 that pixels change. What I2 claims is the intro's pages **byte for byte against the

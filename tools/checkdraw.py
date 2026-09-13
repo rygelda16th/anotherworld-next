@@ -135,6 +135,10 @@ def main():
     print(f"the machine: stopped after {n_blit} blits, {waited:.1f}s")
     print("  " + ", ".join(f"{k[2:] if k.startswith('n_') else k}={v}"
                            for k, v in c.items()))
+    print(f"  copy last resolved: src p0={read(z, sym['cp_src'], 1)[0]}, "
+          f"dst p0={read(z, sym['cp_dst'], 1)[0]} "
+          f"(page 0 is p0={(12 + 0 * 3) * 2}, page 1 is {(12 + 1 * 3) * 2}, "
+          f"page 2 is {(12 + 2 * 3) * 2})")
     print(f"  pages: drawing into {read(z, sym['pg_ptr1'], 1)[0]}, "
           f"displaying {read(z, sym['pg_ptr2'], 1)[0]}, "
           f"other {read(z, sym['pg_ptr3'], 1)[0]}")
@@ -153,6 +157,44 @@ def main():
     if n_blit != BLITS:
         raise SystemExit(f"FAIL: it stopped after {n_blit} blits, not {BLITS} - the "
                          f"comparison would not be aligned")
+
+    # THE OPERANDS, which nothing has ever compared. Gate D proves the opcode stream and
+    # says nothing about what the C computed from it; check-readmachine proves the reader
+    # given a poked draw list. This is the seam between them.
+    N = min(n_poly, 20)
+    raw = read(z, 0xD320, N * 10)
+    mach = []
+    for i in range(N):
+        e = raw[i * 10:i * 10 + 10]
+        mach.append(dict(page=e[0],
+                         off=int.from_bytes(e[1:3], "little"),
+                         zoom=int.from_bytes(e[3:5], "little"),
+                         x=int.from_bytes(e[5:7], "little", signed=True),
+                         y=int.from_bytes(e[7:9], "little", signed=True),
+                         colour=e[9]))
+    eng = []
+    for kind, a in read_trace(trace):
+        if kind == "draw":
+            eng.append(a)
+            if len(eng) >= N:
+                break
+    print(f"\n  the {N} first draws, machine against engine:")
+    first = None
+    for i in range(min(len(mach), len(eng))):
+        m, e = mach[i], eng[i]
+        same = all(m[k] == e.get(k, m[k]) for k in ("off", "zoom", "x", "y"))
+        flag = "" if same else "   <-- DIFFERS"
+        if not same and first is None:
+            first = i
+        if i < 8 or not same:
+            print(f"    {i:>2} machine off={m['off']:>6} zoom={m['zoom']:>4} "
+                  f"x={m['x']:>5} y={m['y']:>5} col={m['colour']:#04x}{flag}")
+            print(f"       engine  off={e.get('off'):>6} zoom={e.get('zoom'):>4} "
+                  f"x={e.get('x'):>5} y={e.get('y'):>5} col={e.get('colour')}")
+    if first is None:
+        print("    every one of those draws had the engine's operands")
+    else:
+        print(f"    FIRST DIFFERING OPERANDS at draw {first}")
 
     pages = [machine_page(z, p) for p in range(4)]
     z.close()
