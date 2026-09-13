@@ -2360,13 +2360,35 @@ So the one-record probe, given what looks like the identical starting state, dra
 correctly - and the VM, from the same state with the same operands, does not. **The probe is
 therefore not equivalent for a reason not yet found**, and that is the thing to chase.
 
-**THE NEXT INSTRUMENT should compare SPANS, not pixels.** 2,756 bytes over 121 rows is a
-ribbon about 23 bytes wide - which is what a per-row endpoint being one or two out looks
-like, not a wrong shape. Log `(row, x1, x2)` per span for draw 1 on the machine, take the
-same from the reference's `_span_*` calls, and diff those: it separates the polygon's
-geometry from the filling of it, which the page comparison cannot. `checkpoly.py` already
-proves the fill modes byte-exact over 39 coverage polygons, so a geometry difference is the
-likelier half.
+**THE PER-ROW EXTENTS WERE THE RIGHT INSTRUMENT and they broke the problem open.**
+`bisect-draw` now reports them and needed no change to the machine. Rows 0 to 13 disagree
+over **exactly columns 51..64**, a constant 14-byte stripe - a block, not an edge. An
+endpoint one or two out gives a ribbon down one side; this is a span being painted where
+none should be.
+
+**And then the decisive read: `dst_p0 = src_p0 = 24`, both page 0 and correct, while**
+
+| | |
+|---|---|
+| the machine's page 0 after draw 1 | 25,577 bytes of `2`, **23,575 of `3`** |
+| `bisect-draw`'s reference, same point | **all 49,152 bytes of `2`** - it painted nothing |
+| a **standalone** host call of the same draw | painted exactly **23,575** bytes |
+
+**That is a contradiction inside the host tooling, and it has to be settled first.** The
+machine agrees with the standalone reference and disagrees with `bisect-draw`'s, and the two
+references disagree about the identical draw. Only one of them can be the engine.
+
+The likely mechanism is that `replay`'s `stop_draws` and the engine's own record order do not
+line up the way the code assumes: `instrDraw` is called BEFORE `readAndDrawPolygon`, so a
+`draw` record precedes its leaves, and the break must happen on the NEXT draw record - but
+the trace also carries `part` records and the first `draw` may not be the first thing in it.
+If `bisect-draw` is dropping draw 1's leaf then **the machine has been right all along and
+every count in this section is measuring the harness**, which would also explain why four
+correct fixes changed nothing and why the one-record probe would not reproduce the failure.
+
+**Settle it by having `replay` report what it actually processed** - leaves drawn, records
+skipped - and compare that against the standalone call. That is an hour's work and it decides
+whether there is a machine bug here at all.
 
 **`SRC_PAGE` was wrong and is now fixed, and it did not change this.** The rasteriser's
 copy-mode fill reads page 0 and only page 0; the harness had `SRC_PAGE 2` because its own

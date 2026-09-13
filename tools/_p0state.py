@@ -23,7 +23,8 @@ z.cmd("smartload /work/build/aw.nex"); time.sleep(3.2); z.cmd("set-memory-zone -
 hdr=seed.to_bytes(2,"little")+(2000).to_bytes(2,"little")+(60000).to_bytes(2,"little")
 z.cmd(f"write-memory-raw {CTL} {hdr.hex()}")
 z.cmd(f"write-memory-raw {sym['fname']} {(b'RES18.BIN'+bytes(1)).hex()}")
-z.cmd(f"write-memory-raw {sym['stop_draw']} 0000")
+import os
+z.cmd(f"write-memory-raw {sym['stop_draw']} {int(os.environ.get('AW_N','0')).to_bytes(2,'little').hex()}")
 z.cmd(f"write-memory {sym['go']} 1")
 for _ in range(400):
     if read(CTL+10,1)[0]==0x5A: break

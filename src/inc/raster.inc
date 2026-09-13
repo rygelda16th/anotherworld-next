@@ -1310,6 +1310,7 @@ hliney:         dw 0
 row_count:      dw 0
 sx1:            dw 0
 sx2:            dw 0
+        EXPORT cur_band
 cur_band:       db 255
 cs_left:        dw 0
 t_p1:           dw 0            ; p1's coordinate, in memory not in D

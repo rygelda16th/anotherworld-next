@@ -105,4 +105,22 @@ print(f"  {len(diff):,} bytes, first at row {diff[0]//W} x {diff[0]%W}: "
       f"ours {mp[diff[0]]:#04x} engine {rp[diff[0]]:#04x}")
 rows = sorted({i // W for i in diff})
 print(f"  rows {rows[0]}..{rows[-1]}, {len(rows)} of {H}")
+
+# PER-ROW EXTENTS, which is the span comparison without touching the machine. A wrong
+# polygon differs in blocks; an endpoint one or two out differs in a ribbon down one
+# edge, and which edge says whether it is the left or the right walk.
+print("\n  per-row extent of the disagreement (row: first..last, width):")
+widths, lefts, rights = [], [], []
+for r in rows[:14]:
+    cols = [i % W for i in diff if i // W == r]
+    print(f"    row {r:>3}: {min(cols):>3}..{max(cols):>3}  "
+          f"width {max(cols) - min(cols) + 1:>3}  ({len(cols)} bytes)")
+for r in rows:
+    cols = [i % W for i in diff if i // W == r]
+    lefts.append(min(cols)); rights.append(max(cols)); widths.append(len(cols))
+print(f"    over all {len(rows)} rows: leftmost {min(lefts)}, rightmost {max(rights)}, "
+      f"mean bytes a row {sum(widths)/len(widths):.1f}")
+one_sided = sum(1 for w in widths if w <= 3)
+print(f"    {one_sided} of {len(rows)} rows disagree in 3 bytes or fewer"
+      + (" - an ENDPOINT, not a shape" if one_sided > len(rows) * 0.6 else ""))
 z.close()
