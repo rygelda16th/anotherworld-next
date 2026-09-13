@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot \
+        check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace \
         toolchain-diff
 
 help:
@@ -48,6 +48,7 @@ help:
 	@echo "make check-readmachine  Gate C4: the Z80N reader, pixel-exact"
 	@echo "make check-load     Step 5: how fast esxDOS reads, and what a part costs"
 	@echo "make check-boot     Gate D: the VM dispatches exactly what the engine does"
+	@echo "make check-pace     Gate E: the input mapping, and pacing to its deadline"
 	@echo "make toolchain-diff has the shared toolchain drifted from wolf3d-next?"
 
 certs:
@@ -206,6 +207,11 @@ check-polycost: | $(BUILD)
 	@$(MAKE) --no-print-directory asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkpolycost.py'
+
+# Gate E, first two claims: the input mapping and frame pacing.
+check-pace: asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkpace.py'
 
 # Gate D: the VM's opcode stream against the engine's. Needs `make assets`.
 check-boot: cc asm

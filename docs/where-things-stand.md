@@ -55,6 +55,7 @@ are now optional. See *What has been measured*.
     make check-reader  Gate C4: the reference reader IS the engine's reader
     make check-readmachine  Gate C4: the Z80N reader, pixel-exact
     make check-load    step 5: esxDOS reads correctly; its speed needs hardware
+    make check-pace    Gate E: the input mapping, and pacing to its deadline
     make check-mix     step 1: what one output sample of the mixer costs
     make check-polycost step 2: T a polygon and T a span, measured apart
     make frame-load    every frame against the pause its own script asked for
@@ -1533,6 +1534,44 @@ mixer at our chosen rate** - the same role `tools/refvideo.py` plays for the
 rasteriser, and the same discipline. `sound.txt` is already the event trace it
 needs to consume.
 
+### E1 and E2 - DONE, Gate E's first two claims passed
+
+`make check-pace`, and both are checked against a model of the reference rather
+than against a picture.
+
+**The input mapping matches over all 32 combinations** of the four directions and
+the button, every one of the six variables. The two quirks that only reading
+`vm.cpp:586-638` gives you are both reproduced: left and right together give
+`0xFC = -1`, left winning because both branches assign; and `0xE5` is assigned and
+then overwritten by the up test, which is a different path from the one `0xFB`
+takes. A port that got either wrong would still feel like it worked.
+
+**Pacing holds its deadline**, measured in refreshes from the machine's own 50 Hz
+tick:
+
+| asked | work done | mean gap | verdict |
+|---|---|---|---|
+| 4 | 0 | 4.00 | paces to the request |
+| 5 | 0 | 5.00 | paces to the request |
+| 1 | 0 | 1.00 | paces to the request |
+| 4 | 2 | 4.00 | absorbs work inside the pause |
+| 4 | **6** | **6.00** | overran, and kept the overrun |
+
+The last row is the claim that matters. A frame asking for four refreshes and doing
+six refreshes of work comes out at **six, not ten**: the deadline advanced by four,
+had already passed, and the wait was skipped. That is the reference's own
+arithmetic - the pause is a deadline a slow frame eats into, not a delay added on
+top of it - and it is how the 0.97% of frames that overrun degrade.
+
+**Two things fell out of building it**, both about IM 2 rather than about pacing.
+The interrupt cannot be IM 1 here: that puts the handler at `$0038` in ROM, which
+cannot coexist with paging RAM over the bottom 16K, and the VM's bytecode window
+does exactly that. And an IM 2 vector table needs **257** bytes, not 256 - the Z80
+reads the vector from `I<<8|databus` and the byte after it, so a databus of `$FF`
+reads the last table byte and one past the end. The first version also placed the
+table at `$8100` and filled 256 bytes over this program's own instructions, which
+presented as the machine simply never finishing.
+
 ### E4. Gate E
 
 1. `make check-pace` - a script asking four slices produces frames 80 ms apart,
@@ -1611,7 +1650,7 @@ unblocked only once the one it names has produced a number.
 | 4 | ~~C6, the segment window~~ **DONE** | a 65,230-byte segment cannot be mapped flat | the same gate: the whole 65,230-byte segment is read through a two-page window at `$0000` |
 | 5 | ~~D4's read rate~~ **DONE, and the answer is "not here"** | a four-second part load is a design decision, not a detail | `make check-load`: the path works and every byte arrives; the rate is r = -0.518 against size, so the emulator cannot time it |
 | 6 | **D2 and D3, the scheduler and opcodes** | the rest of the port hangs off them | Gate D, and D3's opcode trace before D4's picture |
-| 7 | **E1 and E2, pacing and input** | the game is unplayable without them and they are small | `check-pace`, `check-input` |
+| 7 | ~~E1 and E2, pacing and input~~ **DONE** | the game is unplayable without them and they are small | `make check-pace`: all 32 input combinations, and a 4-slice frame doing 6 refreshes of work comes out at 6 |
 | 8 | **E3, sound** | priced at step 1, and the ring is already proven on the other project | `check-mix` against a host reference mixer |
 | 9 | **F1, a later part** | everything so far is two parts of ten | the same reports, over part 5 |
 
