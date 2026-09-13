@@ -91,6 +91,9 @@ def main():
     z.cmd(f"write-memory-raw {sym['fname']} {blob.hex()}")
     z.cmd(f"write-memory {sym['go']} 1")
 
+    def b1(name):
+        return int(z.cmd(f"read-memory {sym[name]} 1").strip(), 16)
+
     waited = 0.0
     limit = float(os.environ.get("AW_WAIT_S", "120"))
     while waited < limit:
@@ -98,12 +101,25 @@ def main():
             break
         time.sleep(0.1)
         waited += 0.1
+    err = b1("trace_err")
+    where = b1("trace_where")
+    wrote = int.from_bytes(
+        bytes.fromhex(z.cmd(f"read-memory {sym['trace_wrote']} 2").strip()),
+        "little")
     z.close()
 
     if not os.path.exists(trace_path):
-        raise SystemExit(f"FAIL: the machine wrote no {TRACE_FILE} - it either "
-                         f"never finished ({waited:.0f}s waited) or esxDOS refused "
-                         "the write")
+        where_name = {0: "no call attempted", 1: "F_OPEN", 2: "F_WRITE"}
+        print(f"  the machine wrote no {TRACE_FILE} after {waited:.0f}s")
+        print(f"  esxDOS: error {err:#04x} at "
+              + where_name.get(where, "?")
+              + f", it reported taking {wrote:,} bytes")
+        if where == 1:
+            print("  F_OPEN refused it. If this emulator's esxDOS handler is "
+                  "read-only then the\n  trace cannot leave by this route, and "
+                  "the comparison has to happen ON the\n  machine instead - see "
+                  "tools/mkexpected.py.")
+        raise SystemExit("FAIL: no trace file")
     blk = open(trace_path, "rb").read()
     print(f"\n{TRACE_FILE}: {len(blk):,} bytes, written by the machine itself")
 

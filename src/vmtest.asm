@@ -251,7 +251,12 @@ write_trace:
         ld      b, FA_WRITE_NEW
         rst     $08
         db      F_OPEN
-        ret     c                       ; no file, no trace; the checker will say so
+        jr      nc, .opened
+        ld      (trace_err), a          ; record WHY, so the checker can say
+        ld      a, 1
+        ld      (trace_where), a
+        ret
+.opened:
         ld      (handle), a
 
         ; 8,192 bytes in one call. esxDOS takes the buffer in IX for a machine-code
@@ -263,13 +268,26 @@ write_trace:
         ld      bc, $2000
         rst     $08
         db      F_WRITE
-
+        jr      nc, .wrote
+        ld      (trace_err), a
+        ld      a, 2
+        ld      (trace_where), a
+        jr      .close
+.wrote:
+        ld      (trace_wrote), bc       ; how many bytes it says it took
+.close:
         ld      a, (handle)
         rst     $08
         db      F_CLOSE
         ret
 
 trace_name:     db "AWTRACE.BIN", 0
+        EXPORT trace_err
+trace_err:      db 0
+        EXPORT trace_where
+trace_where:    db 0            ; 1 = open, 2 = write
+        EXPORT trace_wrote
+trace_wrote:    dw 0
 
 ;-----------------------------------------------------------------------------
         EXPORT ready
