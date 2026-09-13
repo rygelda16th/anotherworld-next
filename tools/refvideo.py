@@ -666,6 +666,39 @@ class RefVideo8(RefVideo):
 
     # --- scaled entry point ------------------------------------------------
 
+    def draw_char(self, ch, cx, y, colour, font):
+        """One 6x8 glyph. THE OVERRIDE RefVideo8 HAS BEEN MISSING.
+
+        Without it the 4bpp version ran on an 8bpp page - four bytes a cell, two pixels a
+        byte, a 160-byte stride - which is meaningless here. It went unnoticed because no
+        trace any gate uses contains a single `char` record: text needs input, and every
+        gate's trace is input-free so its opcode stream stays deterministic. With autoplay
+        on, the protection screen draws 2,378 glyphs in 400 frames.
+
+        THE GEOMETRY IS A DECISION, not arithmetic. drawChar takes x in CHARACTER CELLS
+        with x <= 39 (video.cpp:299) - forty cells across the original's 320 pixels, eight
+        each. Ours is 256 wide: thirty-two cells of eight. Forty eight-pixel cells cannot
+        fit, so the glyphs were narrowed to six and all forty cells fit in 240 pixels. See
+        tools/mkfont6.py, which also says why five glyphs are hand-drawn.
+
+        The cell ORIGIN in y scales like every other coordinate. The glyph does not: a
+        vertically scaled 8-row glyph is an unreadable glyph.
+        """
+        if not 0 <= cx <= 39:
+            return
+        x0 = cx * 6
+        y0 = self.sy(y)
+        if x0 + 6 > self.W or y0 < 0 or y0 + 8 > self.H:
+            return
+        buf = self.pages[self.cur1]
+        ft = (ch - 0x20) * 8
+        for j in range(8):
+            row = font[ft + j]
+            base = (y0 + j) * self.W + x0
+            for i in range(6):
+                if row & (0x80 >> i):
+                    buf[base + i] = colour
+
     def _draw_polygon(self, colour, ptx, pty, bbw, bbh, points):
         """The reader's leaf, for the 256x192 geometry: scale, then fill.
 

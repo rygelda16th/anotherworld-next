@@ -2506,7 +2506,39 @@ verified.
 reference's measured high-water across the parts is 38 pages - so the reservation has
 seven pages of headroom for parts that load more than the intro does. I6 will find out.
 
-#### I4 is BLOCKED on a decision, and the reference has no answer either
+#### I4: the decision is made, the reference side is built
+
+**The geometry, decided 2026-09-13: 40 cells of SIX pixels, 240 of our 256.** Every cell the
+original can address is reachable, no letter touches its neighbour, and the cost is that the
+font is no longer the original's. The two alternatives were scaling the cell origin and
+letting 8-pixel glyphs overlap by 1.6 pixels, or keeping 8-pixel cells and losing everything
+past cell 31.
+
+**`tools/mkfont6.py` narrows the font and shows its work.** Eighty-five of ninety-six glyphs
+only needed shifting left - they already inked six columns or fewer. Eleven had a column
+removed, always the one whose removal changed the fewest pixels, which is fine for `=`
+(seven solid columns becoming six) and for `&` (one pixel from one row). **Five are
+hand-drawn** - `M W m w %` - because the mechanical version of `M` came out
+`#....# / #...## / ##.#.# / #.#..#`, asymmetric and not an M. `--show` prints every altered
+glyph before and after, which is the only way to judge that.
+
+**`tools/mkstrings.py` parses the reference's own table** rather than transcribing it: 139
+strings, 2,187 bytes of text, 556 of index, sorted by id so the machine can binary-search
+instead of walking 264 entries the way `drawString` does. Thirteen contain a newline, which
+`drawString` treats as a line break rather than a glyph (`video.cpp:288`), and nothing in
+them falls outside the font's range.
+
+**And `RefVideo8` now has the `draw_char` it never had.** Without it the 4bpp version ran on
+an 8bpp page - four bytes a cell, two pixels a byte, a 160-byte stride - which is meaningless
+here. `HELLO` rendered out of the page bytes is legible. The cell origin in y scales like
+every other coordinate; the glyph does not, because a vertically scaled 8-row glyph is an
+unreadable one.
+
+**Still to do for I4:** `aw_draw_string` on the machine, and the gate - which does not need
+the VM to reach any text, because `drawString` can be driven directly the way `probe_draw`
+drives one polygon.
+
+#### Why no gate caught the missing override
 
 **`RefVideo8` does not override `draw_char`.** The 4bpp version it inherits writes four
 bytes a cell with two pixels a byte into a 256-byte stride, which is meaningless at 8bpp.
