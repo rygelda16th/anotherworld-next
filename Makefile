@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-map check-aw check-input check-draw check-res check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
+        check-map check-aw check-input check-draw check-res check-text check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
         toolchain-diff
 
 help:
@@ -171,7 +171,7 @@ AW_DRAW      ?= 0xD310
 
 # The game's C sits HIGHER than the harness's, because the rasteriser and the reader
 # are resident alongside it: see the CC_ORG comment in src/aw.asm.
-AW_VM_ORG    ?= 0x9A00
+AW_VM_ORG    ?= 0x9B00
 
 cc-game: | $(BUILD)
 	@echo "  CC  src/aw/vm.c -> the game"
@@ -261,6 +261,14 @@ check-aw: cc-game
 	$(MAKE) asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkaw.py'
+
+# I4: the machine's text against the reference's, driven directly.
+check-text: cc-game
+	python3 tools/mkfont6.py $(PROBE)/font.bin $(BUILD)/font6.bin
+	python3 tools/mkstrings.py $(PROBE)/staticres.cpp $(BUILD)/strings.inc
+	$(MAKE) asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checktext.py'
 
 # I3: the resources the bytecode asks for arrive, byte for byte against the card.
 check-res: cc-game

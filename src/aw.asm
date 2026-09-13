@@ -48,7 +48,7 @@
 ; C's stack is the number to watch: $BF00 down to the end of its image. Gate D needed
 ; more than 779 bytes and was given 4,500; this is less, and if it is not enough the
 ; symptom is now a known one.
-CC_ORG          EQU $9A00               ; must match VM_ORG in the Makefile
+CC_ORG          EQU $9B00               ; must match VM_ORG in the Makefile
 NR_TURBO        EQU $07
 NR_MMU0         EQU $50
 NR_MMU1         EQU $51
@@ -97,6 +97,21 @@ DRAW_BLOCK      EQU $D310               ; aw_draw_poly's six parameters, from th
 ; an offset, a zoom, a centre and a colour, with a diagonal slide in one of them and a
 ; zoom applied before the scale in the other, and the engine's trace records exactly those
 ; five for every draw.
+; I4's text data lives in bank 0's SECOND half - the 8K page that is MMU7=1 at boot and
+; unused after it. The font and the string dictionary are 3.5K together and the resident
+; region has nothing like that left, so they stay in their own page and get mapped at MMU2
+; while a string is drawn. MMU2 is the polygon window, which is idle during text: nothing
+; reads a polygon segment and draws a glyph at the same time.
+TEXT_PAGE       EQU 1                   ; bank 0's second half
+TEXT_WIN        EQU $4000               ; where it appears while text is drawn
+NR_TEXT_MMU     EQU $52
+FONT6_AT        EQU $E000               ; as ASSEMBLED; read at TEXT_WIN + (x - $E000)
+STR_INDEX_AT    EQU $E300
+; NOT a hand-computed address: str_index and str_blob are labels in the generated file, and
+; the code uses those. The first version guessed $E53C for the blob where the index's 556
+; bytes actually put it at $E52C, which would have made every string sixteen bytes adrift
+; with nothing to say so.
+STR_BLOCK       EQU $D330               ; colour, x, y, id - what the C leaves for us
 DRAW_LOG        EQU $D320
 DRAW_LOG_MAX    EQU 20                  ; 20 x 10 bytes, all that fits before the ring
 
@@ -286,6 +301,17 @@ start:
         ; wrong on its own, or whether aw_draw_poly sets it up wrong. Those need separating
         ; and no existing gate separates them: check-readmachine drives the reader from a
         ; poked list in the HARNESS, and check-draw drives it from the VM in the GAME.
+        ld      a, (probe_str)
+        or      a
+        jr      z, .not_str
+        ld      a, (pg_ptr1)
+        call    page_to_p0
+        ld      (dst_p0), a
+        ld      a, 255
+        ld      (cur_band), a
+        call    aw_draw_string
+        jr      .stop
+.not_str:
         ld      a, (probe_draw)
         or      a
         jr      z, .run_vm
@@ -1177,6 +1203,203 @@ aw_draw_poly:
         nextreg NR_MMU0, a
         ret
 
+;-----------------------------------------------------------------------------
+; I4. drawString, video.cpp:267, and drawChar, video.cpp:299.
+;
+; The string id, colour and position arrive in STR_BLOCK. The dictionary is searched by
+; BISECTION rather than walked - the reference walks 264 entries per string because it can
+; afford to, and mkstrings.py sorts the index so we need not.
+;
+; A newline moves down eight rows and back to the starting column (video.cpp:288), so it is
+; a line break and never a glyph.
+;-----------------------------------------------------------------------------
+aw_draw_string:
+        ld      a, (STR_BLOCK + 0)
+        ld      (str_col), a
+        ld      a, (STR_BLOCK + 1)
+        ld      (str_x), a
+        ld      (str_x0), a             ; a newline returns here
+        ld      a, (STR_BLOCK + 2)
+        ld      (str_y), a
+        ld      hl, (STR_BLOCK + 4)
+        ld      (str_id), hl
+
+        nextreg NR_TEXT_MMU, TEXT_PAGE  ; the font and the dictionary, at $4000
+
+        ; bisect str_index for the id: four bytes an entry, id then blob offset
+        ld      bc, 0                   ; B = lo, C = hi
+        ld      c, STR_COUNT
+.bisect:
+        ld      a, b
+        cp      c
+        jr      nc, .not_found
+        add     a, c
+        rra                             ; mid = (lo + hi) / 2, carry is safe: < 512
+        ld      e, a                    ; E = mid
+        ld      h, 0
+        ld      l, a
+        add     hl, hl
+        add     hl, hl
+        ld      de, str_index - $E000 + TEXT_WIN
+        add     hl, de                  ; HL = &entry
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)                 ; DE = this entry's id
+        inc     hl
+        push    hl                      ; -> the offset
+        ld      hl, (str_id)
+        or      a
+        sbc     hl, de
+        pop     hl
+        jr      z, .found
+        jr      c, .lower
+        ; wanted > this: lo = mid + 1
+        ld      a, b
+        add     a, c
+        rra
+        inc     a
+        ld      b, a
+        jr      .bisect
+.lower:
+        ld      a, b
+        add     a, c
+        rra
+        ld      c, a                    ; hi = mid
+        jr      .bisect
+.not_found:
+        ld      hl, (n_str_miss)
+        inc     hl
+        ld      (n_str_miss), hl
+        ret                             ; drawString returns silently too
+.found:
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)                 ; DE = offset into the blob
+        ld      hl, str_blob - $E000 + TEXT_WIN
+        add     hl, de
+        ld      (str_ptr), hl
+        ld      hl, (n_str)
+        inc     hl
+        ld      (n_str), hl
+
+.next_ch:
+        ld      hl, (str_ptr)
+        ld      a, (hl)
+        inc     hl
+        ld      (str_ptr), hl
+        or      a
+        ret     z                       ; the terminator
+        cp      10                      ; '\n': down eight rows, back to the start
+        jr      nz, .glyph
+        ld      a, (str_y)
+        add     a, 8
+        ld      (str_y), a
+        ld      a, (str_x0)
+        ld      (str_x), a
+        jr      .next_ch
+.glyph:
+        call    draw_char6
+        ld      a, (str_x)
+        inc     a
+        ld      (str_x), a
+        jr      .next_ch
+
+;-----------------------------------------------------------------------------
+; draw_char6 - A = the character, at (str_x) cells and (str_y) rows, in (str_col).
+;
+; Six pixels a cell and forty cells in 240 of our 256: the decision in tools/mkfont6.py.
+; The y origin is SCALED like every other coordinate and the glyph is not, because a
+; vertically scaled eight-row glyph is unreadable.
+;
+; Each of the eight rows may sit in a different Layer 2 band, so the band is mapped per row
+; rather than per glyph - cheap, and it is the only way a glyph that straddles row 32 comes
+; out whole.
+;-----------------------------------------------------------------------------
+draw_char6:
+        sub     $20
+        ret     c                       ; below space: nothing to draw
+        cp      96
+        ret     nc
+        ld      l, a
+        ld      h, 0
+        add     hl, hl
+        add     hl, hl
+        add     hl, hl                  ; * 8 rows
+        ld      de, FONT6_AT - $E000 + TEXT_WIN
+        add     hl, de
+        ld      (gl_src), hl
+
+        ld      a, (str_x)
+        cp      40
+        ret     nc                      ; x <= 39, as drawChar requires
+        ld      b, a
+        add     a, a
+        add     a, b
+        add     a, a                    ; x * 6
+        ld      (gl_x), a
+
+        ; scale_uy takes HL, NOT A. Passing the row in A scaled whatever HL happened to
+        ; hold, and the glyph landed a row out - which showed as both sides drawing exactly
+        ; twenty pixels for an 'A' with the first disagreement one row above the machine's.
+        ld      a, (str_y)
+        ld      l, a
+        ld      h, 0
+        call    scale_uy                ; the same Y scale every coordinate gets
+        ld      a, l
+        ld      (gl_y), a
+
+        ld      b, 8                    ; eight rows
+.row:
+        ld      a, (gl_y)
+        cp      SCR_H
+        ret     nc                      ; off the bottom: stop, do not wrap
+        ; the band, mapped per row
+        rlca
+        rlca
+        rlca
+        and     7
+        ld      hl, cur_band
+        cp      (hl)
+        jr      z, .band_ok
+        ld      (hl), a
+        ld      hl, dst_p0
+        add     a, (hl)
+        nextreg NR_DWIN_MMU, a
+.band_ok:
+        ld      a, (gl_y)
+        and     31
+        ld      h, a
+        ld      l, 0                    ; (y & 31) << 8
+        ld      a, (gl_x)
+        ld      e, a
+        ld      d, 0
+        add     hl, de
+        ld      de, DWIN
+        add     hl, de                  ; HL = the pixel row's first byte
+        ld      de, (gl_src)
+        ld      a, (de)                 ; the glyph row
+        inc     de
+        ld      (gl_src), de
+        ld      c, a
+        ld      a, (str_col)
+        ld      d, a                    ; D = the colour
+        ld      e, 6                    ; six columns
+.col:
+        rl      c                       ; the top bit out into carry
+        jr      nc, .skip
+        ld      (hl), d
+.skip:
+        inc     hl
+        dec     e
+        jr      nz, .col
+
+        ld      a, (gl_y)
+        inc     a
+        ld      (gl_y), a
+        dec     b
+        jp      nz, .row
+        ret
+
         INCLUDE "src/inc/vmhost.inc"
         INCLUDE "src/inc/input.inc"
         INCLUDE "src/inc/raster.inc"
@@ -1246,6 +1469,8 @@ stop_blit:  dw 0            ; stop the frame loop after this many blits; 0 = nev
 snd_off:    db 0            ; 1 = the interrupt ticks but does not mix: a discriminator
         EXPORT cur_band_x
 cur_band_x: db 0
+        EXPORT probe_str
+probe_str:  db 0            ; 1 = draw one string from STR_BLOCK and stop, no VM
         EXPORT probe_fill
 probe_fill: db 0            ; colour+1 to fill page 0 with before the probe draw
         EXPORT probe_draw
@@ -1271,6 +1496,19 @@ nm_res:     db "RES", 0
 nm_pal:     db "PAL", 0
 nm_bmp:     db "BMP", 0
 nm_tail:    db ".BIN", 0
+str_col:    db 0
+str_x:      db 0
+str_x0:     db 0
+str_y:      db 0
+str_id:     dw 0
+str_ptr:    dw 0
+gl_src:     dw 0
+gl_x:       db 0
+gl_y:       db 0
+        EXPORT n_str
+n_str:      dw 0
+        EXPORT n_str_miss
+n_str_miss: dw 0
 res_type:   db 0
 res_size:   dw 0
 res_pages:  db 0
@@ -1327,6 +1565,15 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
         ASSERT VEC_TABLE + 257 <= VEC_TRAMP
         ASSERT VEC_TRAMP + 3 <= RING_ADDR
         ASSERT IN_BLOCK + 12 <= VEC_TABLE || IN_BLOCK >= VEC_TRAMP + 3
+
+        ; I4's font and dictionary, in bank 0's second half. Mapped at MMU2 during text.
+        ORG FONT6_AT
+        INCBIN  "build/font6.bin"
+        ASSERT $ <= STR_INDEX_AT
+        ORG STR_INDEX_AT
+        INCLUDE "build/strings.inc"
+        DISPLAY "> text data ends at ", /H, $
+        ASSERT $ < $FF00
 
         ORG CC_ORG
         INCBIN  "build/aw_vm_CODE.bin"

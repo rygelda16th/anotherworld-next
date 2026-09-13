@@ -2035,7 +2035,7 @@ had failed to find in dozens.
 | ~~**I1a**~~ | ~~read a real keyboard~~ **DONE**, `make check-input` | nothing in this project read input at all; `petest.asm` is handed a poked byte | **PASSED**: all 32 combinations from the emulator's own keys, through `read_keys` and the reference's mapping, to the VM's own variables |
 | ~~**I2**~~ | ~~the VM draws~~ **DONE**, `make check-draw` - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
 | ~~**I3**~~ | ~~resources arrive at runtime~~ **PARTLY DONE**, `make check-res` - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
-| **I4** | **text** - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
+| ~~**I4**~~ | ~~text~~ **DONE**, `make check-text` - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
 | **I5** | **sound in the game** - `op_playSound` and `op_playMusic` reach the gated player, **and the music module is parsed** | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | SFX and music events fire at the same frames as the engine's `sound.txt`, the mixer output stays byte-exact **on real sound resources**, and the module's order table and patterns match `sfxplayer.cpp`'s reading of them |
 | **I6** | **part transitions** - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
 | **I7** | **the full-screen bitmap path** | 70 of them load in the arena and no gate covers the machine half | the arena's bitmaps, on the machine, against the engine's pages |
@@ -2506,7 +2506,7 @@ verified.
 reference's measured high-water across the parts is 38 pages - so the reservation has
 seven pages of headroom for parts that load more than the intro does. I6 will find out.
 
-#### I4: the decision is made, the reference side is built
+#### I4 is CLOSED - the machine draws the game's text
 
 **The geometry, decided 2026-09-13: 40 cells of SIX pixels, 240 of our 256.** Every cell the
 original can address is reachable, no letter touches its neighbour, and the cost is that the
@@ -2534,9 +2534,25 @@ here. `HELLO` rendered out of the page bytes is legible. The cell origin in y sc
 every other coordinate; the glyph does not, because a vertically scaled 8-row glyph is an
 unreadable one.
 
-**Still to do for I4:** `aw_draw_string` on the machine, and the gate - which does not need
-the VM to reach any text, because `drawString` can be driven directly the way `probe_draw`
-drives one polygon.
+**`make check-text` passes: five strings pixel-identical**, chosen to break it rather than to
+flatter it - one plain, one with three newlines, the longest in the table at 174 characters,
+one lowercase-heavy for the hand-drawn `m` and `w`, and **one at cell 34, which no
+eight-pixel cell could have reached at all.** That last case is the decision justifying
+itself.
+
+The machine walks the dictionary by **bisection** rather than the reference's linear scan of
+264 entries, reads the font out of a banked page mapped at MMU2 - the polygon window, idle
+during text because nothing reads a polygon segment and draws a glyph at once - and maps a
+Layer 2 band **per row**, which is the only way a glyph straddling row 32 comes out whole.
+
+**Two bugs, both mine, both the same kind.** `scale_uy` takes its argument in **HL** and I
+passed it in A, so the row was scaled from whatever HL happened to hold; it showed as both
+sides drawing exactly twenty pixels for an `A` with the first disagreement one row above the
+machine's, which is what an off-by-one in a scaled origin looks like. And I hand-computed the
+string blob's address as `$E53C` where the index's 556 bytes put it at `$E52C` - every string
+sixteen bytes adrift, with nothing to say so. The generated file has `str_index` and
+`str_blob` as labels and the code now uses those. **Do not hand-compute an address a
+generator already names.**
 
 #### Why no gate caught the missing override
 
