@@ -64,7 +64,7 @@ aw_code_window:
 ; memory it was handed.
 ;-----------------------------------------------------------------------------
 clear_code:
-        ld      a, CODE_PAGE
+        ld      a, (ld_page)
         ld      b, 8                    ; the whole 64K the window can address
 .page:
         nextreg NR_MMU7, a
@@ -89,7 +89,12 @@ code_fill:      db 0
 stage_stop:     db 0
 
 ;-----------------------------------------------------------------------------
-; load_code - reads (fname) into banked pages from CODE_PAGE.
+; load_code - reads (fname) into eight banked pages from (ld_page).
+;
+; The destination is a VARIABLE because the game loads two segments, not one: a part is
+; four resources (parts.cpp:14-28) and the bytecode and the cinematic data go into
+; different pages behind different windows. The harness only ever loads bytecode, so
+; ld_page starts at CODE_PAGE and it never notices.
 ;-----------------------------------------------------------------------------
 load_code:
         xor     a
@@ -109,7 +114,7 @@ load_code:
         ret
 .opened:
         ld      (handle), a
-        ld      a, CODE_PAGE
+        ld      a, (ld_page)
         ld      (cur_page), a
 .next:
         ; esxDOS pages ITSELF over the bottom 16K during a file call, so the
@@ -149,6 +154,7 @@ load_code:
 
 
 ; The loader's own state. EXPORTed by whichever program's checker reads it.
+ld_page:    db CODE_PAGE                ; where the next load goes
 fname:      ds 34                       ; poked by the checker, or set by the game
 handle:     db 0
 cur_page:   db 0

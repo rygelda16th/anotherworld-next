@@ -167,17 +167,18 @@ AW_CTL       ?= 0xC000
 AW_EXP       ?= 0        # the game compares PICTURES, not streams: see src/aw.asm
 AW_LOG_RECS  ?= 256
 AW_IN        ?= 0xD300
+AW_DRAW      ?= 0xD310
 
 # The game's C sits HIGHER than the harness's, because the rasteriser and the reader
 # are resident alongside it: see the CC_ORG comment in src/aw.asm.
-AW_VM_ORG    ?= 0x9700
+AW_VM_ORG    ?= 0x9800
 
 cc-game: | $(BUILD)
 	@echo "  CC  src/aw/vm.c -> the game"
 	@$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(AW_VM_ORG) \
 	    -pragma-define:REGISTER_SP=$(CC_STACK) \
 	    -DAW_CTL=$(AW_CTL) -DAW_EXP=$(AW_EXP) -DAW_LOG_RECS=$(AW_LOG_RECS) \
-	    -DAW_IN=$(AW_IN) \
+	    -DAW_IN=$(AW_IN) -DAW_DRAW=$(AW_DRAW) \
 	    -o $(BUILD)/aw_vm src/aw/vm.c src/aw/jumptab.asm
 	@python3 tools/mkexp.py $(BUILD)/aw_vm.map $(BUILD)/aw_vm_c.exp
 

@@ -117,6 +117,23 @@ def main():
     n_cmp = min(256, len(want))
     rec_raw = read(z, CTL + 0x20, n_cmp * 4)
 
+    # DID ANYTHING ACTUALLY GET DRAWN? The reader being wired is not the reader working,
+    # and a page full of one value is what a fill leaves behind. Sample the page the VM
+    # last drew into, across all six of its bands, and count distinct values. This is a
+    # weak check on purpose - I2's real gate is the page compared against the engine -
+    # but it separates "the callbacks are reached" from "pixels changed", which the call
+    # counters cannot.
+    pg1 = read(z, sym["pg_ptr1"], 1)[0] & 3
+    p0 = (12 + pg1 * 3) * 2
+    seen, samples = set(), 0
+    for band in range(6):
+        z.cmd(f"tbblue-set-register {0x57} {p0 + band}")
+        chunk = read(z, 0xE000, 512)
+        seen.update(chunk)
+        samples += len(chunk)
+    n_video2 = int.from_bytes(read(z, sym["n_video2"], 2), "little")
+    cp_unimpl = read(z, sym["cp_unimpl"], 1)[0]
+
     print(f"\nbefore the VM was let go: {t1 - t0} ticks in half a second "
           f"(50 a second is {25} in half)")
     print(f"the VM: {records:,} records over {frames_done + 1} frames in {waited:.1f}s, "
@@ -185,6 +202,15 @@ def main():
         m += 1
     print(f"  the first {m:,} of {len(norm):,} trace records are the engine's, "
           f"read back over ZRCP")
+    print(f"  page {pg1} holds {len(seen)} distinct values over {samples:,} sampled "
+          f"bytes: {sorted(seen)[:12]}")
+    if n_video2:
+        print(f"  {n_video2} draws wanted the video2 segment, which is not loaded yet")
+    if cp_unimpl:
+        print(f"  a scrolled page copy was asked for and skipped")
+    if len(seen) < 2:
+        bad.append(f"the page the VM drew into holds one value ({sorted(seen)}) - the "
+                   f"reader is reached {counts['n_poly']} times and draws nothing")
     if m < len(norm):
         bad.append(f"record {m} differs: the game {norm[m]}, the engine {want[m]}")
 

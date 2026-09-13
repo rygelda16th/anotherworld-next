@@ -98,6 +98,11 @@ extern void aw_frame_sync(void);
 #ifndef AW_IN
 #define AW_IN           0
 #endif
+/* Where the assembly reads aw_draw_poly's six parameters. Zero in the harness, whose
+ * aw_draw_poly is a counter and reads nothing. */
+#ifndef AW_DRAW
+#define AW_DRAW         0
+#endif
 
 #define CTL_SEED        (*(volatile uint16_t *)(AW_CTL + 0x00))
 #define CTL_FRAMES      (*(volatile uint16_t *)(AW_CTL + 0x02))
@@ -157,13 +162,29 @@ static void fault(uint8_t code, uint16_t pc, uint16_t a)
     CTL_FAULT_A = a;
 }
 
-/* Parameters for aw_draw_poly, because a fastcall takes one argument. */
+/* Parameters for aw_draw_poly, because a fastcall takes one argument.
+ *
+ * In the game these are not variables but a FIXED BLOCK the assembly reads directly, in
+ * the same style as the control block and the input words. The alternative - bridging
+ * the C's symbol addresses into sjasmplus - is the arrangement this project already
+ * found does not survive: an `extern uint8_t x[]` against a `defc` was read as a
+ * pointer variable living at that address rather than as the address itself, and four
+ * fields came back as the same value. A cast integer constant cannot be read two ways. */
+#if AW_DRAW
+#define aw_draw_off     (*(volatile uint16_t *)(AW_DRAW + 0))
+#define aw_draw_zoom    (*(volatile uint16_t *)(AW_DRAW + 2))
+#define aw_draw_x       (*(volatile int16_t  *)(AW_DRAW + 4))
+#define aw_draw_y       (*(volatile int16_t  *)(AW_DRAW + 6))
+#define aw_draw_colour  (*(volatile uint8_t  *)(AW_DRAW + 8))
+#define aw_draw_video2  (*(volatile uint8_t  *)(AW_DRAW + 9))
+#else
 uint16_t aw_draw_off;
 uint16_t aw_draw_zoom;
 int16_t aw_draw_x;
 int16_t aw_draw_y;
 uint8_t aw_draw_colour;
 uint8_t aw_draw_video2;
+#endif
 
 /* ---- VM state ------------------------------------------------------------- */
 #define NUM_THREADS 64

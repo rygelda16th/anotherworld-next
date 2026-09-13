@@ -2214,6 +2214,44 @@ never keep two.** The second was `0x`-prefixed addresses in the ZRCP commands -
 input was not reaching it. That trap is already in this document, in the breakpoint
 note, and it cost twenty minutes again anyway.
 
+#### I2 is PARTWAY, and this is exactly where it stands
+
+**The VM draws polygons on the Next.** `make check-aw` reports 151 polygon draws and
+the page the VM drew into holding three distinct values over 3,072 sampled bytes - real
+content, not a uniform fill - with the opcode stream still exact over its first 256
+records and the sound still running. All eight gates pass.
+
+**Done:** the page model (four pages, three pointers, `getPage`'s resolution rules);
+`selectVideoPage`; `fillVideoPage`; `copyVideoPage`'s plain path; `blitFramebuffer` with
+the reference's ordering, palette request applied before the page is presented;
+`aw_draw_poly` wired to the gated reader with the cinematic segment loaded; real keyboard
+input reaching the VM's variables.
+
+**Outstanding:** `apply_palette` is a stub - the 512 Layer 2 entries are already resident
+as two 256-entry banks so it is a bank select, not a transfer; the **scrolled** copy path
+is unimplemented and counted in `cp_unimpl`, and it needs `vscroll` from variable `$F9`
+which `op_copyVideoPage` does not yet pass, scaled into our 192-line geometry; the
+**video2** segment is not loaded, so draws wanting it are counted in `n_video2` and
+skipped. **Neither gap blocks the intro:** over its first 45 frames `n_video2` is 0 and
+`cp_unimpl` is 0.
+
+**And the gate itself is not yet run.** What exists proves the callbacks are reached and
+that pixels change. What I2 claims is the intro's pages **byte for byte against the
+engine**, and that needs the reference replaying the same frames through `refvideo.py` -
+the shape `check-readmachine` already uses, but driven by the VM rather than by a poked
+draw list.
+
+**Three slot conflicts came out of this step**, all now parameterised in the includes
+rather than discovered twice: the sound ring cannot live in a sliding window; the
+rasteriser's Layer 2 bands cannot sit where the polygon window must; and the segment
+window cannot sit over the bytecode window. A fourth was caught by a gate rather than by
+thought - the page copy pointing its source band at MMU0 and never restoring it, which
+made the VM dispatch framebuffer and fail inside 2,067 records with "an invalid opcode".
+
+**One operational trap worth carrying:** two gates cannot run at once. They each start an
+emulator on port 10000, and a second one makes the first checker hang on a connect that
+never resolves. It looked exactly like `check-input` failing.
+
 #### I2. The VM draws
 
 The six callbacks in `src/vmtest.asm` that currently increment a word become the

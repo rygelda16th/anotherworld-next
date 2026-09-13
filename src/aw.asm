@@ -48,7 +48,7 @@
 ; C's stack is the number to watch: $BF00 down to the end of its image. Gate D needed
 ; more than 779 bytes and was given 4,500; this is less, and if it is not enough the
 ; symptom is now a known one.
-CC_ORG          EQU $9700               ; must match VM_ORG in the Makefile
+CC_ORG          EQU $9800               ; must match VM_ORG in the Makefile
 NR_TURBO        EQU $07
 NR_MMU0         EQU $50
 NR_MMU1         EQU $51
@@ -58,7 +58,8 @@ NR_MMU6         EQU $56
 NR_MMU7         EQU $57
 
 CODE_WIN        EQU $0000               ; what vmhost.inc slides the bytecode through
-CODE_PAGE       EQU 48
+CODE_PAGE       EQU 48                  ; eight 8K pages for the bytecode segment
+POLY_PAGE       EQU 56                  ; and eight for the cinematic segment
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
 
 CTL             EQU $C000
@@ -67,6 +68,7 @@ RING_ADDR       EQU $D400               ; permanently mapped; see the header
 VOLTAB          EQU $DC00
 VOICES          EQU $DD00
 IN_BLOCK        EQU $D300               ; the six input words the C reads
+DRAW_BLOCK      EQU $D310               ; aw_draw_poly's six parameters, from the C
 
 ; Layer 2. The destination band goes at MMU7, because MMU2/MMU3 are the polygon window
 ; and the reader is reading it at the moment the rasteriser writes a band. The source
@@ -201,7 +203,25 @@ start:
         ; frame the sound does not get refilled in, and the largest resource is 65,230
         ; bytes. That is I3's measurement, not something to model here.
         di
+        call    load_code               ; the bytecode segment, into CODE_PAGE
+        ld      a, (err)
+        or      a
+        jr      nz, .loaded
+
+        ; AND THE CINEMATIC SEGMENT, which the polygon reader reads. A part is four
+        ; resources (parts.cpp:14-28) and the intro's are palette $17, code $18,
+        ; video1 $19 and no video2; this is $19. Loading it here rather than on demand is
+        ; I2's scope: making updateMemList do it is I3.
+        ld      a, POLY_PAGE
+        ld      (ld_page), a
+        ld      hl, poly_name
+        ld      de, fname
+        ld      bc, 10
+        ldir
         call    load_code
+        ld      a, CODE_PAGE
+        ld      (ld_page), a            ; put it back for anything that follows
+.loaded:
         ei
         ld      a, (err)
         or      a
@@ -726,12 +746,60 @@ apply_palette:
         ld      (pal_now), a
         ret                             ; I2 remainder: select the entries
 
+; readAndDrawPolygon / readAndDrawPolygonHierarchy, video.cpp:85 and :222. The C has
+; already computed the six parameters the two opcode forms produce and left them in
+; DRAW_BLOCK; this sets the reader's state from them and calls the reader that
+; check-readmachine gates over 17 real draws and 59 polygons.
 aw_draw_poly:
-        ld      (jt_arg), hl    ; the fastcall argument, before a counter clobbers HL
         ld      hl, (n_poly)
         inc     hl
         ld      (n_poly), hl
-        ret                             ; I2 remainder: call poly_read
+
+        ; THE COPY-MODE FILL'S SOURCE BAND BORROWS MMU0, which is the bytecode window,
+        ; so what was there is saved and put back before the C runs another instruction.
+        ; Reading a NextReg back needs the register selected on $243B and the value read
+        ; from $253B; the project already learned that port $123B is write-only here, so
+        ; nothing is assumed to be readable without checking it is.
+        ld      bc, $243B
+        ld      a, NR_MMU0
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        ld      (saved_mmu0), a
+
+        ld      hl, (DRAW_BLOCK + 0)
+        ld      (rd_off), hl
+        ld      hl, (DRAW_BLOCK + 2)
+        ld      (rd_zoom), hl
+        ld      hl, (DRAW_BLOCK + 4)
+        ld      (rd_ptx), hl
+        ld      hl, (DRAW_BLOCK + 6)
+        ld      (rd_pty), hl
+        ld      a, (DRAW_BLOCK + 8)
+        ld      (rd_col), a
+
+        ; video2 chooses the SEGMENT, not the page: setDataBuffer is handed either the
+        ; part's cinematic data or its video2 data (vm.cpp's two polygon forms). Only the
+        ; cinematic segment is loaded so far, so a video2 draw is counted and skipped
+        ; rather than drawn out of the wrong segment.
+        ld      a, (DRAW_BLOCK + 9)
+        or      a
+        jr      z, .cinematic
+        ld      hl, (n_video2)
+        inc     hl
+        ld      (n_video2), hl
+        jr      .restore
+.cinematic:
+        ld      a, POLY_PAGE
+        ld      (seg_base), a
+        xor     a
+        ld      (rd_depth), a
+        ld      (rd_stop), a
+        call    poly_read
+.restore:
+        ld      a, (saved_mmu0)
+        nextreg NR_MMU0, a
+        ret
 
         INCLUDE "src/inc/vmhost.inc"
         INCLUDE "src/inc/input.inc"
@@ -785,6 +853,9 @@ pg_ptr2:    db 1                        ; the page being displayed - video.cpp:5
         EXPORT pg_ptr3
 pg_ptr3:    db 2                        ; the other display page
 fill_col:   db 0
+saved_mmu0: db 0
+        EXPORT n_video2
+n_video2:   dw 0        ; draws that wanted the video2 segment, which is not loaded yet
 cp_src:     db 0
 cp_dst:     db 0
         EXPORT cp_unimpl
@@ -793,6 +864,7 @@ cp_unimpl:  db 0                        ; a scrolled copy was asked for: I2 rema
 pal_req:    db $FF                      ; $FF = no palette change requested
         EXPORT pal_now
 pal_now:    db $FF
+poly_name:  db "RES19.BIN", 0
 rd_log:     ds 8 * 8                    ; the reader's leaf log, small: nothing reads it
 
         DISPLAY "> resident code and data end at ", /H, $
