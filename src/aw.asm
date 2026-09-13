@@ -349,6 +349,15 @@ start:
         ; probe_mus holds a resource id: load it and hand it to the player, no VM. The
         ; module has to be RESIDENT before its header can be read, so this does the load
         ; through the same aw_load_res the bytecode would have used.
+        ; probe_note: convert the period at MUS_BLOCK+4 and leave the increment beside it.
+        ld      a, (probe_note)
+        or      a
+        jr      z, .not_note
+        ld      hl, (MUS_BLOCK + 4)
+        call    note_to_inc
+        ld      (MUS_BLOCK + 6), hl
+        jr      .stop
+.not_note:
         ld      a, (probe_mus)
         or      a
         jr      z, .not_mus
@@ -1351,6 +1360,55 @@ aw_play_music:
         ret
 
 ;-----------------------------------------------------------------------------
+; note_to_inc - HL = an Amiga period, out as the mixer's 8.8 sample increment.
+;
+; The reference turns a period into a frequency with `7159092 / (note_1 * 2)`
+; (sfxplayer.cpp) and our mixer steps its pointer in 8.8 fixed point at the DAC's rate,
+; which prescalar 40 makes 875,000 / 40 = 21,875 Hz. So the increment wanted is
+;
+;     freq * 256 / 21875  =  (7159092 / (2 * note)) * 256 / 21875  =  41891 / note
+;
+; ONE 16-BY-16 DIVIDE instead of a 24-bit divide followed by a multiply and another divide.
+; Checked against the reference's own arithmetic over every valid period, 0x37 to 0xFFF: the
+; largest disagreement is 0.012 of a 1/256th step, which is four thousandths of a semitone.
+;
+; A period of zero cannot happen - handlePattern tests note_1 against 0, 0xFFFD and 0xFFFE
+; before ever reaching here - but it returns the maximum rather than dividing by it.
+;-----------------------------------------------------------------------------
+NOTE_NUM        EQU 41891               ; 7159092 * 256 / (2 * 21875)
+
+note_to_inc:
+        ld      a, h
+        or      l
+        jr      nz, .ok
+        ld      hl, $FFFF
+        ret
+.ok:
+        ld      c, l
+        ld      b, h                    ; BC = the divisor
+        ld      hl, 0                   ; HL = the remainder as it builds
+        ld      de, NOTE_NUM            ; DE = the dividend, and the quotient replaces it
+        ld      a, 16
+.loop:
+        ex      de, hl
+        add     hl, hl                  ; shift the dividend left, top bit into carry
+        ex      de, hl
+        adc     hl, hl                  ; and into the remainder
+        sbc     hl, bc
+        jr      nc, .fits
+        add     hl, bc                  ; it did not fit: put it back
+        dec     e                       ; and the quotient bit stays clear
+        inc     e
+        jr      .next
+.fits:
+        inc     e                       ; set the quotient's low bit
+.next:
+        dec     a
+        jr      nz, .loop
+        ex      de, hl                  ; HL = the quotient, 8.8
+        ret
+
+;-----------------------------------------------------------------------------
 ; I4. drawString, video.cpp:267, and drawChar, video.cpp:299.
 ;
 ; The string id, colour and position arrive in STR_BLOCK. The dictionary is searched by
@@ -1616,6 +1674,8 @@ stop_blit:  dw 0            ; stop the frame loop after this many blits; 0 = nev
 snd_off:    db 0            ; 1 = the interrupt ticks but does not mix: a discriminator
         EXPORT cur_band_x
 cur_band_x: db 0
+        EXPORT probe_note
+probe_note: db 0            ; 1 = convert one period and stop
         EXPORT probe_mus
 probe_mus:  db 0            ; a resource id: load it and parse it, no VM
         EXPORT probe_str

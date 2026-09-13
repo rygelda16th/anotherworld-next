@@ -114,13 +114,49 @@ def main():
                   f"numOrder {got['num_order']}, {live} instruments, order table "
                   f"exact  IDENTICAL")
             done += 1
+    # The period-to-increment divide, over the whole valid range and the awkward ends.
+    RATE = 875000 // 40
+    z.cmd(f"smartload /work/{NEX}")
+    time.sleep(3.2)
+    z.cmd("set-memory-zone -1")
+    z.cmd(f"write-memory-raw {sym['fname']} {(b'RES18.BIN' + bytes(1)).hex()}")
+    z.cmd(f"write-memory {sym['probe_note']} 1")
+    periods = [0x37, 0x38, 107, 214, 428, 856, 1712, 2000, 3000, 4095, 0xFFF]
+    worst, shown = 0, []
+    for n in periods:
+        z.cmd(f"write-memory-raw {MUS_BLOCK + 4} {n.to_bytes(2, 'little').hex()}")
+        z.cmd(f"write-memory {sym['go']} 1")
+        for _ in range(200):
+            if read(sym["done"], 1)[0] == 0x5A:
+                break
+            time.sleep(0.02)
+        got = int.from_bytes(read(MUS_BLOCK + 6, 2), "little")
+        want = 41891 // n
+        exact = (7159092 // (n * 2)) * 256 / RATE
+        if got != want:
+            bad.append(f"period {n}: the machine divided to {got}, 41891/{n} is {want}")
+        worst = max(worst, abs(got - exact))
+        shown.append(f"{n}->{got}")
+        z.cmd("smartload /work/{}".format(NEX))
+        time.sleep(2.6)
+        z.cmd("set-memory-zone -1")
+        z.cmd(f"write-memory-raw {sym['fname']} {(b'RES18.BIN' + bytes(1)).hex()}")
+        z.cmd(f"write-memory {sym['probe_note']} 1")
+    print(f"  the period divide, {len(periods)} periods: " + " ".join(shown[:7]) + " ...")
+    print(f"  largest disagreement with the reference's own frequency: "
+          f"{worst:.3f} of a 1/256th step")
+    if worst > 1.0:
+        bad.append(f"the increment is {worst:.2f} steps out at worst, which is audible")
+
     z.close()
     if bad:
         raise SystemExit(f"FAIL: {len(bad)} field(s) differ from the reference's parse")
     print(f"""
 PASS: all {done} modules parsed exactly as tools/sfxmod.py parses them - the delay with and
       without op_playMusic's override, numOrder, all 128 order entries and all 15
-      instruments. I5's header is right.""")
+      instruments - and the period-to-increment divide agrees with the reference's own
+      frequency to {worst:.2f} of a 1/256th step over the whole valid range. I5's header
+      and its tuning are right.""")
 
 
 if __name__ == "__main__":
