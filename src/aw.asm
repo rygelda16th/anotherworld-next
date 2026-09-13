@@ -70,6 +70,10 @@ DST_WIN         EQU $E000               ; the loader's staging, MMU7
 CTL             EQU $C000
 STACK_TOP       EQU $D400               ; grows down to $CF00: 1,280 bytes
 STACK_FLOOR     EQU $CF00
+; Code ABOVE the C's image, in the tail the stack vacated when it moved into MMU6. The C is
+; 7.8K from $9C00 and ends near $BB50, so this is the 1,100-odd bytes between that and $BF00 -
+; which used to be stack and is now the only resident space left. Asserted at both ends.
+MUSIC_CODE      EQU $BC00
 INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
 ; I3's tables, in MMU6's page rather than the resident region, which the rasteriser and
 ; the C had already filled: 584 bytes of resource table and 146 of load state is 730, and
@@ -365,6 +369,7 @@ start:
         ld      h, 0
         call    aw_load_res
         call    aw_play_music
+        call    probe_walk              ; lives above the C: the resident block is full
         jr      .stop
 .not_mus:
         ld      a, (probe_str)
@@ -425,6 +430,7 @@ start:
 ; missed.
 ;-----------------------------------------------------------------------------
 aw_frame_sync:
+        call    music_tick
         ; EI, EVERY FRAME, AND IT IS NOT BELT-AND-BRACES. z88dk's CRT does `di` as its
         ; FIRST instruction - $8C00 is F3 - so the `ei` before `call CC_ORG` is undone
         ; before the C runs a line. The machine then spun here forever waiting for a
@@ -1352,11 +1358,193 @@ aw_play_music:
         ld      (mus_cur_order), a
         ld      hl, 0
         ld      (mus_cur_pos), hl
+        ; The tick period in FRAMES. The reference's delay is delay * 60 / 7050 milliseconds
+        ; and a frame is 20 ms, so frames = raw * 60 / 7050 / 20 = raw / 2350. For the intro's
+        ; 15,240 that is 6 frames, 120 ms against the reference's 129 - the truncation is one
+        ; frame at worst and the alternative is a divide by 2350 with a remainder nobody hears.
+        ld      hl, (mus_delay_raw)
+        ld      bc, 2350
+        ld      de, 0
+.frames:
+        or      a
+        sbc     hl, bc
+        jr      c, .got_frames
+        inc     de
+        jr      .frames
+.got_frames:
+        ld      a, e
+        or      a
+        jr      nz, .at_least_one
+        inc     a                       ; never zero: that would fire every frame
+.at_least_one:
+        ld      (mus_frames), a
+        xor     a
+        ld      (mus_count), a
+
         ld      a, 1
         ld      (mus_playing), a
         ld      hl, (n_mus)
         inc     hl
         ld      (n_mus), hl
+        ret
+
+resident_end:                           ; where the ordinary resident block reached
+        ORG     MUSIC_CODE
+;-----------------------------------------------------------------------------
+; music_tick - counts frames and runs an event when one is due. handleEvents,
+; sfxplayer.cpp: the order table selects a 1024-byte pattern block, four channels of four
+; bytes are read at curPos, curPos advances sixteen, and at 1024 it wraps to the next order.
+; Reaching numOrder stops the module - the reference removes its timer and stops every
+; channel.
+;
+; THIS RUNS AT THE FRAME BOUNDARY, not in the interrupt, because it has to page the module's
+; pattern block into MMU2 - and MMU2 is the polygon window, which a draw may own mid-record.
+; The mixer stays in the interrupt, where it belongs; only the event walk is out here.
+;-----------------------------------------------------------------------------
+music_tick:
+        ld      a, (mus_playing)
+        or      a
+        ret     z
+        ld      hl, mus_count
+        inc     (hl)
+        ld      a, (mus_frames)
+        cp      (hl)
+        ret     nz                      ; not due yet
+        ld      (hl), 0
+
+        ld      hl, (n_mus_ev)
+        inc     hl
+        ld      (n_mus_ev), hl
+
+        ; the pattern block: 0xC0 + order * 1024 + curPos, into the module's own pages
+        ld      a, (mus_cur_order)
+        ld      e, a
+        ld      d, 0
+        ld      hl, MUS_ORDER_AT
+        add     hl, de
+        ld      a, (hl)                 ; the order table's entry selects the block
+        ; entry * 1024 is (entry * 4) << 8, so it is a byte shift and a zero low byte. The
+        ; first version shifted HL twice and then tried to shift the HIGH byte three more
+        ; times, which for entry 1 produced 4 instead of 1024 - and every block after the
+        ; first came out at the wrong offset. It passed 64 events and failed at 66, because
+        ; order 0 selects block 0 and nothing is wrong with zero.
+        add     a, a
+        add     a, a                    ; entry * 4
+        ld      h, a
+        ld      l, 0                    ; HL = entry * 1024
+        ld      de, (mus_cur_pos)
+        add     hl, de
+        ld      de, $C0
+        add     hl, de                  ; HL = the byte offset within the module
+
+        ; map the two pages covering it, the same shape as the bytecode window
+        ld      a, h
+        rlca
+        rlca
+        rlca
+        and     7
+        ld      e, a
+        ld      a, (mus_page)
+        add     a, e
+        nextreg NR_MUS_MMU, a
+        inc     a
+        nextreg NR_MUS_MMU + 1, a
+        ld      a, h
+        and     $1F
+        add     a, MUS_WIN >> 8
+        ld      h, a                    ; HL = the four channels, in the window
+
+        ld      b, 4
+        ld      c, 0                    ; C = the channel number
+.chan:
+        push    bc
+        push    hl
+        call    mus_pattern
+        pop     hl
+        ld      de, 4
+        add     hl, de
+        pop     bc
+        inc     c
+        djnz    .chan
+
+        ; curPos advances by four channels of four bytes
+        ld      hl, (mus_cur_pos)
+        ld      de, 16
+        add     hl, de
+        ld      (mus_cur_pos), hl
+        ld      de, 1024
+        or      a
+        sbc     hl, de
+        ret     c                       ; still inside this block
+        ld      hl, 0
+        ld      (mus_cur_pos), hl
+        ld      a, (mus_cur_order)
+        inc     a
+        ld      hl, mus_num_order
+        cp      (hl)
+        jr      nz, .next_order
+        ; the module has finished: the reference clears its resource and stops everything
+        xor     a
+        ld      (mus_playing), a
+        ld      (mus_res), a
+        ret
+.next_order:
+        ld      (mus_cur_order), a
+        ret
+
+;-----------------------------------------------------------------------------
+; mus_pattern - HL = this channel's four bytes, C = the channel. handlePattern,
+; sfxplayer.cpp. Two big-endian words: note_1 then note_2.
+;
+;   note_1 == 0xFFFD  write note_2 into variable 0xF4 and do nothing else
+;   note_1 == 0xFFFE  stop this channel
+;   note_1 == 0       leave the channel alone
+;   otherwise         play, at 41891 / note_1, using the instrument note_2 names
+;
+; The instrument is the top nibble of note_2 and effects 5 and 6 in its second nibble move
+; the volume up and down, clamped to 0x3F.
+;-----------------------------------------------------------------------------
+mus_pattern:
+        ld      d, (hl)                 ; note_1, big-endian
+        inc     hl
+        ld      e, (hl)
+        inc     hl
+        ld      b, (hl)                 ; note_2
+        inc     hl
+        ld      a, (hl)
+        ld      c, a                    ; BC = note_2 - C is reused, the caller saved it
+        ld      (mp_note1), de
+        ld      (mp_note2), bc
+
+        ld      a, d
+        and     e
+        inc     a                       ; $FFFF -> 0; catches neither marker on its own
+        ld      a, d
+        cp      $FF
+        jr      nz, .not_special
+        ld      a, e
+        cp      $FD
+        jr      nz, .not_fd
+        ld      hl, (mp_note2)          ; the mark: variable 0xF4
+        ld      (mus_mark), hl
+        ret
+.not_fd:
+        cp      $FE
+        ret     nz                      ; $FFxx that is neither: the reference ignores it
+        ld      hl, (n_mus_stop)
+        inc     hl
+        ld      (n_mus_stop), hl
+        ret                             ; stopping the channel is the voice work, still to come
+.not_special:
+        ld      a, d
+        or      e
+        ret     z                       ; note_1 zero: leave the channel be
+        ld      hl, (mp_note1)
+        call    note_to_inc
+        ld      (mp_inc), hl
+        ld      hl, (n_mus_note)
+        inc     hl
+        ld      (n_mus_note), hl
         ret
 
 ;-----------------------------------------------------------------------------
@@ -1407,6 +1595,27 @@ note_to_inc:
         jr      nz, .loop
         ex      de, hl                  ; HL = the quotient, 8.8
         ret
+
+; probe_walk - run the event walk (probe_ticks) times with the tick period forced to one
+; frame, so each call fires. The walk is what is under test, not the pacing. Up here with the
+; music code because the resident block below the C has fourteen bytes left in it.
+probe_walk:
+        ld      a, (probe_ticks)
+        or      a
+        ret     z
+        ld      b, a
+        ld      a, 1
+        ld      (mus_frames), a
+.tick:
+        push    bc
+        call    music_tick
+        pop     bc
+        djnz    .tick
+        ret
+
+        DISPLAY "> music code ends at ", /H, $
+        ASSERT $ < $BF00
+        ORG     resident_end
 
 ;-----------------------------------------------------------------------------
 ; I4. drawString, video.cpp:267, and drawChar, video.cpp:299.
@@ -1674,6 +1883,8 @@ stop_blit:  dw 0            ; stop the frame loop after this many blits; 0 = nev
 snd_off:    db 0            ; 1 = the interrupt ticks but does not mix: a discriminator
         EXPORT cur_band_x
 cur_band_x: db 0
+        EXPORT probe_ticks
+probe_ticks: db 0           ; how many events to walk in the probe
         EXPORT probe_note
 probe_note: db 0            ; 1 = convert one period and stop
         EXPORT probe_mus
@@ -1719,6 +1930,22 @@ mus_cur_order:  db 0
 mus_cur_pos:    dw 0
         EXPORT mus_playing
 mus_playing:    db 0
+        EXPORT mus_frames
+mus_frames:     db 0            ; the tick period, in frames
+        EXPORT mus_count
+mus_count:      db 0            ; frames since the last event
+        EXPORT n_mus_ev
+n_mus_ev:       dw 0            ; events handled
+        EXPORT n_mus_note
+n_mus_note:     dw 0            ; notes decoded
+        EXPORT n_mus_stop
+n_mus_stop:     dw 0            ; channel stops seen
+        EXPORT mus_mark
+mus_mark:       dw 0            ; what a 0xFFFD row wrote, for variable 0xF4
+mp_note1:       dw 0
+mp_note2:       dw 0
+        EXPORT mp_inc
+mp_inc:         dw 0
         EXPORT n_mus
 n_mus:          dw 0
         EXPORT n_mus_miss
@@ -1822,6 +2049,7 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
 
         ORG CC_ORG
         INCBIN  "build/aw_vm_CODE.bin"
+        ASSERT $ <= MUSIC_CODE          ; the C must not reach the music code
         DISPLAY "> the C is ", /D, $ - CC_ORG, " bytes at ", /H, CC_ORG
         ASSERT $ < VEC_TABLE
 

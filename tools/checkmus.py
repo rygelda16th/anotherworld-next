@@ -16,7 +16,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp      # noqa: E402
-from sfxmod import parse    # noqa: E402
+from sfxmod import parse, walk    # noqa: E402
 
 NEX = "build/aw.nex"
 EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
@@ -114,6 +114,40 @@ def main():
                   f"numOrder {got['num_order']}, {live} instruments, order table "
                   f"exact  IDENTICAL")
             done += 1
+    # THE EVENT WALK: the order table, the 1024-byte wrap, and what the rows contain.
+    for res, pos, ticks in ((0x07, 0, 40), (0x07, 0, 70), (0x8A, 2, 100)):
+        z.cmd(f"smartload /work/{NEX}")
+        time.sleep(3.2)
+        z.cmd("set-memory-zone -1")
+        z.cmd(f"write-memory-raw {sym['fname']} {(b'RES18.BIN' + bytes(1)).hex()}")
+        z.cmd(f"write-memory {sym['probe_mus']} {res}")
+        z.cmd(f"write-memory {sym['probe_ticks']} {ticks}")
+        z.cmd(f"write-memory-raw {MUS_BLOCK} {bytes([res, 0, 0, pos]).hex()}")
+        z.cmd(f"write-memory {sym['go']} 1")
+        for _ in range(600):
+            if read(sym["done"], 1)[0] == 0x5A:
+                break
+            time.sleep(0.05)
+        g = {
+            "order": read(sym["mus_cur_order"], 1)[0],
+            "pos": int.from_bytes(read(sym["mus_cur_pos"], 2), "little"),
+            "events": int.from_bytes(read(sym["n_mus_ev"], 2), "little"),
+            "notes": int.from_bytes(read(sym["n_mus_note"], 2), "little"),
+            "stops": int.from_bytes(read(sym["n_mus_stop"], 2), "little"),
+            "playing": bool(read(sym["mus_playing"], 1)[0]),
+        }
+        w = walk(open(f"build/assets/RES{res:02X}.BIN", "rb").read(), pos, ticks)
+        diffs = [k for k in ("order", "pos", "events", "notes", "stops", "playing")
+                 if g[k] != w[k]]
+        if diffs:
+            print(f"  RES{res:02X} from order {pos}, {ticks} events: DIFFERS in "
+                  + ", ".join(f"{k} {g[k]} vs {w[k]}" for k in diffs))
+            bad += diffs
+        else:
+            print(f"  RES{res:02X} from order {pos}, {ticks} events: order {g['order']}, "
+                  f"pos {g['pos']}, {g['notes']} notes, {g['stops']} stops"
+                  + ("" if g["playing"] else ", finished") + "  IDENTICAL")
+
     # The period-to-increment divide, over the whole valid range and the awkward ends.
     RATE = 875000 // 40
     z.cmd(f"smartload /work/{NEX}")
@@ -154,9 +188,11 @@ def main():
     print(f"""
 PASS: all {done} modules parsed exactly as tools/sfxmod.py parses them - the delay with and
       without op_playMusic's override, numOrder, all 128 order entries and all 15
-      instruments - and the period-to-increment divide agrees with the reference's own
-      frequency to {worst:.2f} of a 1/256th step over the whole valid range. I5's header
-      and its tuning are right.""")
+      instruments. The EVENT WALK matches a model of handleEvents - the order table, the
+      1024-byte wrap and what every row contains - and the period-to-increment divide
+      agrees with the reference's own frequency to {worst:.2f} of a 1/256th step over the
+      whole valid range. I5's header, its walk and its tuning are right; the voices are
+      what remain.""")
 
 
 if __name__ == "__main__":

@@ -58,6 +58,41 @@ def rows(blob, block, n=4):
     return out
 
 
+def walk(blob, pos=0, ticks=1):
+    """handleEvents, sfxplayer.cpp, as a model: what the order and position become, and how
+    many notes and channel-stops the rows contain.
+
+    The machine has to agree with this or its music is in the wrong place, which is the one
+    sound fault a listener cannot fail to notice."""
+    m = parse(blob)
+    cur_order, cur_pos = pos, 0
+    events = notes = stops = marks = 0
+    playing = True
+    for _ in range(ticks):
+        if not playing:
+            break
+        events += 1
+        order = m["order"][cur_order]
+        base = 0xC0 + cur_pos + order * 1024
+        for ch in range(4):
+            o = base + ch * 4
+            n1, n2 = be16(blob, o), be16(blob, o + 2)
+            if n1 == 0xFFFD:
+                marks += 1
+            elif n1 == 0xFFFE:
+                stops += 1
+            elif n1 != 0:
+                notes += 1
+        cur_pos += 16
+        if cur_pos >= 1024:
+            cur_pos = 0
+            cur_order += 1
+            if cur_order == m["num_order"]:
+                playing = False
+    return {"order": cur_order, "pos": cur_pos, "events": events,
+            "notes": notes, "stops": stops, "marks": marks, "playing": playing}
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "build/assets/RES07.BIN"
     blob = open(path, "rb").read()
