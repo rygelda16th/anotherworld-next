@@ -70,7 +70,9 @@ start:
 .cs_each:
         push    hl
         push    de
-        ; the case is four bytes: p1.x, p1.y, p2.x, p2.y
+        ; the case is EIGHT bytes now: p1.x, p1.y, p2.x, p2.y as signed words,
+        ; the same layout poly_data uses, so this exercises point_x and point_y
+        ; as well as the arithmetic.
         ld      (p_pts), hl             ; treat the case AS the point array
         ld      b, 0                    ; index 0 = p1
         ld      c, 1                    ; index 1 = p2
@@ -98,7 +100,7 @@ start:
         ld      (de), a
         inc     de
         pop     hl
-        ld      bc, 4
+        ld      bc, 8                   ; two points of two words
         add     hl, bc
         ld      bc, (cs_left)
         dec     bc
@@ -159,23 +161,21 @@ start:
         push    hl
         call    poly_draw
         pop     hl
-        ld      de, 0                   ; advance HL over this record
-        ld      a, (hl)                 ; colour
-        inc     hl                      ; -> ptx
-        inc     hl
-        inc     hl                      ; -> pty
-        inc     hl
-        inc     hl                      ; -> bbw
-        inc     hl                      ; -> bbh
-        inc     hl                      ; -> npoints
-        ld      a, (hl)
+        ; Advance HL over this record. FOUR bytes a point and TWO each for bbw
+        ; and bbh, since the widening: a stale copy of this arithmetic was what
+        ; broke Gate C on the first widened build, and the bisect named polygon 1
+        ; - a plain rectangle - which is the shape of a layout fault rather than
+        ; an arithmetic one.
+        ld      de, 9                   ; colour, ptx, pty, bbw, bbh
+        add     hl, de
+        ld      a, (hl)                 ; npoints
         inc     hl                      ; -> points
-        add     a, a                    ; npoints * 2 bytes
         ld      e, a
         ld      d, 0
-        jr      nc, .nohi
-        inc     d
-.nohi:
+        ex      de, hl
+        add     hl, hl
+        add     hl, hl                  ; npoints * 4
+        ex      de, hl
         add     hl, de
         pop     bc
         djnz    .each
@@ -242,23 +242,30 @@ poly_draw:
         ld      d, (hl)
         inc     hl
         ld      (p_pty), de
-        ld      a, (hl)
-        ld      (p_bbw), a
+        ld      e, (hl)
         inc     hl
-        ld      a, (hl)
-        ld      (p_bbh), a
+        ld      d, (hl)
         inc     hl
+        ld      (p_bbw), de
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        inc     hl
+        ld      (p_bbh), de
         ld      a, (hl)
         ld      (p_npts), a
         inc     hl
         ld      (p_pts), hl
 
         ; ---- the degenerate case: bbw == 0 && bbh == 1 && npoints == 4 ----
-        ld      a, (p_bbw)
-        or      a
+        ld      hl, (p_bbw)
+        ld      a, h
+        or      l
         jr      nz, .box
-        ld      a, (p_bbh)
-        dec     a
+        ld      hl, (p_bbh)
+        dec     hl
+        ld      a, h
+        or      l
         jr      nz, .box
         ld      a, (p_npts)
         cp      4
@@ -266,13 +273,17 @@ poly_draw:
         jp      draw_point
 
 .box:
-        ; x1 = ptx - bbw/2 ; x2 = ptx + bbw/2   (bbw/2 is an unsigned halving)
-        ld      a, (p_bbw)
-        srl     a                       ; NOTE: this leaves the shifted-out bit
-        ld      c, a                    ; in carry, so an odd bbw would make the
-        ld      hl, (p_ptx)             ; SBC below subtract one too many.
-        ld      d, 0
-        ld      e, c
+        ; x1 = ptx - bbw/2 ; x2 = ptx + bbw/2.
+        ; SIXTEEN-BIT halving: the box reaches 423 x 483 in this game, so `srl a`
+        ; on a byte was wrong for every box over 255 - and Gate C's vector topped
+        ; out at 204, which is why it went unnoticed. SRL H / RR L also leaves the
+        ; shifted-out bit in carry, so the SBC still needs it cleared.
+        ld      hl, (p_bbw)
+        srl     h
+        rr      l
+        ld      d, h
+        ld      e, l                    ; DE = bbw / 2
+        ld      hl, (p_ptx)
         push    hl
         or      a                       ; clear carry before the SBC
         sbc     hl, de
@@ -282,10 +293,11 @@ poly_draw:
         ld      (p_x2), hl
 
         ; y1 = pty - bbh/2 ; y2 = pty + bbh/2
-        ld      a, (p_bbh)
-        srl     a
-        ld      e, a
-        ld      d, 0
+        ld      hl, (p_bbh)
+        srl     h
+        rr      l
+        ld      d, h
+        ld      e, l
         ld      hl, (p_pty)
         push    hl
         or      a                       ; clear carry for the SBC
@@ -328,17 +340,13 @@ poly_draw:
 
         ; x2 = points[i].x + x1 ; x1 = points[j].x + x1
         ld      a, (p_i)
-        call    point_x                 ; A = points[A].x
-        ld      e, a
-        ld      d, 0
-        ld      hl, (p_x1)
+        call    point_x                 ; HL = points[A].x, signed word
+        ld      de, (p_x1)
         add     hl, de
         ld      (cpt2 + 2), hl          ; the high word IS the integer part
         ld      a, (p_j)
         call    point_x
-        ld      e, a
-        ld      d, 0
-        ld      hl, (p_x1)
+        ld      de, (p_x1)
         add     hl, de
         ld      (cpt1 + 2), hl
         ld      hl, 0
@@ -724,109 +732,165 @@ draw_point:
 ; Results in step_lo/step_hi/step_dy.
 ;-----------------------------------------------------------------------------
 calc_step:
+        ; dy = p2.y - p1.y, a SIGNED 16-BIT difference now. Both coordinates can
+        ; exceed a byte: the game's post-zoom geometry reaches 483 in y after the
+        ; 256x192 scale.
         push    bc
         ld      a, b
         call    point_y
-        ld      (t_p1), a               ; p1.y - NOT in D: point_y builds its
-        pop     bc                      ; index in DE and clobbers it, which is
-        push    bc                      ; what made every negative run come out
-        ld      a, c                    ; as zero.
-        call    point_y
-        ld      hl, t_p1
-        sub     (hl)                    ; p2.y - p1.y
-        ld      e, a
-        ld      d, 0
-        jr      nc, .dypos
-        dec     d                       ; sign-extend a negative difference
-.dypos:
-        ld      (step_dy), de
-        ; The table has 0x400 entries and the walk only ever produces a dy
-        ; inside it for a well-formed polygon; masking keeps a malformed one
-        ; from reading past the end rather than pretending it cannot happen.
-        ld      a, d
+        ld      (t_p1), hl              ; p1.y - NOT in a register pair that
+        pop     bc                      ; point_y clobbers, which is what made
+        push    bc                      ; every negative run come out as zero.
+        ld      a, c
+        call    point_y                 ; HL = p2.y
+        ld      de, (t_p1)
+        or      a                       ; clear carry for the SBC
+        sbc     hl, de                  ; HL = dy, signed
+        ld      (step_dy), hl
+
+        ; The table has 0x400 entries and a well-formed polygon never produces a
+        ; dy outside it; masking keeps a malformed one from reading past the end
+        ; rather than pretending it cannot happen.
+        ld      a, h
         and     3
-        ld      d, a
-        ld      hl, interp_table
-        sla     e
-        rl      d
+        ld      h, a
+        add     hl, hl                  ; word entries
+        ld      de, interp_table
         add     hl, de
         ld      e, (hl)
         inc     hl
         ld      d, (hl)
         ld      (interp), de
 
+        ; dx = p2.x - p1.x, signed 16-bit
         pop     bc
         push    bc
         ld      a, b
         call    point_x
-        ld      (t_p1), a               ; p1.x, in memory for the same reason
+        ld      (t_p1), hl
         pop     bc
         ld      a, c
         call    point_x
-        ld      hl, t_p1
-        sub     (hl)                    ; dx = p2.x - p1.x, signed in A
-        ld      c, 0                    ; C = sign flag
-        jr      nc, .dxpos
-        neg
+        ld      de, (t_p1)
+        or      a
+        sbc     hl, de                  ; HL = dx, signed
+
+        ; magnitude and sign, because MUL D,E is unsigned
+        ld      c, 0
+        bit     7, h
+        jr      z, .dxpos
         ld      c, 1
-.dxpos:
-        ; 24-bit product of A (0..255) and the 16-bit interp value
-        ld      hl, (interp)
-        ld      d, a
-        ld      e, l
-        mul     d, e                    ; low byte product -> DE
-        push    de
-        ld      d, a
-        ld      e, h
-        mul     d, e                    ; high byte product -> DE
-        pop     hl                      ; HL = low product
-        ; result = HL + (DE << 8), 24 bits in B:HL
-        ld      b, 0
-        ld      a, h
-        add     a, e
-        ld      h, a
-        ld      a, b
-        adc     a, d
-        ld      b, a                    ; B holds bits 16-23
-
-        ; times four
-        sla     l
-        rl      h
-        rl      b
-        sla     l
-        rl      h
-        rl      b
-
-        ; and the sign
-        ld      a, c
-        or      a
-        jr      z, .store
-        ; negate the 24-bit value
-        ld      a, l
-        cpl
+        xor     a
+        sub     l
         ld      l, a
-        ld      a, h
-        cpl
-        ld      h, a
-        ld      a, b
-        cpl
-        ld      b, a
-        inc     hl
-        ld      a, h
-        or      l
-        jr      nz, .store
-        inc     b
-.store:
-        ld      (step_lo), hl
-        ld      a, b
+        sbc     a, a
+        sub     h
+        ld      h, a                    ; HL = -HL
+.dxpos:
+        ; ---- |dx| * interp, 16 x 16 -> 32 bits -------------------------------
+        ; Four MUL D,E and three shifted accumulations. This was an 8 x 16
+        ; product while a coordinate was a byte; widening it is the one part of
+        ; the 16-bit change that is not mechanical, which is exactly what the
+        ; 2,862-case unit test is for.
+        ;
+        ;   prod = al*bl + (ah*bl + al*bh) << 8 + ah*bh << 16
+        ;
+        ; The accumulator IS step_lo..step_hi+1, four contiguous bytes.
+        ld      (m_a), hl
+        ld      hl, (interp)
+        ld      (m_b), hl
+
+        ld      a, (m_a)
+        ld      d, a
+        ld      a, (m_b)
+        ld      e, a
+        mul     d, e                    ; al * bl
+        ld      (step_lo), de
+        xor     a
         ld      (step_hi), a
-        ; bits 24-31: the sign extension of a 26-bit signed value
+        ld      (step_hi + 1), a
+
+        ld      a, (m_a + 1)
+        ld      d, a
+        ld      a, (m_b)
+        ld      e, a
+        mul     d, e                    ; ah * bl, at byte 1
+        call    .add_at1
+
+        ld      a, (m_a)
+        ld      d, a
+        ld      a, (m_b + 1)
+        ld      e, a
+        mul     d, e                    ; al * bh, at byte 1
+        call    .add_at1
+
+        ld      a, (m_a + 1)
+        ld      d, a
+        ld      a, (m_b + 1)
+        ld      e, a
+        mul     d, e                    ; ah * bh, at byte 2
+        ld      hl, step_hi
+        ld      a, (hl)
+        add     a, e
+        ld      (hl), a
+        inc     hl
+        ld      a, (hl)
+        adc     a, d
+        ld      (hl), a
+
+        ; ---- times four, 32-bit ---------------------------------------------
+        ld      hl, step_lo
+        call    .shl32
+        ld      hl, step_lo
+        call    .shl32
+
+        ; ---- and the sign ---------------------------------------------------
         ld      a, c
         or      a
-        ld      a, 0
-        jr      z, .pos
-        ld      a, $FF
-.pos:   ld      (step_hi + 1), a
+        ret     z
+        ; negate the 32-bit value: complement all four bytes and add one
+        ld      hl, step_lo
+        ld      b, 4
+.cpl:
+        ld      a, (hl)
+        cpl
+        ld      (hl), a
+        inc     hl
+        djnz    .cpl
+        ld      hl, step_lo
+        ld      b, 4
+.inc32:
+        inc     (hl)
+        ret     nz                      ; no carry out of this byte: done
+        inc     hl
+        djnz    .inc32
+        ret
+
+.add_at1:
+        ; the 16-bit product in DE, added in at byte 1 of the accumulator
+        ld      hl, step_lo + 1
+        ld      a, (hl)
+        add     a, e
+        ld      (hl), a
+        inc     hl
+        ld      a, (hl)
+        adc     a, d
+        ld      (hl), a
+        inc     hl
+        ld      a, (hl)
+        adc     a, 0
+        ld      (hl), a
+        ret
+
+.shl32:
+        ; HL -> a four-byte little-endian value; shift it left once
+        sla     (hl)
+        inc     hl
+        rl      (hl)
+        inc     hl
+        rl      (hl)
+        inc     hl
+        rl      (hl)
         ret
 
 ;-----------------------------------------------------------------------------
@@ -853,29 +917,40 @@ step_both:
         ret
 
 ;-----------------------------------------------------------------------------
-; point_x / point_y - A = index, returns points[A].x or .y in A.
+; point_x / point_y - A = index, returns points[A].x or .y in HL, signed.
+; Four bytes a point now, two signed words, because the game's post-zoom geometry
+; reaches 423 x 483 after the 256x192 scale.
+;
+; These still build their index in DE, so they still CLOBBER D - which is what
+; made every negative run compute as zero when a caller held a value there. The
+; callers keep their operands in memory for exactly that reason.
 ;-----------------------------------------------------------------------------
 point_x:
-        add     a, a
-        ld      e, a
-        ld      d, 0
-        jr      nc, .n
-        inc     d
-.n:     ld      hl, (p_pts)
+        ld      l, a
+        ld      h, 0
+        add     hl, hl
+        add     hl, hl                  ; index * 4
+        ld      de, (p_pts)
         add     hl, de
-        ld      a, (hl)
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        ex      de, hl
         ret
 
 point_y:
-        add     a, a
-        ld      e, a
-        ld      d, 0
-        jr      nc, .n
-        inc     d
-.n:     ld      hl, (p_pts)
+        ld      l, a
+        ld      h, 0
+        add     hl, hl
+        add     hl, hl
+        ld      de, (p_pts)
         add     hl, de
         inc     hl
-        ld      a, (hl)
+        inc     hl
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        ex      de, hl
         ret
 
 ;-----------------------------------------------------------------------------
@@ -942,13 +1017,12 @@ go:             db 0
         EXPORT cs_done
 cs_done:        db 0
         EXPORT cs_results
-cs_results:     ds CS_COUNT * 6         ; step (4 bytes) then dy (2) per case
         EXPORT p_colour
 p_colour:       db 0
 p_ptx:          dw 0
 p_pty:          dw 0
-p_bbw:          db 0
-p_bbh:          db 0
+p_bbw:          dw 0
+p_bbh:          dw 0
 p_npts:         db 0
 p_pts:          dw 0
 p_i:            db 0
@@ -964,7 +1038,9 @@ sx1:            dw 0
 sx2:            dw 0
 cur_band:       db 255
 cs_left:        dw 0
-t_p1:           db 0
+t_p1:           dw 0            ; p1's coordinate, in memory not in D
+m_a:            dw 0            ; the multiply's operands
+m_b:            dw 0
 interp:         dw 0
 step_dy:        dw 0
 step_lo:        dw 0
@@ -974,12 +1050,21 @@ cpt2:           dw 0, 0
 step1:          dw 0, 0
 step2:          dw 0, 0
 
+; The generated tables and the unit test's results live ABOVE the stack. Below it
+; they do not fit: the unrolled fills are 2,304 bytes of straight-line code, the
+; widened cases are fourteen bytes each, and together they pushed the program past
+; $BF00 and then past 64K - which sjasmplus reports as "write outside of device
+; memory" and truncated address constants, not as "this does not fit".
+; $C000 upwards is slot 3, which nothing here pages: the Layer 2 windows are MMU2
+; and MMU3.
+        ORG     $C000
+cs_results:     ds CS_COUNT * 6         ; step (4 bytes) then dy (2) per case
         ALIGN 2
         INCLUDE "build/csteps.inc"
         INCLUDE "build/interp.inc"
         INCLUDE "build/polytest.inc"
 
-        ASSERT $ < $BF00
+        ASSERT $ < $FF00
         SAVENEX OPEN "build/polytest.nex", start, $BF00
         SAVENEX CORE 3, 0, 0
         SAVENEX CFG  0, 0, 0, 1

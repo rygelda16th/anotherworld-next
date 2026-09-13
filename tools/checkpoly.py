@@ -138,6 +138,57 @@ def run_machine(z, sym, limit, settle=4.0):
     return bytes(got)
 
 
+def check_calc_step(z, sym):
+    """The calc_step unit test's results, which nothing was reading.
+
+    The program runs 576 cases before it draws anything and leaves the answers in
+    cs_results. That has been true for a while and NO checker read them back, so
+    the "exhaustive at 648 of 648" claim rested on a run nobody repeated. An
+    unchecked test is not a test.
+
+    It matters more since the widening: calc_step's product went from 8x16 to
+    16x16, assembled out of four MUL D,E and three shifted accumulations, which is
+    exactly the kind of code that is plausible and wrong.
+    """
+    cases = []
+    for line in open("build/csteps.txt"):
+        f = line.split()
+        cases.append((int(f[0]), int(f[1]), int(f[2]), int(f[3]),
+                      int(f[4]), int(f[5])))
+    if z.cmd(f"read-memory {sym['cs_done']} 1").strip().upper() != "C5":
+        raise SystemExit("FAIL: the calc_step self-test never finished")
+
+    base = sym["cs_results"]
+    n = len(cases)
+    raw = bytearray()
+    addr = base
+    left = n * 6
+    while left:
+        k = min(2048, left)
+        h = z.cmd(f"read-memory {addr} {k}").strip()
+        raw += bytes(int(h[i:i + 2], 16) for i in range(0, len(h), 2))
+        addr += k
+        left -= k
+
+    bad = []
+    for i, (p1x, p1y, p2x, p2y, step, dy) in enumerate(cases):
+        o = i * 6
+        gstep = int.from_bytes(raw[o:o + 4], "little")
+        gdy = int.from_bytes(raw[o + 4:o + 6], "little")
+        if gstep != step or gdy != (dy & 0xFFFF):
+            bad.append((i, (p1x, p1y, p2x, p2y), gstep, step, gdy, dy))
+    print(f"calc_step: {n - len(bad)} of {n} cases exact"
+          + ("" if not bad else f"   {len(bad)} WRONG"))
+    if bad:
+        for i, pts, gs, ws, gd, wd in bad[:6]:
+            print(f"  case {i} p1=({pts[0]},{pts[1]}) p2=({pts[2]},{pts[3]}): "
+                  f"step {gs:#010x} want {ws:#010x}, dy {gd} want {wd}")
+        wide = sum(1 for b in bad if max(b[1]) > 255)
+        print(f"  {wide} of {len(bad)} involve a coordinate above 255, so the "
+              f"widened multiply is {'implicated' if wide else 'not implicated'}")
+        raise SystemExit("FAIL: calc_step does not match the reference")
+
+
 def main():
     want = open(EXPECTED, "rb").read()
     if len(want) != W * H:
@@ -147,6 +198,12 @@ def main():
     polys = load_polys("build/polytest.txt")
     z = Zrcp()
     print(f"emulator: {z.cmd('get-version')}")
+    # The unit test runs before the draw, so check it before believing any pixel.
+    z.cmd(f"smartload /work/{NEX}")
+    time.sleep(4)
+    z.cmd("set-memory-zone -1")
+    check_calc_step(z, sym)
+
     got = run_machine(z, sym, len(polys), settle=5.0)
     print(f"the machine drew all {len(polys)} polygons\n")
 

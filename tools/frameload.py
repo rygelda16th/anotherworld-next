@@ -46,9 +46,13 @@ MODELS = {
     # 2026-09-13, before step 2a: three routines, four calls to a general signed
     # comparator a row, and DJNZ loops for all three fills.
     "original":  (2974, 1570 + 22 * 21.3),
-    # after step 2a: the row loop fused with inline specialised clipping, and all
-    # three fills unrolled with a computed entry. Both figures re-measured.
-    "as built":  (3020, 1137 + 22 * 7.3),
+    # after step 2a and the 16-bit widening: the row loop fused with inline
+    # specialised clipping, and all three fills unrolled with a computed entry.
+    # Per polygon is the MEDIAN of eight directly measured zero-span windows,
+    # which range 689 to 4,404 T - a rejection at one end, a fully-clipped walk
+    # at the other - and the span terms move by a few per cent across that whole
+    # range, so the model does not rest on the choice.
+    "as built":  (4028, 1007 + 22 * 10.8),
     # the floor step 0 measured for the two techniques left: a PUSH fill at 5.4 T
     # a byte, and 433 T of span entry with the accumulators in registers.
     "floor":     (3020, 433 + 22 * 5.4),

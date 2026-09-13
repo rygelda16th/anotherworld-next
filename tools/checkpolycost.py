@@ -140,7 +140,20 @@ def main():
     for size in (1, 2, 4, 8):
         WINDOWS += [(f, min(size, n - f)) for f in range(0, n, max(size, 7))]
     WINDOWS += [(0, n), (0, 36)]
+
+    # And every single-polygon window that draws NO spans, because those are what
+    # measure the per-polygon cost directly. Sampling every seventh index found
+    # one by luck, and stopped finding one the moment the vector's contents
+    # changed - so look for them instead of hoping.
+    zero_single = [f for f in range(n) if counts(polys, f, 1)[1] == 0]
+    WINDOWS += [(f, 1) for f in zero_single]
     WINDOWS = sorted({(f, l) for f, l in WINDOWS if l > 0})
+    print(f"\n{len(zero_single)} of {n} polygons draw no spans at all: "
+          f"{zero_single[:8]}{' ...' if len(zero_single) > 8 else ''}")
+    if not zero_single:
+        raise SystemExit("FAIL: no polygon in the vector draws zero spans, so the "
+                         "per-polygon cost cannot be measured directly. Add an "
+                         "offscreen or point polygon to tools/mkpolytest.py.")
 
     rows = []
     print(f"\n{'window':>10}{'polys':>6}{'spans':>7}{'opaqB':>8}{'blndB':>7}"
@@ -164,75 +177,63 @@ def main():
           + ("  (separable)" if abs(r) < 0.9 else
              "  -- WEAK: the fit below cannot really tell them apart"))
 
-    # The per-polygon cost is MEASURED, not fitted. One window draws a polygon
-    # and no spans at all, so its whole pass is the per-polygon path: the
-    # bounding-box test, the vertex walk's setup and the record advance. A five
-    # term least squares over these windows puts polygons and spans at r = 0.96
-    # and can move cost freely between them - it returned 28,690 T a polygon and
-    # 95 T a copy byte, both of which are impossible.
-    zero = [(p, t) for p, s_, _, t in rows if s_ == 0 and p == 1]
-    if not zero:
-        raise SystemExit("FAIL: no single-polygon window draws zero spans, so the "
-                         "per-polygon cost cannot be measured directly")
-    per_poly = min(t for _, t in zero)
-    print(f"\nper polygon, MEASURED from a window that draws one polygon and no "
-          f"spans:\n  {per_poly:,.0f} T")
+    # The per-polygon cost is NOT ONE NUMBER, and that is the finding here rather
+    # than an inconvenience. Every window that draws a single polygon and no spans
+    # is a direct measurement of a per-polygon path, and they range over four and a
+    # half times: the cheap end is a bounding-box rejection, the dear end sets up,
+    # walks every row and has every span clipped.
+    #
+    # So it is fixed rather than fitted, and the fit is run at three values to show
+    # that the span terms - the ones that can be checked against step 0 - barely
+    # move. Fitting it as a fifth free term produced MINUS 7,180 T a polygon and a
+    # 30% residual, because polygons and spans stay correlated across any sweep of
+    # a fixed vector and least squares will happily trade one against the other.
+    singles = sorted(t for p, s_, mb, t in rows if p == 1 and s_ == 0)
+    if not singles:
+        raise SystemExit("FAIL: no single-polygon window drew zero spans")
+    lo, mid, hi = singles[0], singles[len(singles) // 2], singles[-1]
+    print(f"\nthe {len(singles)} windows that draw one polygon and no spans, "
+          f"directly measured:")
+    print("  " + ", ".join(f"{t:,.0f}" for t in singles) + " T")
+    print(f"  a bounding-box rejection at the cheap end, a fully-clipped walk at "
+          f"the dear end")
 
-    # With that fixed, the rest is well posed - but only for the modes the vector
-    # actually exercises. Copy-mode bytes never exceed 952 in any window and are
-    # zero in most, so their coefficient is unidentifiable: fitted freely it came
-    # out at MINUS 243 T a byte. They are folded in with blend, which step 0
-    # measured at 32.2 against copy's 37.6 - a 17% difference, far smaller than
-    # the error in pretending to have measured it.
-    A = [[float(s_), float(mb[0]), float(mb[1] + mb[2])] for _, s_, mb, _ in rows]
-    y = [float(t) - per_poly * float(p) for p, _, _, t in rows]
-    K = 3
-    M = [[sum(A[k][i] * A[k][j] for k in range(len(A))) for j in range(K)]
-         + [sum(A[k][i] * y[k] for k in range(len(A)))] for i in range(K)]
-    for i in range(K):
-        piv = max(range(i, K), key=lambda rr: abs(M[rr][i]))
-        M[i], M[piv] = M[piv], M[i]
-        if abs(M[i][i]) < 1e-9:
-            raise SystemExit("FAIL: singular - the windows do not vary the fill "
-                             "modes independently enough")
-        for rr in range(K):
-            if rr != i:
-                f = M[rr][i] / M[i][i]
-                for c in range(i, K + 1):
-                    M[rr][c] -= f * M[i][c]
-    coef = [M[i][K] / M[i][i] for i in range(K)]
-    b, bo, bb = coef
+    def fit_spans(per_poly):
+        A = [[float(s_), float(mb[0]), float(mb[1] + mb[2])]
+             for _, s_, mb, _ in rows]
+        y = [float(t) - per_poly * float(p) for p, _, _, t in rows]
+        K = 3
+        M = [[sum(A[k][i] * A[k][j] for k in range(len(A))) for j in range(K)]
+             + [sum(A[k][i] * y[k] for k in range(len(A)))] for i in range(K)]
+        for i in range(K):
+            piv = max(range(i, K), key=lambda rr: abs(M[rr][i]))
+            M[i], M[piv] = M[piv], M[i]
+            for rr in range(K):
+                if rr != i:
+                    f = M[rr][i] / M[i][i]
+                    for c in range(i, K + 1):
+                        M[rr][c] -= f * M[i][c]
+        c = [M[i][K] / M[i][i] for i in range(K)]
+        resid = [y[k] - sum(A[k][i] * c[i] for i in range(K))
+                 for k in range(len(A))]
+        return c, (sum(rr * rr for rr in resid) / len(resid)) ** 0.5
+
+    print(f"\nthe span terms, with the per-polygon term fixed at each of those:")
+    print(f"  {'T/poly':>8}{'T/span entry':>14}{'T/opaque byte':>15}"
+          f"{'T/blend byte':>14}{'RMS':>12}")
+    best = None
+    for pp in (lo, mid, hi):
+        (b, bo, bb), rms = fit_spans(pp)
+        print(f"  {pp:>8,.0f}{b:>14.0f}{bo:>15.1f}{bb:>14.1f}{rms:>12,.0f}")
+        if pp == mid:
+            best = (b, bo, bb)
+    b, bo, bb = best
     bc = bb
-    resid = [y[k] - sum(A[k][i] * coef[i] for i in range(K)) for k in range(len(A))]
-    rms = (sum(rr * rr for rr in resid) / len(resid)) ** 0.5
+    per_poly = mid
+    print(f"\n  The span terms move by a few per cent across a 4.5-fold change in")
+    print(f"  the per-polygon term, so the conclusion does not rest on that choice.")
+    print(f"  Step 0 measured the blend byte at 32.2 by another method entirely.")
 
-    print(f"\nwith that subtracted, the span terms:")
-    print(f"  per span entry           {b:>9.0f} T   (step 0's own span row: 433)")
-    print(f"  per opaque byte          {bo:>9.1f} T   (step 0 measured  5.4 by PUSH,"
-          f" 10.7 unrolled)")
-    print(f"  per blend or copy byte   {bb:>9.1f} T   (step 0 measured 32.2 and 37.6)")
-    print(f"  residual RMS {rms:,.0f} T, {100*rms/statistics.mean([t for *_, t in rows]):.1f}%"
-          f" of the mean pass over {len(rows)} windows")
-
-    # Spot-check the model against the three windows it should predict best:
-    # a single polygon with many long spans, where the byte term dominates.
-    print(f"\nthe model against single-polygon windows, worst first:")
-    checks = sorted(((p, s_, mb, t) for p, s_, mb, t in rows if p == 1),
-                    key=lambda r: -r[3])[:4]
-    for p, s_, mb, t in checks:
-        pred = per_poly + b * s_ + bo * mb[0] + bb * mb[1] + bc * mb[2]
-        print(f"  {s_:>4} spans, {sum(mb):>6,} bytes: predicted {pred:>10,.0f} T, "
-              f"measured {t:>10,.0f}  ({100*(pred-t)/t:+.1f}%)")
-
-    print(f"\nWhat this says about the code as it stands. span_opaque is a plain")
-    print(f"  ld (hl),a / inc l / djnz loop at {bo:.0f} T a byte. Step 0 measured a PUSH")
-    print(f"  fill at 5.4 and an unrolled store at 10.7, so the rasteriser's fill is")
-    print(f"  {bo/5.4:.1f}x dearer than the cheapest one already measured - and the plan's")
-    print(f"  672 T a span describes step 0's purpose-built row, not this code.")
-    print(f"  The two deferred optimisations are therefore NOT optional after all.")
-
-    # The game's own spans are 22 bytes and mostly opaque, so the frames below use
-    # step 0's end-to-end 672 T a span rather than this vector's mode-heavy mix.
     # The game's own spans average 22 bytes at 256 wide and are mostly opaque, so
     # cost them at this code's measured rates rather than at step 0's best-case.
     per_span = b + 22 * bo

@@ -716,26 +716,39 @@ protected by Gate C:
 - **all three fills unrolled with a computed entry**, replacing `djnz` loops whose
   13 T of branch was more than half the cost of an opaque byte.
 
-| | before | after | step 0's floor |
-|---|---|---|---|
-| span entry | 1,570 T | **1,137 T** | 433 |
-| opaque byte | 21.3 T | **7.3 T** | 5.4 (PUSH) |
-| blend or copy byte | 32.0 T | **15.6 T** | 19 (unrolled) |
-| a 22-byte opaque span | 2,037 T | **1,296 T** | 552 |
+| | before | after | step 0's floor | theory |
+|---|---|---|---|---|
+| span entry | 1,570 T | **1,007 T** | 433 | |
+| opaque byte | 21.3 T | **10.8 T** | 5.4 (PUSH) | 11 |
+| blend or copy byte | 32.0 T | **16.4 T** | 19 (unrolled) | 19 |
+| a 22-byte opaque span | 2,037 T | **1,245 T** | 552 | |
+
+The opaque byte at 10.8 against a theoretical 11 - `ld (hl),a` plus `inc l` - is
+the check that the decomposition is still measuring what it claims.
 
 | gameplay | mean load | p90 | worst | frames overrunning |
 |---|---|---|---|---|
 | original | 48.4% | 4.00 | 18.79 | 12.72% |
-| **after step 2a** | **35.7%** | 2.89 | 14.05 | **0.94%** |
+| **after step 2a** | **37.3%** | 3.05 | 15.43 | **0.97%** |
 | the floor | 22.7% | 1.76 | 9.21 | 0.73% |
 
-**The overrun rate is now at the floor** - 0.94% against 0.73%, one frame in 106
+**The overrun rate is now at the floor** - 0.97% against 0.73%, one frame in 103
 against one in 137 - so the thing the optimisation was for is done. What remains
 between here and the floor is mean load, which is headroom rather than
-correctness: 35.7% with the mixer's 23.2% is 59% of the machine. The last two
+correctness: 37.3% with the mixer's 23.2% is 61% of the machine. The last two
 techniques, a PUSH fill and the accumulators in registers, are therefore back to
-being optional, and this time that is a conclusion drawn from the measurement
-rather than from a figure belonging to different code.
+being optional, and this time that is a conclusion drawn from a measurement of
+this code.
+
+**The per-polygon cost is a range, not a number**, which is the other thing step
+2a established. Eight windows draw a single polygon and no spans at all, and they
+cost **689 to 4,404 T**: a bounding-box rejection at one end, and at the other a
+polygon that sets up, walks every row and has every span clipped. `check-polycost`
+fixes the term at the median and reports the span fit at the extremes too - they
+move by a few per cent across that whole 4.5-fold range. Fitting it as a free term
+instead returned **minus 7,180 T a polygon** and a 30% residual, because polygons
+and spans stay correlated across any sweep of a fixed vector and least squares
+will trade one against the other without complaint.
 
 **Gate C found the one fault in the rewrite in a single run.** The blend fill needed
 a spare register pair to compute length x 3, took DE - which was holding the
@@ -919,7 +932,32 @@ shape of `mkcsteps`: enumerate byte against zoom over the real range, compute bo
 truncations on the host, compare on the machine. Exhaustive is 256 x 340 = 87,040
 cases - a table too large to ship, a loop small enough to run.
 
-**C5a. The geometry is 8-bit and the game is not.**
+**C5a. The geometry was 8-bit and the game is not - DONE.**
+
+The rasteriser now holds boxes and vertex offsets as signed words throughout, and
+`calc_step`'s product is 16 x 16, assembled from four `MUL D,E` and three shifted
+accumulations. `make check-poly` covers it: the vector has a **`wide` bucket** and
+reaches 303, and the unit test runs **576 of 576 cases exact** including
+coordinates to 480 and runs to +-260.
+
+Three things fell out of doing it.
+
+**The `wide` bucket came back empty the first time**, because a box wider than the
+screen always clips and one of the four clipping buckets claimed it. It is tested
+before them now.
+
+**A stale copy of the record advance broke Gate C**, and the bisect named polygon
+1 - a plain rectangle - which is the shape of a layout fault rather than an
+arithmetic one. The draw loop still stepped over records as though `bbw` were a
+byte and a point were two.
+
+**Nothing was reading `cs_results`.** The 576-case unit test has been running on
+the machine and storing its answers, and no checker ever read them back, so the
+"exhaustive at 648 of 648" in an earlier version of this document rested on a run
+nobody repeated. `check-poly` verifies them now, before it believes a pixel. An
+unchecked test is not a test.
+
+The original text of this section, for the record:
 
 `src/polytest.asm` holds a polygon's bounding box and its vertex offsets in
 **bytes**, and `calc_step` multiplies an 8-bit `dx` by the 16-bit interpolation
@@ -1412,7 +1450,7 @@ unblocked only once the one it names has produced a number.
 | 2 | ~~measure the per-polygon setup cost~~ **DONE** | gameplay spends its time there, and every budget number carried it as a guess | `make check-polycost`: **2,974 T a polygon**, and it found the span cost had been understated threefold |
 | 2a | ~~the rasteriser optimisations~~ **DONE** | one gameplay frame in eight was overrunning its own deadline | fused row loop and unrolled fills: **1,296 T a span, 0.94% overrunning** against a 0.73% floor, Gate C still 49,152/49,152 |
 | 3 | **C4, the polygon reader** - reference half **DONE** | nothing renders a real scene without it | `make check-reader`: 10,700 draws, 64,897 fills, field for field |
-| 3a | **C5a, widen the geometry to 16 bits** | the machine reader is blocked on it: the trace reaches 483 and the rasteriser holds bytes | Gate C with a `wide` bucket in the vector, and `calc_step`'s 648 cases regenerated as words |
+| 3a | ~~C5a, widen the geometry to 16 bits~~ **DONE** | the machine reader was blocked on it: the trace reaches 483 and the rasteriser held bytes | Gate C with a `wide` bucket reaching 303, and `calc_step` **576 of 576** exact as words |
 | 4 | **C6, the segment window** | a 65,230-byte segment cannot be mapped flat | a read of the last byte of the largest cinematic segment |
 | 5 | **D4's read rate**, before any of D is built | a four-second part load is a design decision, not a detail | `make check-load` |
 | 6 | **D2 and D3, the scheduler and opcodes** | the rest of the port hangs off them | Gate D, and D3's opcode trace before D4's picture |
@@ -1454,13 +1492,15 @@ that had been estimated.
    prices the *mixer*, not the *player*: the tick that decides which voices are
    live, splits blocks at page and loop boundaries, and reads the DMA's position is
    unwritten, and wolf3d-next's equivalent cost seven faults to get right.
-2. **The rasteriser's geometry is 8-bit and the game reaches 483.** Found by
-   building the polygon reader, which cannot be written on top of it. Gate C's
-   57-polygon vector tops out at 204, so nothing caught it: `mkpolytest.py` picks
-   for fill mode, clipping and vertex count, never for a bounding box wider than
-   the screen. The fix is mechanical except for `calc_step`, whose 8x16 product
-   becomes 16x16. **Cheapest experiment:** add a `wide` bucket to the vector and
-   watch Gate C fail before fixing anything, so the gate is known to cover it.
+2. ~~**The rasteriser's geometry is 8-bit and the game reaches 483.**~~ **Closed.**
+   Widened to signed words throughout, `calc_step`'s product to 16 x 16, and the
+   vector has a `wide` bucket reaching 303. What the episode leaves behind is the
+   general risk it is an instance of: **a gate covers what its vector happens to
+   contain.** `mkpolytest.py` picks for fill mode, clipping edge, vertex count and
+   size, and for as long as none of those correlated with a box over 255 the 8-bit
+   format was wrong and green. The same question is open for every bucket that
+   does not exist yet - a zoom other than the identity, a hierarchy five deep, a
+   record whose first byte is neither a leaf nor a 2.
 
 3. **Everything is measured on two parts out of ten.** Parts 2 and 3 are all the
    probe reaches. The hierarchy depth of 4, the fan-out of 119, the 83-byte
