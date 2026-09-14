@@ -1118,10 +1118,13 @@ isr:
         ; is a fair one and no gate has ever asked it.
         ld      hl, 0                   ; LINE_A feeds lines 0..155
 .feed:
-        ld      (ring_wr), hl
         ld      a, (snd_off)
         or      a
         jr      nz, .no_mix
+        ; THE CURSOR AFTER THE TEST, not before. snd_off is how check-mus mixes blocks by hand with
+        ; the interrupt's mixer out of the way, and an interrupt that set the cursor anyway put the
+        ; next hand-mixed block back at line 0 or 156 - intermittently, by where interrupts landed.
+        ld      (ring_wr), hl
         ; BORROW MMU7 AROUND BOTH BLOCKS. It is the Layer 2 draw band, and this interrupt can
         ; land in the middle of a draw that owns it - the rasteriser does not stop for the
         ; mixer. Saved by READING the NextReg rather than by tracking it, because the frame
@@ -1140,7 +1143,19 @@ isr:
         pop     hl
         pop     af
         nextreg NR_SAMP_MMU, a
+        ; THE DMA MAY BE THE MAIN CODE'S. Its programme is a run of OUTs that this interrupt can
+        ; land in the middle of, and two programmes interleaved are neither. So when dma_mem has it,
+        ; the upload waits in cop_pending and dma_mem sends it the moment its own transfer is done.
+        ld      a, (dma_busy)
+        or      a
+        jr      z, .upload
+        ld      (cop_pend_line), hl
+        ld      a, 1
+        ld      (cop_pending), a
+        jr      .uploaded
+.upload:
         call    cop_upload              ; those 156 lines, by the DMA
+.uploaded:
         ld      hl, (n_mix)
         inc     hl
         ld      (n_mix), hl
@@ -1244,12 +1259,11 @@ aw_fill_page:
         ld      a, c
         nextreg NR_DWIN_MMU, a
         push    bc
-        ld      hl, DWIN
-        ld      de, DWIN + 1
-        ld      bc, $2000 - 1
-        ld      a, (fill_col)
-        ld      (hl), a
-        ldir
+        ld      hl, fill_col            ; the DMA's source, held fixed: a fill
+        ld      de, DWIN
+        ld      bc, $2000
+        ld      a, 1
+        call    dma_mem
         pop     bc
         inc     c
         djnz    .band
@@ -1310,12 +1324,13 @@ aw_copy_page:
         ld      a, (cp_dst)
         add     a, e
         nextreg NR_DWIN_MMU, a
-        push    bc                      ; the mask: LDIR takes BC
+        push    bc                      ; the mask: dma_mem takes BC
         push    de
         ld      hl, CPWIN
         ld      de, DWIN
         ld      bc, $2000
-        ldir
+        xor     a                       ; a copy
+        call    dma_mem                 ; 8K at the DMA's speed, not LDIR's 21 T a byte
         pop     de
         pop     bc
 .cskip:
@@ -1795,7 +1810,8 @@ present_bitmap:
         ld      hl, SEG_WIN
         ld      de, SEG_WIN + $2000
         ld      bc, $2000
-        ldir
+        xor     a
+        call    dma_mem
         ld      hl, bmp_src
         inc     (hl)
         ld      hl, bmp_dst
@@ -4133,6 +4149,72 @@ cop_dma_addr:
         db      $CF                     ; LOAD
         db      $87                     ; ENABLE
 cop_dma_end:
+
+;-----------------------------------------------------------------------------
+; dma_mem - BC bytes from HL to DE through the zxnDMA, in continuous mode, so the transfer is done
+; before the next instruction runs. A = 0 copies; anything else FILLS, holding the source address
+; fixed on one byte. Both addresses go through the CPU's memory decode, so the windows the LDIRs used
+; work unchanged. Keeps nothing.
+;
+; The copper's feed programmes the DMA from the interrupt, and a programme is a run of OUTs the
+; interrupt can land inside. DI would lose line interrupts - the INT is a pulse a few microseconds
+; long - so the main code holds dma_busy instead, the interrupt leaves its upload pending, and this
+; sends it on the way out. With interrupts disabled around the flush, whatever they were.
+;
+; HOW FAST THE DMA MOVES A BYTE ON REAL HARDWARE IS NOT DOCUMENTED (wiki.specnext.dev/DMA gives no
+; figure), and an emulator may make it nearly free. The gates prove the bytes; the speed is the
+; emulators' until the KS3 says otherwise.
+;-----------------------------------------------------------------------------
+dma_mem:
+        ld      (dm_src), hl
+        ld      (dm_dst), de
+        ld      (dm_len), bc
+        or      a
+        ld      a, $54                  ; WR1: port A memory, incrementing
+        jr      z, .kind
+        ld      a, $64                  ; WR1: port A memory, fixed - a fill
+.kind:
+        ld      (dm_wr1), a
+        ld      a, 1
+        ld      (dma_busy), a
+        ld      hl, dm_prog
+        ld      bc, ((dm_end - dm_prog) << 8) | DMA_PORT
+        otir
+        xor     a
+        ld      (dma_busy), a
+        ld      a, (cop_pending)
+        or      a
+        ret     z
+        ; an upload waited for us: send it, with the interrupt held off, and put its state back
+        ld      a, i                    ; P/V = IFF2
+        push    af
+        di
+        xor     a
+        ld      (cop_pending), a
+        ld      hl, (cop_pend_line)
+        call    cop_upload
+        pop     af
+        ret     po
+        ei
+        ret
+
+dm_prog:
+        db      $83                     ; DISABLE
+        db      $7D                     ; WR0: A -> B, address and length follow
+dm_src: dw      0
+dm_len: dw      0
+dm_wr1: db      $54, $02                ; WR1 (patched), cycle length 2
+        db      $50, $22, 0             ; WR2: port B memory, incrementing, cycle length 2, prescalar 0
+        db      $AD                     ; WR4: continuous, port B address follows
+dm_dst: dw      0
+        db      $82                     ; WR5: stop at end of block
+        db      $CF                     ; LOAD
+        db      $87                     ; ENABLE
+dm_end:
+
+dma_busy:       db 0
+cop_pending:    db 0
+cop_pend_line:  dw 0
         ASSERT $ <= VOLTAB
         DISPLAY "> copper code at ", /H, COP_CODE, " ending ", /H, $
 
