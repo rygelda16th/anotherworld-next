@@ -109,6 +109,19 @@ def main():
     if next_page - RES_FIRST_PAGE > RES_MAX_PAGES:
         bad.append(f"the cursor is past its reservation at page {next_page}")
 
+    # QUIESCE THE MIXER BEFORE READING THROUGH MMU7. The loop below maps a resource page
+    # into MMU7 and reads 8,192 bytes as four ZRCP calls, while the machine is still running
+    # its interrupt - and MMU7 is shared: it is the Layer 2 draw band, the loader's staging
+    # window, and from I5 the mixer's sample window as well. The mixer borrows and restores it
+    # fifty times a second, which is correct on the machine and fatal to a reader that holds
+    # the slot across four round trips: three resources came back differing from the card at
+    # byte 2,048 exactly, which is where the second chunk starts.
+    #
+    # snd_off exists for precisely this kind of question and is what the game's own probe path
+    # uses. The VM has already finished by here, so nothing is drawing either.
+    z.cmd(f"write-memory {sym['snd_off']} 1")
+    time.sleep(0.1)
+
     # Claim 1: every resident resource, byte for byte against the card.
     checked = 0
     for rid, page in loaded:

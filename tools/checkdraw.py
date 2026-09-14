@@ -196,6 +196,14 @@ def main():
     else:
         print(f"    FIRST DIFFERING OPERANDS at draw {first}")
 
+    # QUIESCE THE MIXER FIRST. machine_page maps a band into MMU7 and reads it as four ZRCP
+    # calls, and MMU7 is shared three ways: the Layer 2 draw band, the loader's staging window
+    # and - from I5 - the mixer's sample window, which the interrupt borrows and restores fifty
+    # times a second. That is right on the machine and fatal to a reader holding the slot
+    # across round trips; it showed as bands 0, 1, 4 and 5 differing from the engine while
+    # 2 and 3 were perfect. The run has finished by here, so nothing is drawing.
+    z.cmd(f"write-memory {sym['snd_off']} 1")
+    time.sleep(0.1)
     pages = [machine_page(z, p) for p in range(4)]
     z.close()
 

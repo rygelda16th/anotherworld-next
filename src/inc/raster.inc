@@ -22,7 +22,13 @@
 ; integration turned up, after the sound ring.
 ;
 ; It must also define SCR_W and SCR_H (256 and 192), NR_MMU0 and NR_MMU1, a small
-; rd_log for the reader's leaf log, and DST_P0 / SRC_P0 - the first 8K page of the
+; rd_log for the reader's leaf log - whose LENGTH the includer sets in RD_LOG_RECS, because
+; this wrapped at a hard-coded thirty-two records while aw.asm reserved eight. The reader
+; therefore ran the log 192 bytes past its reservation in the game, and because the wrap
+; compares only the high byte it landed five bytes into the C's image at $9C00. polytest, where
+; this code was written, reserves the thirty-two the wrap assumed, so nothing there ever showed
+; it - and nothing in the game reads the log, so nothing there showed it either.
+; - and DST_P0 / SRC_P0 - the first 8K page of the
 ; destination and source Layer 2 pages. In the game those two are not constants for
 ; long: the engine selects among four pages, so I2's page model replaces them.
 ;
@@ -612,9 +618,15 @@ poly_read:
         ld      (hl), d
         inc     hl
         inc     hl                      ; eight bytes an entry
-        ld      de, rd_log + 8 * 32
+        ; A SIXTEEN-BIT COMPARE, not the high bytes. `ld a,h / cp d` only works when the log's
+        ; start and its end sit in different 256-byte pages, which is true of polytest's
+        ; thirty-two records and false of the game's eight - there the first entry already
+        ; tests equal and every leaf overwrote record zero.
+        ld      de, rd_log + 8 * RD_LOG_RECS
+        ld      a, l
+        sub     e
         ld      a, h
-        cp      d
+        sbc     a, d
         jr      c, .log_ok
         ld      hl, rd_log              ; wrap rather than run off the end
 .log_ok:

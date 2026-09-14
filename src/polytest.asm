@@ -286,8 +286,9 @@ cs_results:     ds CS_COUNT * 6         ; step (4 bytes) then dy (2) per case
         ; nine bytes, which is exactly what the two opcode forms compute.
         EXPORT rd_list
 rd_list:        ds 9 * 256
+RD_LOG_RECS     EQU 32
         EXPORT rd_log
-rd_log:         ds 8 * 32       ; off, colour, ptx, pty per leaf, as read
+rd_log:         ds 8 * RD_LOG_RECS       ; off, colour, ptx, pty per leaf, as read
         ALIGN 2
         INCLUDE "build/csteps.inc"
         INCLUDE "build/interp.inc"

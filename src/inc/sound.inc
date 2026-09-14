@@ -216,8 +216,11 @@ voice_advance:
 .full_page:
         ld      (ix + V_LEFT), l
         ld      (ix + V_LEFT + 1), h
-        ld      (ix + V_END), (SAMP_WIN + $2000) & $FF
-        ld      (ix + V_END + 1), (SAMP_WIN + $2000) >> 8
+        ; $0000, DELIBERATELY: the window's end is $10000 and no word holds it. voice_run
+        ; knows this encoding - see the borrow it allows. Written as zero rather than let the
+        ; assembler truncate $100, so a real truncation warning is never buried under this one.
+        ld      (ix + V_END), 0
+        ld      (ix + V_END + 1), 0
         ret
 .no_more:
         ; the sample is finished: loop if it has a loop point, otherwise go quiet
@@ -242,10 +245,24 @@ voice_run:
         ex      de, hl
         or      a
         sbc     hl, de                  ; HL = V_END - V_POS, the bytes left
-        ret     c                       ; already past the end: nothing, and NC->C says so
+        jr      nc, .in_window
+        ; A BORROW, WHICH IS NOT ALWAYS AN ERROR. V_END of $0000 means the end of the
+        ; WINDOW - $10000, which no word holds - and that is what every FULL page gets, from
+        ; voice_advance and from voice_setup alike. There the subtract above is already right:
+        ; 0 - V_POS is 0x10000 - V_POS exactly. `ret c` therefore reported "past the end, mix
+        ; nothing" for every voice sitting on a full page, so a sample spanning more than one
+        ; page mixed only its last partial page. check-snd never saw it - its sample is 1,024
+        ; bytes and never gets a full-page window - and check-mus checks the voice records that
+        ; go in, not the bytes that come out.
+        ld      a, (ix + V_END)
+        or      (ix + V_END + 1)
+        ret     nz                      ; a real end, genuinely behind us: nothing to mix
+        jr      .have_left
+.in_window:
         ld      a, h
         or      l
         ret     z                       ; exactly at the end
+.have_left:
 
         ld      a, (ix + V_INCI + 1)
         or      a

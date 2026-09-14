@@ -10,7 +10,13 @@ more than one of them together, and the gate is that none of them notices the ot
     disturbs the VM - a clobbered shadow register, a window paged out from under it -
     the stream diverges and says where.
  2. THE FRAME INTERRUPT IS LIVE, and the VM ran at its pace: one tick a frame.
- 3. THE MIXER RAN. The ring is not silence, and the DMA's own position has moved.
+ 3. THE MIXER RAN, and by the end it is mixing REAL MUSIC. The boot check is a counter,
+    not the ring: the game starts silent now - init_voices leaves all four voices inactive,
+    since activating four ramp voices was I1 scaffolding - and the ring is filled with 128
+    at boot, so silence there proves nothing either way. n_mix says the interrupt mixed.
+    After the run the ring must NOT be silence, and that is a stronger claim than the old
+    one: nothing synthetic is playing, so the only thing that can have filled it is the
+    intro's own module through op_playMusic.
  4. IT SURVIVES BEING LEFT ALONE. vm.c's main never returns, so after the last frame
     the interrupt keeps ticking and mixing forever; a soak proves the arrangement is
     stable rather than merely surviving 0.9 seconds.
@@ -82,6 +88,7 @@ def main():
     time.sleep(0.5)
     t1 = int.from_bytes(read(z, sym["ticks"], 2), "little")
     ring_boot = read(z, RING, 64)
+    mix_boot = int.from_bytes(read(z, sym["n_mix"], 2), "little")
 
     hdr = (seed.to_bytes(2, "little") + frames.to_bytes(2, "little")
            + BUDGET.to_bytes(2, "little"))
@@ -112,6 +119,7 @@ def main():
     got_rec, want_rec = b[24:28], b[28:32]
     ticks_end = int.from_bytes(read(z, sym["ticks"], 2), "little")
     ring_run = read(z, RING, 64)
+    mix_run = int.from_bytes(read(z, sym["n_mix"], 2), "little")
     counts = {n: int.from_bytes(read(z, sym[n], 2), "little")
               for n in ("n_poly", "n_select", "n_fill", "n_copy", "n_blit", "n_pal")}
     n_cmp = min(32, len(want))   # the game's buffer; check-boot gates 763 in the harness
@@ -162,11 +170,16 @@ def main():
     if (t1 - t0) < 5:
         bad.append(f"the frame interrupt ticked only {t1 - t0} times in half a "
                    f"second - it is not running")
-    if ring_boot.count(128) == len(ring_boot):
-        bad.append("the ring was still silence after half a second - the mixer "
-                   "never ran")
+    if mix_boot < 5:
+        bad.append(f"the mixer ran {mix_boot} times in half a second - it is not running")
+    if ring_boot.count(128) != len(ring_boot):
+        bad.append("the ring is NOT silence before the VM has been let go - something is "
+                   "playing that should not be")
     if ring_run.count(128) == len(ring_run):
-        bad.append("the ring is silence after the run - the mixer stopped")
+        bad.append("the ring is silence after the run - the intro's music never reached "
+                   "the mixer")
+    if mix_run <= mix_boot:
+        bad.append("the mixer stopped during the run")
     if ticks_end < frames_done:
         bad.append(f"only {ticks_end} ticks for {frames_done} frames - the VM was "
                    f"not paced by the interrupt")

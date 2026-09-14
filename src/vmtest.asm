@@ -71,7 +71,8 @@ jump_table:
         jp      aw_inval_res            ; $801B
         jp      aw_draw_string          ; $801E  I4: counted here
         jp      aw_play_music           ; $8021  I5: counted here
-        ASSERT $ - jump_table == 36
+        jp      aw_play_sound           ; $8024  I5: counted here
+        ASSERT $ - jump_table == 39
 
 VM_STACK        EQU $BF00               ; what SAVENEX declares; see the Makefile
 
@@ -235,6 +236,11 @@ aw_draw_string:
         ret
 aw_play_music:
         ret
+aw_play_sound:
+        ld      hl, (n_snd)
+        inc     hl
+        ld      (n_snd), hl
+        ret
 
 aw_set_palette:
         ld      a, l
@@ -333,6 +339,8 @@ n_pal:          dw 0
 n_load:         dw 0
         EXPORT n_inval
 n_inval:        dw 0
+        EXPORT n_snd
+n_snd:          dw 0            ; op_playSound calls the harness saw
 last_select:    db 0
 last_fill:      dw 0
 last_copy:      dw 0

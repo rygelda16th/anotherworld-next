@@ -169,6 +169,7 @@ AW_LOG_RECS  ?= 32       # the game's trace buffer: small on purpose, see RES_TA
 AW_IN        ?= 0xC380
 AW_DRAW      ?= 0xC390
 AW_MUS       ?= 0xC3B0
+AW_SND       ?= 0xC3B4
 
 # The game's C sits HIGHER than the harness's, because the rasteriser and the reader
 # are resident alongside it: see the CC_ORG comment in src/aw.asm.
@@ -186,7 +187,7 @@ cc-game: | $(BUILD)
 	@$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(AW_VM_ORG) \
 	    -pragma-define:REGISTER_SP=$(AW_STACK) \
 	    -DAW_CTL=$(AW_CTL) -DAW_EXP=$(AW_EXP) -DAW_LOG_RECS=$(AW_LOG_RECS) \
-	    -DAW_IN=$(AW_IN) -DAW_DRAW=$(AW_DRAW) -DAW_MUS=$(AW_MUS) \
+	    -DAW_IN=$(AW_IN) -DAW_DRAW=$(AW_DRAW) -DAW_MUS=$(AW_MUS) -DAW_SND=$(AW_SND) \
 	    -o $(BUILD)/aw_vm src/aw/vm.c src/aw/jumptab.asm
 	@python3 tools/mkexp.py $(BUILD)/aw_vm.map $(BUILD)/aw_vm_c.exp
 
@@ -206,6 +207,7 @@ cc: | $(BUILD)
 	done
 
 asm: | $(BUILD)
+	python3 tools/mksndfreq.py $(PROBE) $(BUILD)/sndfreq.inc
 	$(RUN) sh -c 'set -e; for f in src/*.asm; do \
 		b=$$(basename "$$f" .asm); echo "  ASM $$f"; \
 		sjasmplus --zxnext=cspect --fullpath --exp="$(BUILD)/$$b.exp" \
@@ -291,6 +293,12 @@ check-res: cc-game
 	$(MAKE) asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkres.py'
+
+# A scratch target for one-off diagnostics: tools/_mixdiag.py and friends. Not a gate, and
+# nothing depends on it - it exists so a focused question does not need a whole gate's run.
+diag:
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/$(D).py'
 
 # Which record first draws wrongly. The companion to check-draw: it says the pages
 # differ, this says which draw did it, by halving.

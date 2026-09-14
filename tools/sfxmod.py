@@ -191,3 +191,67 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def sound(data, freq_idx, vol, incs):
+    """snd_playSound, vm.cpp:692 - what one op_playSound should leave in a voice.
+
+    The shape comes from the sample's own first four bytes, exactly as the module path reads
+    them: sampleLen at 0 and loopLen at 2, both big-endian words doubled, data from byte 8
+    (vm.cpp:708-713). `loop` is an OFFSET from the page the sample starts in, which is what
+    V_LOOP holds minus SAMP_WIN, and it is zero when the loop point is past the window - the
+    same convention voices() uses.
+
+    Two things differ from a module note and nothing else does. The pitch is a table lookup
+    rather than a divide - frequenceTable[freq] through the mixer's (freq << 8) / rate, which
+    `incs` has already reduced - and prepareInstruments' four zero bytes at data+8 are NOT
+    applied, because that belongs to loading a module (sfxplayer.cpp:89) and not to playing a
+    plain sound.
+
+    Volume zero is not a quiet note: it stops the channel and does nothing else
+    (vm.cpp:702-704).
+    """
+    if vol == 0:
+        return dict(active=0, inc=0, total=0, loop=0, vol=0)
+    slen = be16(data, 0) * 2
+    llen = be16(data, 2) * 2
+    return dict(active=1,
+                inc=incs[freq_idx],
+                total=8 + slen + llen,
+                loop=(8 + slen) if llen and (8 + slen) < 0x2000 else 0,
+                vol=min(vol, 0x3F))
+
+
+def mix_ring(data, inc, volume, nblocks, blocklen, ring_len=2048, start=8):
+    """The ring the mixer must hold after `nblocks` blocks of one voice, from a REAL sample.
+
+    This is the piece check-snd cannot reach. Its model computes every sample as `pos & 0xFF` -
+    a synthetic ramp, one resident page, no stepping and no loop - so the mixer has only ever
+    been proven on a sample it never has to walk out of. A real one does: the game's largest is
+    22,690 bytes, which is three 8K pages, and `voice_run` cuts each block at the window's edge
+    while `voice_advance` steps `V_PAGE` and rewinds `V_POS`.
+
+    So the model here is deliberately NOT a transcription of that splitting - it is the meaning
+    the splitting has to add up to. One flat offset into the sample, stepped in 8.8, each byte
+    through the volume table and biased to the DAC's centre; where the machine crosses a page is
+    the machine's business and the whole point of the comparison.
+
+    `volume` is 48 for the loud table and 24 for the quiet one (VOLUME and VOLUME_QUIET in
+    src/aw.asm), and the scale is scale_byte's, which check-mix gates: mixer.cpp:141's
+    clamp((int8)b * VOLUME / 64), truncating towards zero.
+    """
+    def scale(b):
+        v = b - 256 if b >= 128 else b
+        m = min(abs(v) * volume >> 6, 127)
+        return (-m if v < 0 else m) & 0xFF
+
+    ring = bytearray(b"\x80" * ring_len)
+    pos, w = start << 8, 0
+    for _ in range(nblocks * blocklen):
+        off = pos >> 8
+        if off >= len(data):
+            break                       # the voice would have stopped; no case here reaches it
+        ring[w] = scale(data[off]) ^ 0x80
+        w = (w + 1) % ring_len
+        pos += inc
+    return bytes(ring)

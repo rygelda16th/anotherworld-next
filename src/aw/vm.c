@@ -39,6 +39,7 @@ extern void aw_load_res(uint16_t id) __z88dk_fastcall;
 extern void aw_inval_res(void);
 /* I5. The harness counts; the game parses the module's header. */
 extern void aw_play_music(void);
+extern void aw_play_sound(void);
 /* The two shared regions are named by PLAIN ADDRESS CONSTANTS, not by extern
  * symbols declared with defc. That is the third arrangement tried and the first
  * that is unambiguous.
@@ -111,6 +112,10 @@ extern void aw_play_music(void);
 /* Where op_playMusic leaves its three operands. = MUS_BLOCK in src/aw.asm. */
 #ifndef AW_MUS
 #define AW_MUS          0
+#endif
+/* Where op_playSound leaves its four operands. = SND_BLOCK in src/aw.asm. */
+#ifndef AW_SND
+#define AW_SND          0
 #endif
 
 #define CTL_SEED        (*(volatile uint16_t *)(AW_CTL + 0x00))
@@ -472,12 +477,25 @@ static void op_or(void)   { uint8_t v = fetch_byte(); aw_vars[v] = (int16_t)((ui
 static void op_shl(void)  { uint8_t v = fetch_byte(); aw_vars[v] = (int16_t)((uint16_t)aw_vars[v] << fetch_word()); }
 static void op_shr(void)  { uint8_t v = fetch_byte(); aw_vars[v] = (int16_t)((uint16_t)aw_vars[v] >> fetch_word()); }
 
+/* op_playSound, vm.cpp:357, into snd_playSound, vm.cpp:692. Same division of labour as
+ * op_playMusic: the VM fetches, the assembly decides. Everything snd_playSound does past the
+ * fetch needs the sample's pages and the voice array, so none of it belongs up here - and
+ * the clamp on the volume stays with the code that uses it. */
 static void op_playSound(void)
 {
-    fetch_word();                   /* resource */
-    fetch_byte();                   /* frequency index */
-    fetch_byte();                   /* volume */
-    fetch_byte();                   /* channel */
+    uint16_t res = fetch_word();
+    uint8_t freq = fetch_byte();
+    uint8_t vol = fetch_byte();
+    uint8_t chan = fetch_byte();
+#if AW_SND
+    *(volatile uint8_t *)(AW_SND + 0) = (uint8_t)res;
+    *(volatile uint8_t *)(AW_SND + 1) = freq;
+    *(volatile uint8_t *)(AW_SND + 2) = vol;
+    *(volatile uint8_t *)(AW_SND + 3) = chan;
+    aw_play_sound();
+#else
+    (void)res; (void)freq; (void)vol; (void)chan;
+#endif
 }
 
 /* loadPartsOrMemoryEntry, resource.cpp:258, through op_updateMemList, vm.cpp:366.

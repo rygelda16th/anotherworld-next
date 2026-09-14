@@ -2036,7 +2036,7 @@ had failed to find in dozens.
 | ~~**I2**~~ | ~~the VM draws~~ **DONE**, `make check-draw` - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
 | ~~**I3**~~ | ~~resources arrive at runtime~~ **PARTLY DONE**, `make check-res` - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
 | ~~**I4**~~ | ~~text~~ **DONE**, `make check-text` - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
-| **I5** | **sound in the game** - `op_playSound` and `op_playMusic` reach the gated player, **and the music module is parsed** | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | SFX and music events fire at the same frames as the engine's `sound.txt`, the mixer output stays byte-exact **on real sound resources**, and the module's order table and patterns match `sfxplayer.cpp`'s reading of them |
+| **I5** | **sound in the game** - **five of six parts gated**, `make check-mus` - `op_playSound` and `op_playMusic` reach the player, the module is parsed, and the mixer maps each voice's own page | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | **PASSED**: three modules parsed and walked against a model of `sfxplayer.cpp`, the four voice records after 1, 70 and 100 events, and six `op_playSound` cases checked against the sample shapes the host probe logged the reference producing - a stop, a loop, three pages, both ends of the pitch table and the clamp. **STILL OWED, and now gated and failing**: the mixer's OUTPUT on a real multi-page sample. `mix_block` never calls `voice_run`/`voice_advance` - it has a crude rewind whose comment says as much - so a full window sends `V_POS` to `V_LOOP`, zero, and the voice reads address `$0000` |
 | **I6** | **part transitions** - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
 | **I7** | **the full-screen bitmap path** | 70 of them load in the arena and no gate covers the machine half | the arena's bitmaps, on the machine, against the engine's pages |
 | **I8** | **the code screen, and its bypass** - which is a **starting part number**, not a subsystem | the wheel screen is `GAME_PART1` and is drawn by ordinary bytecode (`engine.cpp:71-73`); the bypass keeps every gate comparable to the reference build | the screen renders and accepts a correct code; with the flag set, part 2 starts directly, exactly as `BYPASS_PROTECTION` does |
@@ -2735,15 +2735,144 @@ six more that are bitmaps underneath and invents divergences out of their pixels
 `mus_voice` does it when the note is set up rather than when the module loads - the same thing to
 the mixer, since nothing reads a sample the player has not set up - and it is idempotent.
 
-**What I5 still needs:** the player on the machine, driven at `delay * 60 / 7050` ms;
-`op_playSound` and `op_playMusic` reaching it; and a gate. The gate wants the probe's own
-`note` records, and the input-free 45-frame trace has **none** - the timer never fires in a
-run that short - so it needs an autoplay run, the same problem I4 had with text.
+**I5 is done bar one gate, and `make check-mus` covers the other five parts of it.**
 
-**And the standing warning about `check-snd` applies here.** It proves four voices byte-exact
-against **a synthetic ramp**, and `sndtest.asm` has no end-of-sample or loop handling at all -
-the cut the design describes is described in a comment and never performed. Real samples have
-loop points; I1 found that the hard way when a voice walked off its ramp into the ring.
+**The sixth part is now gated and it FAILS, and what it found is the real remaining work.**
+`mix_block` in the game **does not call `voice_run` or `voice_advance` at all.** It has a crude
+guard - rewind if the next block would not fit - whose own comment says so plainly: *"this is
+the crude version ... proper end-of-sample and loop-point handling is I5's, with real resources
+behind it, and it is more unwritten code than the plan credited."*
+
+With a **full** window `V_END` is `$0000`, so that guard's `V_POS + blocklen` never borrows
+against it, reads "would overrun", and sets `V_POS` to `V_LOOP` - which is **zero for an
+unlooped sample**. The voice then reads from address `$0000`, the bytecode window. Measured, not
+inferred: after 40 blocks of RES54 the voice sits at `V_POS = $0096` with `V_LEFT` still 14,506
+and `V_PAGE` unmoved, so `voice_advance` never fired and the page never stepped.
+
+**There is a second thing in the same place.** `mix_voice_first` and `mix_voice_add` advance
+their destination with `inc l` alone, so a block cannot cross a 256-byte boundary inside the
+ring either - and with `BLK_A` 221 and `BLK_B` 220 into a 2,048-byte ring, blocks do.
+
+So the piece left is a rewrite of the mixer's per-voice loop: split each block at the window's
+edge, the sample's end and the loop point, driving `mix_voice_*` in pieces with a destination
+that carries. `voice_run` and `voice_advance` are written and now correct - the fix below was
+needed - but nothing in the game calls them.
+
+**Also worth keeping: the gate's first two attempts failed for reasons that were mine, not the
+machine's.** The ring cursor is not at `RING_ADDR` when a probe starts, because the interrupt
+has been mixing since boot - silently, every voice inactive, but `mix_block` advances the cursor
+whether or not a voice contributes - so the probe now calls `silence_ring` first. That correction
+was right and changed nothing, which is what said the fault was real.
+
+**For the record, the thing I5's own definition names: "the mixer output stays byte-exact on
+real sound resources".** Every check here proves the voice records that go *in* -
+page, position, increment, end, loop point, volume table - and none of them proves the bytes
+that come *out*. `check-snd` does prove output byte-exact, but against a **synthetic ramp** in
+a single page: its model computes each sample as `pos & 0xFF` and has no page stepping and no
+loop. So the mixer has never been checked against a sample it has to walk across pages.
+
+That matters more than it did an hour ago, because fixing `voice_run` (below) **changed what the
+mixer does** on exactly those samples, and nothing currently re-proves it.
+
+| what | how it is checked |
+|---|---|
+| the header | three modules, delay with and without `op_playMusic`'s override, `numOrder`, all 128 order entries, all 15 instruments |
+| the event walk | three cases, one of them crossing a 1024-byte block into the next order |
+| the four voice records | after 1, 70 and 100 events |
+| `op_playSound` | six cases: a stop, a loop, a 22,690-byte sample over three pages, both ends of the pitch table, and the volume clamp |
+| the tuning | eleven periods, worst error 0.96 of a 1/256th step |
+
+**`op_playSound`'s gate is checked against the reference's own numbers, not only against a
+model of them.** The host probe logged 970 `snd_playSound` calls while the reference played the
+game, with each call's resource, pitch index, volume, channel and the sample length and loop
+length it produced. The cases come from that log and carry its lengths, so a wrong model and a
+wrong machine would have to agree with the engine to pass. Every case also checks that **the
+other three channels did not move** - an IX computed from the wrong operand is how the module
+path first went wrong, and it showed as all four channels changing at once.
+
+The one case not from the log says so: no call in 970 has a volume above `0x3F`, so the clamp
+at `vm.cpp:715` has to be provoked deliberately.
+
+**What `op_playSound` needed beyond the arithmetic:**
+
+- **No divide.** `snd_playSound` hands the mixer `frequenceTable[freq]` (`vm.cpp:716`) and the
+  mixer makes a step of it with `(freq << 8) / rate` (`mixer.cpp:62`) - which is exactly our
+  voices' 8.8. So `tools/mksndfreq.py` reduces the reference's own forty frequencies
+  (`staticres.cpp:61-67`) to forty increments at build time and the opcode is a lookup. The
+  gate recomputes them from the reference and asserts the generated table matches, so a wrong
+  digit in a table of forty cannot hide.
+- **The channel masked on both paths.** The reference masks for the play (`vm.cpp:715-716`)
+  and not for the stop, where `stopChannel` merely asserts `channel < 4`. Masking is the safe
+  reading, and the log says it costs nothing: all 970 channels are already 0..3.
+- **A missing resource returns before the volume test**, as `vm.cpp:698` does - so an absent
+  sample does not stop the channel either.
+
+**THE MIXER NOW MAPS EACH VOICE'S OWN PAGE, which it did not before.** `SND_MAP_PAGES` was
+empty in the game: every voice read whatever MMU7 happened to hold. That was survivable while
+I1's voices were a resident ramp and is not survivable with real samples. It now maps
+`V_PAGE`, and the **interrupt** puts MMU7 back once around both blocks rather than four times -
+reading the NextReg to find what was there rather than tracking it, because the frame boundary
+borrows the same slot for a sample header and the two have to nest.
+
+**MMU7 IS NOW SHARED FOUR WAYS, and that broke three gates the moment the mixer joined it.**
+The slot holds the Layer 2 draw band, the loader's staging window, the frame boundary's sample
+header, and now the mixer's sample page fifty times a second. On the machine this is correct -
+every borrower reads the NextReg back and puts exactly what it found, so the borrows nest. What
+it is *not* safe against is a **checker that maps MMU7 and then reads 8K as four separate ZRCP
+calls while the machine runs**. Three gates did exactly that:
+
+| gate | how it showed |
+|---|---|
+| `check-res` | three resources differing from the card **at byte 2,048 exactly** - where the second chunk starts |
+| `check-draw` | bands 0, 1, 4 and 5 wrong against the engine while 2 and 3 were perfect |
+| `check-aw` | not this at all - see below |
+
+Both now set `snd_off` before reading, which is what that flag was added for. The interesting
+part is that **`check-res` had a fourth failure that survived turning the mixer's mapping off** -
+RES03 differing at byte 18,432, again 2,048 into a page - and quiescing fixed that too. So the
+race was the whole cause and the bisect's "still failing" was the same fault at a different
+phase, not a second one. Had I stopped at the bisect I would have gone looking for a loader bug
+that does not exist.
+
+`check-aw` was a different thing and not today's doing. Its third claim was "the ring is not
+silence, so the mixer ran", sampled **before the VM is let go** - and the game starts silent
+now, since `init_voices` activating four ramp voices was I1 scaffolding. The ring is filled with
+128 at boot, so silence there proves nothing in either direction. It now counts mixer passes
+(`n_mix`) for that, and asks for a **non-silent ring after the run** - which is a stronger claim
+than the old one, because nothing synthetic is playing any more: the only thing that can fill
+the ring is the intro's own module.
+
+**Two bugs found on the way that had nothing to do with sound.**
+
+`raster.inc` wrapped the reader's leaf log at a hard-coded `rd_log + 8 * 32` while `aw.asm`
+reserved eight records. In the game the reader therefore ran 192 bytes past its reservation,
+and because the wrap compared only the high byte it landed five bytes into the C's image at
+`$9C00`. polytest - where the code was written - reserves the thirty-two the wrap assumed, so
+nothing there ever showed it; nothing in the game reads the log, so nothing there showed it
+either. The length is now the includer's to declare (`RD_LOG_RECS`) and the compare is a real
+sixteen-bit one. **A parameterised include with one hard-coded constant left in it is the same
+class of fault as `STR_BLOCK` inside `DRAW_LOG` and the control block's 32-versus-256: the
+third of its kind.**
+
+And the slot count. Adding `aw_play_sound` meant a thirteenth jump-table entry in **three**
+files - `aw.asm`, `vmtest.asm` and `jumptab.asm` - and the `ASSERT $ - jump_table == 39` in
+the first two is the only thing that catches a slot added to one and not another. That assert
+exists because exactly that happened to `aw_play_music`.
+
+**Space.** All of this went into a program with nothing spare. `aw_play_sound` and `mus_voice`
+had thirty-six identical bytes of resource lookup and voice multiply each, now `voice_locate`
+once; everything from the sample header to activation was common to both, now `voice_setup`.
+The pitch table and the leaf log went to the gap between the IM 2 vector table and its
+trampoline, which is dead space that is nonetheless mapped at every moment. The upper block
+ends at `$BEE3` against a `$BF00` ceiling and the resident block at `$9BD6` against `$9C00`.
+
+**The standing warning about `check-snd` still applies, and less than it did.** That gate
+proves four voices byte-exact against a **synthetic ramp**, and `sndtest.asm` still has no
+end-of-sample or loop handling. What has changed is that the game's own path - `voice_run`'s
+block splitting, `voice_advance`'s page stepping and loop point - is now gated on real samples
+through check-mus, including one that spans three pages. What is still not gated anywhere is
+the **mixed output** of a real sample: every gate here checks the voice records that go in,
+not the bytes that come out.
 
 #### I6. Part transitions
 

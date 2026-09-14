@@ -128,6 +128,7 @@ STR_INDEX_AT    EQU $E300
 ; with nothing to say so.
 STR_BLOCK       EQU $C3A0               ; colour, x, y, id - what the C leaves for us
 MUS_BLOCK       EQU $C3B0               ; resNum, delay, pos - what op_playMusic leaves
+SND_BLOCK       EQU $C3B4               ; resource, frequency index, volume, channel; = AW_SND
 ; The module's window. Its patterns run to 15,552 bytes so they cannot be resident; the
 ; header and order table are copied out once at load, and a pattern block is read through
 ; a window when an event is due. MMU2 is free at the FRAME BOUNDARY, which is where events
@@ -252,6 +253,17 @@ BLK_B           EQU 220
 ; $C000-$DFFF is never remapped and the C knows nothing about it, so the table lives
 ; there, in the gap between the expected stream and the ring. Every entry is VEC_FILL,
 ; so the vector is $D2D2 and the trampoline goes there.
+; op_playSound's forty pitches, as 8.8 increments - eighty bytes, and they go in the gap the
+; IM 2 VECTOR TABLE leaves. The table is 257 bytes of the one fill byte from $CD00, so it ends
+; at $CE01, and its trampoline sits at $CECE because that is where a vector of $CE points. The
+; 205 bytes between the two are otherwise dead, and this is the only region mapped at every
+; moment - which a table read mid-opcode, outside the frame boundary, needs it to be.
+SND_FREQ        EQU $CE04
+; and the reader's leaf log goes in the same gap. It is 64 bytes of DATA in the block that had
+; one byte left in it, and MMU6 is mapped at every moment too - which is what the log needs,
+; since the reader writes it mid-draw.
+RD_LOG_RECS     EQU 8
+RD_LOG_AT       EQU $CE54
 VEC_TABLE       EQU $CD00
 VEC_FILL        EQU $CE
 VEC_TRAMP       EQU (VEC_FILL << 8) | VEC_FILL
@@ -270,6 +282,7 @@ jump_table:
         jp      aw_inval_res            ; $801B  void aw_inval_res(void)
         jp      aw_draw_string          ; $801E  I4
         jp      aw_play_music           ; $8021  I5
+        jp      aw_play_sound           ; $8024  I5
         ; THIRTY-SIX. src/aw/jumptab.asm declares the same addresses to the C and this ASSERT
         ; is the only thing that catches a slot added to one file and not the other - which is
         ; exactly what happened: the edits that were supposed to add these two slots used a
@@ -279,7 +292,7 @@ jump_table:
         ;
         ; I4 did not notice because its gate calls aw_draw_string directly in assembly and
         ; never through the table. A slot nothing calls is a slot nothing tests.
-        ASSERT $ - jump_table == 36
+        ASSERT $ - jump_table == 39      ; thirteen slots; aw_play_sound made it thirteen
 
 start:
         di
@@ -357,7 +370,7 @@ start:
         ei
         ld      a, (err)
         or      a
-        jr      nz, .stop
+        jp      nz, .stop               ; jp, not jr: probe_snd pushed .stop out of reach
         ld      hl, (got)
         ld      (CTL + $10), hl         ; the segment length, for the pc guard
 
@@ -376,11 +389,11 @@ start:
         ld      hl, (MUS_BLOCK + 4)
         call    note_to_inc
         ld      (MUS_BLOCK + 6), hl
-        jr      .stop
+        jp      .stop
 .not_note:
         ld      a, (probe_mus)
         or      a
-        jr      z, .not_mus
+        jp      z, .not_mus             ; jp: probe_mix pushed the next test out of reach
         ld      l, a
         ld      h, 0
         call    aw_load_res
@@ -388,6 +401,41 @@ start:
         call    probe_walk              ; lives above the C: the resident block is full
         jr      .stop
 .not_mus:
+        ; probe_snd: SND_BLOCK already holds op_playSound's four operands. Load the resource
+        ; the way the bytecode would have, then hand it over - so the gate tests aw_play_sound
+        ; and voice_setup, not the loader.
+        ld      a, (probe_snd)
+        or      a
+        jr      z, .not_snd
+        ; THE INTERRUPT'S MIXER OFF FIRST, before the voice can go live: with probe_mix set,
+        ; the ring has to be a function of the voice and the block count alone, not of how many
+        ; interrupts landed before the checker looked.
+        ld      a, 1
+        ld      (snd_off), a
+        ld      a, (SND_BLOCK + 0)
+        ld      l, a
+        ld      h, 0
+        call    aw_load_res
+        call    aw_play_sound
+        ld      a, (probe_mix)
+        or      a
+        jp      z, .stop
+        ; AND START FROM A KNOWN RING. ring_wr is not at RING_ADDR by now: the interrupt has
+        ; been mixing since boot - silently, since every voice was inactive, but mix_block
+        ; advances the cursor whether or not a voice contributes. Where the cursor had reached
+        ; depends on how long the load took, which is not something a byte-exact comparison can
+        ; carry. silence_ring puts back both the 128s and the cursor.
+        call    silence_ring
+        ld      a, (probe_mix)
+        ld      b, a
+.mixb:
+        push    bc
+        ld      a, BLK_A                ; one block length throughout, so the model is the
+        call    mix_block               ; mixer's arithmetic and not the pacing's
+        pop     bc
+        djnz    .mixb
+        jp      .stop
+.not_snd:
         ld      a, (probe_str)
         or      a
         jr      z, .not_str
@@ -873,10 +921,26 @@ isr:
         ld      a, (snd_off)
         or      a
         jr      nz, .no_mix
+        ; BORROW MMU7 AROUND BOTH BLOCKS. It is the Layer 2 draw band, and this interrupt can
+        ; land in the middle of a draw that owns it - the rasteriser does not stop for the
+        ; mixer. Saved by READING the NextReg rather than by tracking it, because the frame
+        ; boundary borrows the same slot for a sample header and the two must nest: whoever
+        ; borrows puts back exactly what they found.
+        ld      bc, $243B
+        ld      a, NR_SAMP_MMU
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        push    af
         ld      a, BLK_A
         call    mix_block
         ld      a, BLK_B
         call    mix_block
+        pop     af
+        nextreg NR_SAMP_MMU, a
+        ld      hl, (n_mix)
+        inc     hl
+        ld      (n_mix), hl
 .no_mix:
 
         pop     hl
@@ -1600,20 +1664,6 @@ mus_pattern:
 ; playing 0..sampleLen+loopLen once and looping back to sampleLen, so that is what this sets.
 ;-----------------------------------------------------------------------------
 mus_voice:
-        ; IX = &voices[channel]
-        ld      hl, VOICES
-        ld      a, (mp_chan)
-        or      a
-        jr      z, .got_ix
-        ld      de, V_SIZE
-.mul_ix:
-        add     hl, de
-        dec     a
-        jr      nz, .mul_ix
-.got_ix:
-        push    hl
-        pop     ix
-
         ; A NOTE ONLY PLAYS IF THIS ROW NAMES AN INSTRUMENT. handlePattern's `pat` is a local
         ; struct memset to zero on every call, so pat.sampleBuffer is set only inside the
         ; `if (sample != 0)` block - and the play at the bottom is guarded by
@@ -1648,120 +1698,17 @@ mus_voice:
         ld      a, (hl)
         ld      (mv_vol), a
 
-        ; where did aw_load_res put it?
+        ; where did aw_load_res put it, and which voice is this?
         ld      a, (mv_res)
-        ld      h, 0
-        ld      l, a
-        ld      de, res_page
-        add     hl, de
-        ld      a, (hl)
-        or      a
-        jr      nz, .have_page
+        call    voice_locate
+        jr      nc, .have_page
         ld      hl, (n_mus_nores)
         inc     hl
         ld      (n_mus_nores), hl
         ret
 .have_page:
-        ld      (mv_page), a
 
-        ; BORROW MMU7 to read the sample's header. MMU7 is the Layer 2 draw band, and this runs
-        ; at the frame boundary where no draw is in progress - but the interrupt mixes through
-        ; the same slot, so it is saved and restored rather than assumed.
-        ld      bc, $243B
-        ld      a, NR_SAMP_MMU
-        out     (c), a
-        ld      b, $25
-        in      a, (c)
-        ld      (mv_saved), a
-        ld      a, (mv_page)
-        nextreg NR_SAMP_MMU, a
-        ld      a, (SAMP_WIN + 0)       ; sampleLen, big-endian, doubled
-        ld      h, a
-        ld      a, (SAMP_WIN + 1)
-        ld      l, a
-        add     hl, hl
-        ld      (mv_len), hl
-        ld      a, (SAMP_WIN + 2)       ; loopLen, likewise
-        ld      h, a
-        ld      a, (SAMP_WIN + 3)
-        ld      l, a
-        add     hl, hl
-        ld      (mv_loop), hl
-        ; FOUR ZERO BYTES AT THE START OF THE DATA. prepareInstruments does
-        ; `memset(ins->data + 8, 0, 4)` - sfxplayer.cpp:89 - to every instrument it loads, so
-        ; every module note opens on four samples of silence. The reference does it once when
-        ; the module loads; this does it when the note is set up, which is the same thing to
-        ; the mixer because nothing reads a sample the player has not set up. It is idempotent,
-        ; so repeating it per note costs four writes and changes nothing.
-        xor     a
-        ld      (SAMP_WIN + 8), a
-        ld      (SAMP_WIN + 9), a
-        ld      (SAMP_WIN + 10), a
-        ld      (SAMP_WIN + 11), a
-        ld      a, (mv_saved)
-        nextreg NR_SAMP_MMU, a
-
-        ; total = 8 + sampleLen + loopLen
-        ld      hl, (mv_len)
-        ld      de, (mv_loop)
-        add     hl, de
-        ld      de, 8
-        add     hl, de
-        ld      (mv_total), hl
-
-        ld      a, (mv_page)
-        ld      (ix + V_PAGE), a
-        ld      (ix + V_POS), (SAMP_WIN + 8) & $FF
-        ld      (ix + V_POS + 1), (SAMP_WIN + 8) >> 8
-        ld      (ix + V_FRAC), 0
-
-        ; does it all fit in one window?
-        ld      hl, (mv_total)
-        ld      de, $2000
-        or      a
-        sbc     hl, de
-        jr      nc, .spans
-        add     hl, de
-        ld      de, SAMP_WIN
-        add     hl, de
-        ld      (ix + V_END), l
-        ld      (ix + V_END + 1), h
-        ld      (ix + V_LEFT), 0
-        ld      (ix + V_LEFT + 1), 0
-        jr      .loop_point
-.spans:
-        ld      (ix + V_LEFT), l        ; what is left after this window
-        ld      (ix + V_LEFT + 1), h
-        ld      (ix + V_END), (SAMP_WIN + $2000) & $FF
-        ld      (ix + V_END + 1), (SAMP_WIN + $2000) >> 8
-.loop_point:
-        ; the loop begins at 8 + sampleLen, and only if it is reachable in this window - a loop
-        ; point on a later page is not modelled and the voice simply stops instead. Recorded
-        ; rather than faked: n_mus_farloop counts it.
-        ld      hl, (mv_loop)
-        ld      a, h
-        or      l
-        jr      z, .no_loop
-        ld      hl, (mv_len)
-        ld      de, 8
-        add     hl, de
-        ld      de, $2000
-        or      a
-        sbc     hl, de
-        jr      nc, .far_loop
-        add     hl, de
-        ld      de, SAMP_WIN
-        add     hl, de
-        ld      (ix + V_LOOP), l
-        ld      (ix + V_LOOP + 1), h
-        jr      .volume
-.far_loop:
-        ld      hl, (n_mus_farloop)
-        inc     hl
-        ld      (n_mus_farloop), hl
-.no_loop:
-        ld      (ix + V_LOOP), 0
-        ld      (ix + V_LOOP + 1), 0
+        ; THE MODULE'S OWN VOLUME WORK, before the setup that op_playSound shares.
 .volume:
         ; effects 5 and 6 move the instrument's volume, clamped to 0x3F
         ld      a, (mp_note2 + 1)
@@ -1796,6 +1743,130 @@ mus_voice:
         ld      a, c
 .set_vol:
         ld      (mv_vol), a
+        ld      a, 1
+        ld      (vs_zero8), a           ; a module instrument opens on four zero samples
+        jp      voice_setup
+
+;-----------------------------------------------------------------------------
+; voice_setup - IX = the voice, and mv_page, mv_vol and mp_inc already decided. Reads the
+; sample's own header for its shape and hands the voice to the mixer.
+;
+; Shared by mus_voice and aw_play_sound because it is all of both of them bar the pitch and
+; the volume: handlePattern and snd_playSound differ in where those two numbers come from and
+; in nothing else (sfxplayer.cpp:189-201 against vm.cpp:705-716). vs_zero8 is the one other
+; difference - prepareInstruments zeroes four bytes at data+8 for a MODULE instrument
+; (sfxplayer.cpp:89) and snd_playSound does no such thing to a plain sound.
+;-----------------------------------------------------------------------------
+voice_setup:
+        ; BORROW MMU7 to read the sample's header. MMU7 is the Layer 2 draw band, and this runs
+        ; at the frame boundary where no draw is in progress - but the interrupt mixes through
+        ; the same slot, so it is saved and restored rather than assumed.
+        ld      bc, $243B
+        ld      a, NR_SAMP_MMU
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        ld      (mv_saved), a
+        ld      a, (mv_page)
+        nextreg NR_SAMP_MMU, a
+        ld      a, (SAMP_WIN + 0)       ; sampleLen, big-endian, doubled
+        ld      h, a
+        ld      a, (SAMP_WIN + 1)
+        ld      l, a
+        add     hl, hl
+        ld      (mv_len), hl
+        ld      a, (SAMP_WIN + 2)       ; loopLen, likewise
+        ld      h, a
+        ld      a, (SAMP_WIN + 3)
+        ld      l, a
+        add     hl, hl
+        ld      (mv_loop), hl
+        ; FOUR ZERO BYTES AT THE START OF THE DATA. prepareInstruments does
+        ; `memset(ins->data + 8, 0, 4)` - sfxplayer.cpp:89 - to every instrument it loads, so
+        ; every module note opens on four samples of silence. The reference does it once when
+        ; the module loads; this does it when the note is set up, which is the same thing to
+        ; the mixer because nothing reads a sample the player has not set up. It is idempotent,
+        ; so repeating it per note costs four writes and changes nothing.
+        ld      a, (vs_zero8)
+        or      a
+        jr      z, .no_zero8
+        xor     a
+        ld      (SAMP_WIN + 8), a
+        ld      (SAMP_WIN + 9), a
+        ld      (SAMP_WIN + 10), a
+        ld      (SAMP_WIN + 11), a
+.no_zero8:
+        ld      a, (mv_saved)
+        nextreg NR_SAMP_MMU, a
+
+        ; total = 8 + sampleLen + loopLen
+        ld      hl, (mv_len)
+        ld      de, (mv_loop)
+        add     hl, de
+        ld      de, 8
+        add     hl, de
+        ld      (mv_total), hl
+
+        ld      a, (mv_page)
+        ld      (ix + V_PAGE), a
+        ld      (ix + V_POS), (SAMP_WIN + 8) & $FF
+        ld      (ix + V_POS + 1), (SAMP_WIN + 8) >> 8
+        ld      (ix + V_FRAC), 0
+
+        ; does it all fit in one window?
+        ld      hl, (mv_total)
+        ld      de, $2000
+        or      a
+        sbc     hl, de
+        jr      nc, .spans
+        add     hl, de
+        ld      de, SAMP_WIN
+        add     hl, de
+        ld      (ix + V_END), l
+        ld      (ix + V_END + 1), h
+        ld      (ix + V_LEFT), 0
+        ld      (ix + V_LEFT + 1), 0
+        jr      .loop_point
+.spans:
+        ld      (ix + V_LEFT), l        ; what is left after this window
+        ld      (ix + V_LEFT + 1), h
+        ; $0000, DELIBERATELY: the window's end is $10000 and no word holds it. voice_run
+        ; knows this encoding - see the borrow it allows. Written as zero rather than let the
+        ; assembler truncate $100, so a real truncation warning is never buried under this one.
+        ld      (ix + V_END), 0
+        ld      (ix + V_END + 1), 0
+.loop_point:
+        ; the loop begins at 8 + sampleLen, and only if it is reachable in this window - a loop
+        ; point on a later page is not modelled and the voice simply stops instead. Recorded
+        ; rather than faked: n_mus_farloop counts it.
+        ld      hl, (mv_loop)
+        ld      a, h
+        or      l
+        jr      z, .no_loop
+        ld      hl, (mv_len)
+        ld      de, 8
+        add     hl, de
+        ld      de, $2000
+        or      a
+        sbc     hl, de
+        jr      nc, .far_loop
+        add     hl, de
+        ld      de, SAMP_WIN
+        add     hl, de
+        ld      (ix + V_LOOP), l
+        ld      (ix + V_LOOP + 1), h
+        jr      .vol_page
+.far_loop:
+        ld      hl, (n_mus_farloop)
+        inc     hl
+        ld      (n_mus_farloop), hl
+.no_loop:
+        ld      (ix + V_LOOP), 0
+        ld      (ix + V_LOOP + 1), 0
+.vol_page:
+        ; which of the two volume tables. The caller has already settled the number: the module
+        ; path through its effects, op_playSound with MIN(vol, 0x3F) - vm.cpp:715.
+        ld      a, (mv_vol)
         cp      VOL_SPLIT + 1
         jr      c, .quiet
         ld      a, VOLTAB >> 8
@@ -1816,106 +1887,78 @@ mus_voice:
         ld      (ix + V_INCI), a
         ld      (ix + V_INCI + 1), 0
         ld      (ix + V_ACTIVE), 1
-        ld      hl, (n_mus_voice)
+        ld      hl, (n_voice_set)
         inc     hl
-        ld      (n_mus_voice), hl
+        ld      (n_voice_set), hl
         ret
+
 
 ;-----------------------------------------------------------------------------
-; note_to_inc - HL = an Amiga period, out as the mixer's 8.8 sample increment.
+; aw_play_sound - op_playSound, vm.cpp:357, into snd_playSound, vm.cpp:692.
 ;
-; The reference turns a period into a frequency with `7159092 / (note_1 * 2)`
-; (sfxplayer.cpp) and our mixer steps its pointer in 8.8 fixed point at the DAC's rate,
-; which prescalar 40 makes 875,000 / 40 = 21,875 Hz. So the increment wanted is
+; SND_BLOCK holds the four operands the C fetched: resource, frequency index, volume, channel.
 ;
-;     freq * 256 / 21875  =  (7159092 / (2 * note)) * 256 / 21875  =  41891 / note
+;   not loaded   return, and the reference does the same (vm.cpp:698)
+;   volume 0     stop the channel and nothing else (vm.cpp:702-704)
+;   otherwise    play at frequenceTable[freq], at MIN(volume, 0x3F)
 ;
-; ONE 16-BY-16 DIVIDE instead of a 24-bit divide followed by a multiply and another divide.
-; Checked against the reference's own arithmetic over every valid period, 0x37 to 0xFFF: the
-; largest disagreement is 0.012 of a 1/256th step, which is four thousandths of a semitone.
+; THE CHANNEL IS MASKED WITH 3 ON BOTH PATHS. The reference masks it for the play
+; (vm.cpp:715-716) and does NOT for the stop, where `mixer->stopChannel(channel)` only asserts
+; `channel < AUDIO_NUM_CHANNELS`. Masking is the safe reading of the same intent, and it costs
+; a byte: across the 970 op_playSound calls the host probe logged, every channel is already
+; 0..3 and every frequency index 0..26 against the reference's own assert of 40.
 ;
-; A period of zero cannot happen - handlePattern tests note_1 against 0, 0xFFFD and 0xFFFE
-; before ever reaching here - but it returns the maximum rather than dividing by it.
+; No divide: snd_freq is the forty pitches already reduced to 8.8 increments at load time.
 ;-----------------------------------------------------------------------------
-NOTE_NUM        EQU 41891               ; 7159092 * 256 / (2 * 21875)
-
-note_to_inc:
-        ld      a, h
-        or      l
-        jr      nz, .ok
-        ld      hl, $FFFF
-        ret
-.ok:
-        ld      c, l
-        ld      b, h                    ; BC = the divisor
-        ld      hl, 0                   ; HL = the remainder as it builds
-        ld      de, NOTE_NUM            ; DE = the dividend, and the quotient replaces it
-        ld      a, 16
-.loop:
-        ex      de, hl
-        add     hl, hl                  ; shift the dividend left, top bit into carry
-        ex      de, hl
-        adc     hl, hl                  ; and into the remainder
-        sbc     hl, bc
-        jr      nc, .fits
-        add     hl, bc                  ; it did not fit: put it back
-        dec     e                       ; and the quotient bit stays clear
-        inc     e
-        jr      .next
-.fits:
-        inc     e                       ; set the quotient's low bit
-.next:
-        dec     a
-        jr      nz, .loop
-        ex      de, hl                  ; HL = the quotient, 8.8
-        ret
-
-; probe_walk - run the event walk (probe_ticks) times with the tick period forced to one
-; frame, so each call fires. The walk is what is under test, not the pacing. Up here with the
-; music code because the resident block below the C has fourteen bytes left in it.
-probe_walk:
-        ld      a, (probe_ticks)
-        or      a
-        ret     z
-        ; LOAD THE INSTRUMENTS THE MODULE NAMES. The bytecode would have asked for them through
-        ; op_updateMemList long before it played any music; the probe loads the module alone, so
-        ; without this every note found its sample absent, counted n_mus_nores and left the voice
-        ; at its boot values - which read as "every channel has increment 256" because that is
-        ; what init_voices leaves.
-        ld      (pw_left), a            ; KEEP IT. The loop below runs `ld a,(hl)` fifteen times,
-                                        ; so the `ld b,a` that used to follow it took its event
-                                        ; count from a table byte - zero, every time, which djnz
-                                        ; reads as 256. EVERY probe run walked the module to its
-                                        ; end no matter what probe_ticks said, which is why all
-                                        ; four voices came up active for a one-event walk whose
-                                        ; only row was a stop.
-        ld      hl, MUS_INSTR_AT        ; the COMPACTED table: resource byte, volume byte
-        ld      b, 15
-.ins:
-        ld      a, (hl)
-        or      a
-        jr      z, .next_ins
-        push    bc
-        push    hl
-        ld      l, a
-        ld      h, 0
-        call    aw_load_res
-        pop     hl
-        pop     bc
-.next_ins:
+aw_play_sound:
+        ld      a, (SND_BLOCK + 3)      ; the channel, masked
+        and     3
+        ld      (mp_chan), a
+        ld      a, (SND_BLOCK + 0)      ; the resource
+        call    voice_locate
+        jr      nc, .resident
+        ld      hl, (n_snd_miss)
         inc     hl
+        ld      (n_snd_miss), hl
+        ret                             ; not loaded, and the reference returns here too
+                                        ; (vm.cpp:698) - BEFORE the volume-zero test, so a
+                                        ; missing resource does not stop the channel either
+.resident:
+        ; volume zero stops the channel, and that is all it does
+        ld      a, (SND_BLOCK + 2)
+        or      a
+        jr      nz, .play
+        ld      (ix + V_ACTIVE), 0
+        ld      hl, (n_snd_stop)
         inc     hl
-        djnz    .ins
-        ld      a, 1
-        ld      (mus_frames), a
-        ld      a, (pw_left)
-        ld      b, a
-.tick:
-        push    bc
-        call    music_tick
-        pop     bc
-        djnz    .tick
+        ld      (n_snd_stop), hl
         ret
+.play:
+        cp      $40                     ; MIN(vol, 0x3F), vm.cpp:715
+        jr      c, .vol_ok
+        ld      a, $3F
+.vol_ok:
+        ld      (mv_vol), a
+
+        ; the pitch, straight out of the table
+        ld      a, (SND_BLOCK + 1)
+        add     a, a                    ; two bytes an entry
+        ld      e, a
+        ld      d, 0
+        ld      hl, SND_FREQ
+        add     hl, de
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        ld      (mp_inc), de
+
+        xor     a
+        ld      (vs_zero8), a           ; a plain sound is NOT zeroed at data+8 - only a
+                                        ; module instrument is, in prepareInstruments
+        ld      hl, (n_snd)
+        inc     hl
+        ld      (n_snd), hl
+        jp      voice_setup
 
 ;-----------------------------------------------------------------------------
 ; I4. drawString, video.cpp:267, and drawChar, video.cpp:299.
@@ -2122,10 +2165,13 @@ draw_char6:
         INCLUDE "src/inc/input.inc"
         INCLUDE "src/inc/raster.inc"
 
-; The game's ring and its sample are both resident in MMU6's page, so a voice needs
-; nothing mapped for it. I5 gives each voice its own sample page and this macro
-; becomes a borrow-and-restore of MMU7.
+; The ring is resident in MMU6's page, so nothing needs mapping for it - but from I5 each
+; voice plays out of its OWN sample page, which does. This runs once per voice, with IX on
+; that voice's record, and only maps: the putting back is the interrupt's, once, around both
+; blocks, because doing it here would cost four restores a frame to no purpose.
         MACRO SND_MAP_PAGES
+        ld      a, (ix + V_PAGE)
+        nextreg NR_SAMP_MMU, a
         ENDM
 
         INCLUDE "src/inc/sound.inc"
@@ -2195,6 +2241,10 @@ pw_left:     db 0           ; probe_walk's saved count, across the instrument lo
 probe_note: db 0            ; 1 = convert one period and stop
         EXPORT probe_mus
 probe_mus:  db 0            ; a resource id: load it and parse it, no VM
+        EXPORT probe_snd
+probe_snd:  db 0            ; 1 = load SND_BLOCK's resource and run aw_play_sound
+        EXPORT probe_mix
+probe_mix:  db 0            ; blocks to mix after it, with the interrupt's mixer off
         EXPORT probe_str
 probe_str:  db 0            ; 1 = draw one string from STR_BLOCK and stop, no VM
         EXPORT probe_fill
@@ -2217,11 +2267,6 @@ cp_unimpl:  db 0                        ; a scrolled copy was asked for: I2 rema
 pal_req:    db $FF                      ; $FF = no palette change requested
         EXPORT pal_now
 pal_now:    db $FF
-poly_name:  db "RES19.BIN", 0
-nm_res:     db "RES", 0
-nm_pal:     db "PAL", 0
-nm_bmp:     db "BMP", 0
-nm_tail:    db ".BIN", 0
         EXPORT mus_res
 mus_res:        db 0
         EXPORT mus_page
@@ -2265,12 +2310,22 @@ mv_len:         dw 0
 mv_loop:        dw 0
         EXPORT mv_total
 mv_total:       dw 0
-        EXPORT n_mus_voice
-n_mus_voice:    dw 0
+        EXPORT n_snd
+n_snd:          dw 0            ; op_playSound calls that reached the mixer
+        EXPORT n_snd_stop
+n_snd_stop:     dw 0            ; op_playSound calls with volume zero
+        EXPORT n_snd_miss
+n_snd_miss:     dw 0            ; op_playSound calls for a resource not resident
+        EXPORT n_voice_set
+n_voice_set:    dw 0            ; voices handed to the mixer, by either caller
+vs_zero8:       db 0            ; 1 = zero four bytes at data+8, the module path only
         EXPORT n_mus_nores
 n_mus_nores:    dw 0
         EXPORT n_mus_farloop
 n_mus_farloop:  dw 0
+        EXPORT n_mix
+n_mix:          dw 0            ; interrupts that mixed; the game starts silent, so the ring
+                                ; alone cannot say whether the mixer ran
         EXPORT n_mus
 n_mus:          dw 0
         EXPORT n_mus_miss
@@ -2302,8 +2357,139 @@ n_load:     dw 0
         EXPORT n_inval
 n_inval:    dw 0
 
-pal_name:   db "PAL17.BIN", 0
-rd_log:     ds 8 * 8                    ; the reader's leaf log, small: nothing reads it
+
+; probe_walk - run the event walk (probe_ticks) times with the tick period forced to one
+; frame, so each call fires. The walk is what is under test, not the pacing. Up here with the
+; music code because the resident block below the C had fourteen bytes left in it - which
+; stopped being true when the stack moved to MMU6, so it is back down here and the upper
+; block's room went to aw_play_sound.
+probe_walk:
+        ld      a, (probe_ticks)
+        or      a
+        ret     z
+        ; LOAD THE INSTRUMENTS THE MODULE NAMES. The bytecode would have asked for them through
+        ; op_updateMemList long before it played any music; the probe loads the module alone, so
+        ; without this every note found its sample absent, counted n_mus_nores and left the voice
+        ; at its boot values - which read as "every channel has increment 256" because that is
+        ; what init_voices leaves.
+        ld      (pw_left), a            ; KEEP IT. The loop below runs `ld a,(hl)` fifteen times,
+                                        ; so the `ld b,a` that used to follow it took its event
+                                        ; count from a table byte - zero, every time, which djnz
+                                        ; reads as 256. EVERY probe run walked the module to its
+                                        ; end no matter what probe_ticks said, which is why all
+                                        ; four voices came up active for a one-event walk whose
+                                        ; only row was a stop.
+        ld      hl, MUS_INSTR_AT        ; the COMPACTED table: resource byte, volume byte
+        ld      b, 15
+.ins:
+        ld      a, (hl)
+        or      a
+        jr      z, .next_ins
+        push    bc
+        push    hl
+        ld      l, a
+        ld      h, 0
+        call    aw_load_res
+        pop     hl
+        pop     bc
+.next_ins:
+        inc     hl
+        inc     hl
+        djnz    .ins
+        ld      a, 1
+        ld      (mus_frames), a
+        ld      a, (pw_left)
+        ld      b, a
+.tick:
+        push    bc
+        call    music_tick
+        pop     bc
+        djnz    .tick
+        ret
+
+;-----------------------------------------------------------------------------
+; note_to_inc - HL = an Amiga period, out as the mixer's 8.8 sample increment.
+;
+; The reference turns a period into a frequency with `7159092 / (note_1 * 2)`
+; (sfxplayer.cpp) and our mixer steps its pointer in 8.8 fixed point at the DAC's rate,
+; which prescalar 40 makes 875,000 / 40 = 21,875 Hz. So the increment wanted is
+;
+;     freq * 256 / 21875  =  (7159092 / (2 * note)) * 256 / 21875  =  41891 / note
+;
+; ONE 16-BY-16 DIVIDE instead of a 24-bit divide followed by a multiply and another divide.
+; Checked against the reference's own arithmetic over every valid period, 0x37 to 0xFFF: the
+; largest disagreement is 0.012 of a 1/256th step, which is four thousandths of a semitone.
+;
+; A period of zero cannot happen - handlePattern tests note_1 against 0, 0xFFFD and 0xFFFE
+; before ever reaching here - but it returns the maximum rather than dividing by it.
+;-----------------------------------------------------------------------------
+NOTE_NUM        EQU 41891               ; 7159092 * 256 / (2 * 21875)
+
+note_to_inc:
+        ld      a, h
+        or      l
+        jr      nz, .ok
+        ld      hl, $FFFF
+        ret
+.ok:
+        ld      c, l
+        ld      b, h                    ; BC = the divisor
+        ld      hl, 0                   ; HL = the remainder as it builds
+        ld      de, NOTE_NUM            ; DE = the dividend, and the quotient replaces it
+        ld      a, 16
+.loop:
+        ex      de, hl
+        add     hl, hl                  ; shift the dividend left, top bit into carry
+        ex      de, hl
+        adc     hl, hl                  ; and into the remainder
+        sbc     hl, bc
+        jr      nc, .fits
+        add     hl, bc                  ; it did not fit: put it back
+        dec     e                       ; and the quotient bit stays clear
+        inc     e
+        jr      .next
+.fits:
+        inc     e                       ; set the quotient's low bit
+.next:
+        dec     a
+        jr      nz, .loop
+        ex      de, hl                  ; HL = the quotient, 8.8
+        ret
+
+
+
+;-----------------------------------------------------------------------------
+; voice_locate - A = a resource id and (mp_chan) = the channel. On exit mv_page holds the
+; resource's first page and IX points at that channel's voice. Carry set means the resource is
+; not resident, and nothing was written.
+;
+; Both callers want exactly this and each had its own copy: thirty-six bytes of table lookup
+; and multiply, twice, in the block with the least room left in the program.
+;-----------------------------------------------------------------------------
+voice_locate:
+        ld      h, 0
+        ld      l, a
+        ld      de, res_page
+        add     hl, de
+        ld      a, (hl)
+        or      a
+        scf
+        ret     z                       ; not resident: carry set, mv_page untouched
+        ld      (mv_page), a
+        ld      hl, VOICES
+        ld      a, (mp_chan)
+        or      a
+        jr      z, .got
+        ld      de, V_SIZE
+.mul:
+        add     hl, de
+        dec     a
+        jr      nz, .mul
+.got:
+        push    hl
+        pop     ix
+        or      a                       ; carry clear: IX is the voice
+        ret
 
         DISPLAY "> resident code and data end at ", /H, $
         ASSERT $ < CC_ORG
@@ -2336,6 +2522,28 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
         DISPLAY "> resource tables end at ", /H, $
         ASSERT $ <= PAL_BASE
 
+        ORG SND_FREQ
+        INCLUDE "build/sndfreq.inc"
+        ASSERT $ <= RD_LOG_AT
+
+        ORG RD_LOG_AT
+rd_log:     ds 8 * RD_LOG_RECS      ; the reader's leaf log; nothing in the game reads it
+
+        ; THE FILENAMES, up here for room and not for tidiness: they are data an ldir copies
+        ; out of, so they can live in any page that is mapped, and MMU6 always is. The resident
+        ; block below the C had three bytes left when probe_mix went in.
+NAMES_AT    EQU $CE94
+        ORG NAMES_AT
+pal_name:   db "PAL17.BIN", 0
+poly_name:  db "RES19.BIN", 0
+nm_res:     db "RES", 0
+nm_pal:     db "PAL", 0
+nm_bmp:     db "BMP", 0
+nm_tail:    db ".BIN", 0
+        ASSERT $ <= VEC_TRAMP
+        DISPLAY "> pitches at ", /H, SND_FREQ, ", leaf log to ", /H, $
+        ASSERT $ <= VEC_TRAMP
+
         ORG INTERP_AT
         ALIGN 2
         INCLUDE "build/interp.inc"
@@ -2356,6 +2564,10 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
         ASSERT DRAW_BLOCK  >= IN_BLOCK + 12
         ASSERT STR_BLOCK   >= DRAW_BLOCK + 10
         ASSERT MUS_ORDER_AT >= STR_BLOCK + 16
+        ASSERT SND_BLOCK   >= MUS_BLOCK + 4
+        ASSERT MUS_ORDER_AT >= SND_BLOCK + 4
+        ASSERT SND_FREQ    >= VEC_TABLE + 257
+        ASSERT SND_FREQ + 80 <= VEC_TRAMP
         ASSERT MUS_INSTR_AT >= MUS_ORDER_AT + $80
         ASSERT INTERP_AT    >= MUS_INSTR_AT + 30
         ASSERT VEC_TABLE   >= MUS_INSTR_AT + 30
