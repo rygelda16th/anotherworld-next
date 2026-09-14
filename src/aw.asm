@@ -679,113 +679,6 @@ boot_stop:                              ; a global alias so MMU6 code can jump h
 .hold:  di
         jr      .hold
 
-;-----------------------------------------------------------------------------
-; mix_block - A = how many samples, into the ring at (ring_wr), which wraps.
-;
-; THE BLOCK IS SPLIT, which is what I5 owed. The old version had a crude guard - rewind if the
-; next block would not fit - and its own comment said proper end-of-sample and loop-point
-; handling was still to come. It was worse than crude: a FULL window has V_END = $0000, so
-; `V_POS + blocklen` never borrowed against it, the guard read "would overrun", and V_POS went
-; to V_LOOP - zero for an unlooped sample. The voice then read from address $0000. Measured
-; after 40 blocks of RES54: V_POS = $0096, V_LEFT still 14,506, V_PAGE unmoved.
-;
-; Three things can cut a piece short and all three have to:
-;   the sample's end, or the window's edge     voice_run, which voice_advance then steps
-;   a 256-byte boundary in the RING            because mix_voice_* does `inc l`, which does
-;                                              not carry - and BLK_A of 221 into 2,048 crosses
-;
-; AND EVERY VOICE ACCUMULATES; none stores. The block is filled with 128 first, which is what
-; the DAC reads as silence, and `mva` accumulating onto 128 is byte-identical to `mvf`s biased
-; store over the whole signed range: for s >= 0 it is 128 + s and cannot carry, and for s < 0
-; the carry produces exactly what the XOR would. That buys two things for one pass of stores,
-; 0.55% of the machine: a voice that stops part way through a block leaves silence behind it
-; rather than stale ring, and there is no "which voice stores" state left to get wrong.
-;-----------------------------------------------------------------------------
-mix_block:
-        ld      (blk_total), a
-        ; THE COPPER LIST'S LINES, not a ring. (ring_wr) is the first line, the block never runs past
-        ; line 311 - LINE_A's half is 0..155 and LINE_B's 156..311 - and a line's sample is the fourth
-        ; byte of its WAIT/MOVE pair, so the destination steps by four (SND_STRIDE4 in sound.inc).
-        ld      hl, (ring_wr)
-        add     hl, hl
-        add     hl, hl
-        ld      de, COP_BUF + 3
-        add     hl, de
-        ld      (blk_dst), hl
-
-        ; silence first: every voice accumulates onto it
-        ld      b, a
-        ld      de, 4
-.fill:  ld      (hl), 128
-        add     hl, de
-        djnz    .fill
-
-        ld      ix, VOICES
-        ld      b, 4
-.each:
-        ld      a, (ix + V_ACTIVE)
-        or      a
-        jr      z, .next
-        ld      a, (blk_total)
-        ld      (mix_left), a
-        ld      hl, (blk_dst)
-        ld      (mix_pc), hl
-.piece:
-        ld      a, (mix_left)
-        ld      (blocklen), a           ; voice_run caps against this, voice_regs counts by it
-        push    bc                      ; B IS THE VOICE COUNTER and voice_run's divide uses B
-        call    voice_run               ; as its own sixteen-step counter
-        pop     bc
-        jr      nz, .have
-        ; nothing available in this window: step the page, take the loop, or go quiet
-        push    bc
-        call    voice_advance
-        pop     bc
-        ld      a, (ix + V_ACTIVE)
-        or      a
-        jr      nz, .piece
-        jr      .next                   ; stopped, and the 128s already there are the rest
-.have:
-        ld      (blocklen), a           ; what voice_run settled on, which may be less
-        ld      e, a
-        ld      hl, (mix_pc)
-        ld      (mix_dst), hl
-        push    bc
-        push    de
-        call    mix_voice_add
-        pop     de
-        pop     bc
-        ld      d, 0
-        ld      hl, (mix_pc)
-        add     hl, de
-        add     hl, de
-        add     hl, de
-        add     hl, de                  ; four bytes a line
-        ld      (mix_pc), hl
-        ld      a, (mix_left)
-        sub     e
-        ld      (mix_left), a
-        jr      nz, .piece
-.next:
-        ld      de, V_SIZE
-        add     ix, de
-        dec     b
-        jp      nz, .each
-
-        ; the cursor moves on by the block, and wraps at the list's end
-        ld      hl, (ring_wr)
-        ld      a, (blk_total)
-        ld      e, a
-        ld      d, 0
-        add     hl, de
-        ld      de, COP_LINES
-        or      a
-        sbc     hl, de
-        jr      nc, .wrapped
-        add     hl, de
-.wrapped:
-        ld      (ring_wr), hl
-        ret
 
 ;-----------------------------------------------------------------------------
 ; I3. loadPartsOrMemoryEntry, resource.cpp:258, for the part of it that loads.
@@ -2512,7 +2405,8 @@ draw_char6:
         nextreg NR_SAMP_MMU, a
         ENDM
 
-        DEFINE SND_NO_FIRST             ; every voice accumulates; see mix_block
+; SND_NO_FIRST is gone: the first voice STORES again - see mix_block, which explains why that is
+; byte-identical to accumulating onto 128 and what it saves.
         INCLUDE "src/inc/sound.inc"
 
 ;-----------------------------------------------------------------------------
@@ -4149,6 +4043,145 @@ cop_dma_addr:
         db      $CF                     ; LOAD
         db      $87                     ; ENABLE
 cop_dma_end:
+
+;-----------------------------------------------------------------------------
+; mix_block - A = how many lines (at most COP_HALF), from line (ring_wr) of the copper list.
+;
+; Up here with the copper code, out of the resident block: the ISR and check-mus's probe are its
+; only callers and MMU6 is always mapped.
+;
+; THE COPPER LIST'S LINES, not a ring. The block never runs past line 311 - LINE_A's half is 0..155
+; and LINE_B's 156..311 - and a line's sample is the fourth byte of its WAIT/MOVE pair, so the
+; destination steps by four (SND_STRIDE4 in sound.inc).
+;
+; THE FIRST VOICE STORES; the others add. This used to fill the block with 128 and have every voice
+; accumulate onto it, which is byte-identical: mva onto 128 gives 128 + s for s >= 0, which cannot
+; carry, and for s < 0 its carry lands on exactly (s + 128) & 255 - which is mvf's `xor $80`. With
+; the intro's music the voices are busy almost all the time, so the fill pass and the first voice's
+; clip test were paid on nearly every sample: about 79 T a line, some 4% of the machine. Whatever the
+; first voice leaves unwritten - it stopped part way - is filled with 128 before anyone adds to it,
+; and a block with no voice at all is all 128.
+;
+; Three things can cut a piece short, as before: the sample's end, the window's edge (voice_run,
+; then voice_advance) and the block's end.
+;-----------------------------------------------------------------------------
+mix_block:
+        ld      (blk_total), a
+        ld      hl, (ring_wr)
+        add     hl, hl
+        add     hl, hl
+        ld      de, COP_BUF + 3
+        add     hl, de
+        ld      (blk_dst), hl
+        xor     a
+        ld      (mb_stored), a          ; no voice has written this block yet
+
+        ld      ix, VOICES
+        ld      b, 4
+.each:
+        ld      a, (ix + V_ACTIVE)
+        or      a
+        jr      z, .next
+        ld      a, (blk_total)
+        ld      (mix_left), a
+        ld      hl, (blk_dst)
+        ld      (mix_pc), hl
+.piece:
+        ld      a, (mix_left)
+        ld      (blocklen), a           ; voice_run caps against this, voice_regs counts by it
+        push    bc                      ; B IS THE VOICE COUNTER and voice_run's divide uses B
+        call    voice_run               ; as its own sixteen-step counter
+        pop     bc
+        jr      nz, .have
+        ; nothing available in this window: step the page, take the loop, or go quiet
+        push    bc
+        call    voice_advance
+        pop     bc
+        ld      a, (ix + V_ACTIVE)
+        or      a
+        jr      nz, .piece
+        jr      .voice_done             ; stopped part way
+.have:
+        ld      (blocklen), a           ; what voice_run settled on, which may be less
+        ld      e, a
+        ld      hl, (mix_pc)
+        ld      (mix_dst), hl
+        push    bc
+        push    de
+        ld      a, (mb_stored)
+        or      a
+        jr      nz, .add
+        call    mix_voice_first
+        jr      .mixed
+.add:
+        call    mix_voice_add
+.mixed:
+        pop     de
+        pop     bc
+        ld      d, 0
+        ld      hl, (mix_pc)
+        add     hl, de
+        add     hl, de
+        add     hl, de
+        add     hl, de                  ; four bytes a line
+        ld      (mix_pc), hl
+        ld      a, (mix_left)
+        sub     e
+        ld      (mix_left), a
+        jr      nz, .piece
+.voice_done:
+        ld      a, (mb_stored)
+        or      a
+        jr      nz, .next
+        ; the first voice to write: whatever it did not reach becomes silence, for the others
+        ld      a, (mix_left)
+        ld      hl, (mix_pc)
+        call    mb_silence
+        ld      a, 1
+        ld      (mb_stored), a
+.next:
+        ld      de, V_SIZE
+        add     ix, de
+        dec     b
+        jp      nz, .each
+
+        ld      a, (mb_stored)
+        or      a
+        jr      nz, .cursor
+        ld      a, (blk_total)          ; no voice at all: the whole block is silence
+        ld      hl, (blk_dst)
+        call    mb_silence
+.cursor:
+        ; the cursor moves on by the block, and wraps at the list's end
+        ld      hl, (ring_wr)
+        ld      a, (blk_total)
+        ld      e, a
+        ld      d, 0
+        add     hl, de
+        ld      de, COP_LINES
+        or      a
+        sbc     hl, de
+        jr      nc, .wrapped
+        add     hl, de
+.wrapped:
+        ld      (ring_wr), hl
+        ret
+
+; mb_silence - A lines of 128 from HL, a line's sample every fourth byte. A = 0 writes nothing.
+; Keeps B.
+mb_silence:
+        or      a
+        ret     z
+        ld      c, a
+        ld      de, 4
+.one:   ld      (hl), 128
+        add     hl, de
+        dec     c
+        jr      nz, .one
+        ret
+
+mb_stored:      db 0
+
 
 ;-----------------------------------------------------------------------------
 ; dma_mem - BC bytes from HL to DE through the zxnDMA, in continuous mode, so the transfer is done

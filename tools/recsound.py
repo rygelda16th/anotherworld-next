@@ -42,6 +42,17 @@ def main():
     z.cmd(f"write-memory {sym['go']} 1")
     time.sleep(SECONDS)
     end = os.path.getsize(RAW)
+    # and what the machine was doing when it stopped, so silence can be told from a crash
+    def rd(a, n):
+        raw = z.cmd(f"read-memory {a} {n}").strip()
+        return bytes(int(raw[i:i + 2], 16) for i in range(0, 2 * n, 2))
+    v = rd(0xDD00, 72)
+    ctl = rd(0xC000, 0x14)
+    w16 = lambda b, o: b[o] | (b[o + 1] << 8)
+    print(f"  at the end: voices active {[v[11 + 18 * i] for i in range(4)]}, "
+          f"n_mix {w16(rd(sym['n_mix'], 2), 0)}, ticks {w16(rd(sym['ticks'], 2), 0)}, "
+          f"mus_playing {rd(sym['mus_playing'], 1)[0]}, frames done {w16(ctl, 8)}, "
+          f"fault {ctl[0x0D]}, bad op {ctl[0x0C]}")
     try:
         z.cmd("exit-emulator")
     except Exception:

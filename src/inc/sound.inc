@@ -120,7 +120,11 @@ mvf:
         ld      a, (de)
         xor     $80                     ; signed -> the DAC's unsigned centre
         ld      (hl), a
+    IFDEF SND_STRIDE4
+        add     hl, bc                  ; the copper list: a line's sample is every fourth byte
+    ELSE
         inc     hl                      ; hl, NOT l: the destination has to CARRY. `inc l` meant
+    ENDIF
         exx                             ; a block could not cross a 256-byte boundary in the
                                         ; ring, and with BLK_A of 221 into 2,048 bytes it does -
                                         ; the write wrapped back into the same page instead. Two
