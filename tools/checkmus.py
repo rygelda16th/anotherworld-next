@@ -411,7 +411,7 @@ def main():
             "      cannot cross a 256-byte boundary inside the ring either.\n"
             "      The five other parts of I5 above all PASS; this is the piece left.")
     print(f"""
-PASS: I5 entire, in five parts. All {done} modules PARSE exactly as tools/sfxmod.py parses
+PASS: I5 entire, in six parts. All {done} modules PARSE exactly as tools/sfxmod.py parses
       them - the delay with and without op_playMusic's override, numOrder, all 128 order
       entries and all 15 instruments, whose ids and volumes are asserted to fit the resident
       table's two bytes an entry. The EVENT WALK matches a model of handleEvents: the order
@@ -422,7 +422,9 @@ PASS: I5 entire, in five parts. All {done} modules PARSE exactly as tools/sfxmod
       shapes the host probe logged the reference itself producing, with the other three
       channels proven untouched each time. And the period-to-increment divide agrees with
       the reference's own frequency to {worst:.2f} of a 1/256th step over the whole valid
-      range.""")
+      range. And the MIXER'S OUTPUT is byte-exact on a real sample: all 2,048 ring bytes,
+      over 19,164 source bytes and two 8K page boundaries, against a model of what the
+      splitting has to add up to rather than of the splitting itself.""")
 
 
 if __name__ == "__main__":

@@ -2036,7 +2036,7 @@ had failed to find in dozens.
 | ~~**I2**~~ | ~~the VM draws~~ **DONE**, `make check-draw` - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
 | ~~**I3**~~ | ~~resources arrive at runtime~~ **PARTLY DONE**, `make check-res` - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
 | ~~**I4**~~ | ~~text~~ **DONE**, `make check-text` - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
-| **I5** | **sound in the game** - **five of six parts gated**, `make check-mus` - `op_playSound` and `op_playMusic` reach the player, the module is parsed, and the mixer maps each voice's own page | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | **PASSED**: three modules parsed and walked against a model of `sfxplayer.cpp`, the four voice records after 1, 70 and 100 events, and six `op_playSound` cases checked against the sample shapes the host probe logged the reference producing - a stop, a loop, three pages, both ends of the pitch table and the clamp. **STILL OWED, and now gated and failing**: the mixer's OUTPUT on a real multi-page sample. `mix_block` never calls `voice_run`/`voice_advance` - it has a crude rewind whose comment says as much - so a full window sends `V_POS` to `V_LOOP`, zero, and the voice reads address `$0000` |
+| ~~**I5**~~ | ~~**sound in the game**~~ **DONE**, `make check-mus` - `op_playSound` and `op_playMusic` reach the player, the module is parsed, and the mixer maps each voice's own page | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | **PASSED**: three modules parsed and walked against a model of `sfxplayer.cpp`, the four voice records after 1, 70 and 100 events, and six `op_playSound` cases checked against the sample shapes the host probe logged the reference producing - a stop, a loop, three pages, both ends of the pitch table and the clamp. And the MIXER'S OUTPUT byte-exact on a real sample: all 2,048 ring bytes over 19,164 source bytes and two page boundaries, which took a rewrite of the per-voice loop and found five mixer bugs |
 | **I6** | **part transitions** - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
 | **I7** | **the full-screen bitmap path** | 70 of them load in the arena and no gate covers the machine half | the arena's bitmaps, on the machine, against the engine's pages |
 | **I8** | **the code screen, and its bypass** - which is a **starting part number**, not a subsystem | the wheel screen is `GAME_PART1` and is drawn by ordinary bytecode (`engine.cpp:71-73`); the bypass keeps every gate comparable to the reference build | the screen renders and accepts a correct code; with the flag set, part 2 starts directly, exactly as `BYPASS_PROTECTION` does |
@@ -2735,34 +2735,71 @@ six more that are bitmaps underneath and invents divergences out of their pixels
 `mus_voice` does it when the note is set up rather than when the module loads - the same thing to
 the mixer, since nothing reads a sample the player has not set up - and it is idempotent.
 
-**I5 is done bar one gate, and `make check-mus` covers the other five parts of it.**
+**I5 IS DONE, and `make check-mus` gates all six parts of it.**
 
-**The sixth part is now gated and it FAILS, and what it found is the real remaining work.**
-`mix_block` in the game **does not call `voice_run` or `voice_advance` at all.** It has a crude
-guard - rewind if the next block would not fit - whose own comment says so plainly: *"this is
-the crude version ... proper end-of-sample and loop-point handling is I5's, with real resources
-behind it, and it is more unwritten code than the plan credited."*
+**ALL SIX PARTS PASS, and building the sixth found FIVE bugs in the mixer, four of them live and
+none of them findable any other way.** The last case mixes RES54 for 60 blocks at the top of the
+pitch table - 19,164 source bytes across two 8K page boundaries - and all 2,048 ring bytes come
+out byte-exact against a model of what the splitting has to add up to rather than of the splitting
+itself. Every one of the five was in the path between a voice record and the bytes that leave for
+the DAC: the half nothing had ever checked.
 
-With a **full** window `V_END` is `$0000`, so that guard's `V_POS + blocklen` never borrows
-against it, reads "would overrun", and sets `V_POS` to `V_LOOP` - which is **zero for an
-unlooped sample**. The voice then reads from address `$0000`, the bytecode window. Measured, not
-inferred: after 40 blocks of RES54 the voice sits at `V_POS = $0096` with `V_LEFT` still 14,506
-and `V_PAGE` unmoved, so `voice_advance` never fired and the page never stepped.
+**1. `mix_block` never called `voice_run` or `voice_advance`.** It had a crude guard - rewind if
+the next block would not fit - whose own comment said proper end-of-sample and loop-point
+handling was still to come. It was worse than crude: a **full** window has `V_END = $0000`, so
+`V_POS + blocklen` never borrowed against it, the guard read "would overrun", and `V_POS` went to
+`V_LOOP` - **zero for an unlooped sample**. The voice then read from address `$0000`, the bytecode
+window. Measured after 40 blocks of RES54: `V_POS = $0096`, `V_LEFT` still 14,506, `V_PAGE`
+unmoved. It now splits each block properly, and after the same 40 blocks the voice sits at
+absolute offset 6,016 against the 6,008 + 8 the increment says it should.
 
-**There is a second thing in the same place.** `mix_voice_first` and `mix_voice_add` advance
-their destination with `inc l` alone, so a block cannot cross a 256-byte boundary inside the
-ring either - and with `BLK_A` 221 and `BLK_B` 220 into a 2,048-byte ring, blocks do.
+**2. The ring was not a ring.** `ring_wr` was tested against the end *after* a block was written,
+and reset to `RING_ADDR` if it had passed - so **the block that took it over the edge wrote up to
+158 bytes past the ring, over `VOLTAB`**, and the bytes near the end were never written at all.
+Nine blocks of 221 reach 1,985 of 2,048; the tenth did both. It wraps modulo now.
 
-So the piece left is a rewrite of the mixer's per-voice loop: split each block at the window's
-edge, the sample's end and the loop point, driving `mix_voice_*` in pieces with a destination
-that carries. `voice_run` and `voice_advance` are written and now correct - the fix below was
-needed - but nothing in the game calls them.
+**3. `mix_voice_*` advanced its destination with `inc l`, which does not carry** - so a block
+could not cross a 256-byte boundary inside the ring, and with `BLK_A` of 221 it does. The write
+wrapped back into the same page instead. `inc hl` is the same one byte for two T-states a sample
+a voice, 0.63% of the machine, and it removes a whole class of splitting from the caller.
 
-**Also worth keeping: the gate's first two attempts failed for reasons that were mine, not the
-machine's.** The ring cursor is not at `RING_ADDR` when a probe starts, because the interrupt
-has been mixing since boot - silently, every voice inactive, but `mix_block` advances the cursor
-whether or not a voice contributes - so the probe now calls `silence_ring` first. That correction
-was right and changed nothing, which is what said the fault was real.
+**4. `voice_run` read a full window as "past the end", and bounded it by the wrong divisor.**
+`V_END - V_POS` borrows when `V_END` is the `$0000` that means `$10000`, and `ret c` took that for
+an overrun - so even once wired in, a voice on a full page would have mixed nothing. The borrow is
+allowed now, and a genuine wrap past the end is told apart by `V_POS` falling below the window's
+base, which `D` still holds after the subtract. Separately, the bound divided by the increment's
+**integer part**, on the stated reasoning that this "under-estimates because the fraction also
+advances". That is backwards: dividing by `inci` over-estimates, and at 1.4453 bytes a sample it
+returned `bytes_left` samples where only `bytes_left / 1.4453` fit - so the pointer ran past
+`V_END`, wrapped through `$0000`, and the voice read on from the bottom of memory. `inci + 1` can
+only under-estimate.
+
+**5. The page transition dropped bytes, and the fraction's phase with them.** Because that bound
+now under-estimates, near a window's edge it rounds to zero while a byte is still there - and
+`voice_advance` rewound to the next page's **base**, losing up to `inci + 1` bytes every crossing.
+It showed as a one-byte error at the first boundary and a drift after it: 1,300 of 2,048 ring
+bytes wrong while the single-page case was already exact. `voice_run` now returns at least one
+sample while any byte remains, so the pointer **crosses** the edge, and `voice_advance` adds the
+window's base to the remainder the wrap left rather than replacing it.
+
+**And one design simplification that fell out of it: every voice accumulates, none stores.** The
+block is filled with 128 first, and `mva` accumulating onto 128 is byte-identical to `mvf`'s
+biased store across the whole signed range - for `s >= 0` it is `128 + s` and cannot carry, and
+for `s < 0` the carry produces exactly what the XOR would. One pass of stores buys two things: a
+voice that stops part way through a block leaves silence behind it rather than stale ring, and
+there is no "which voice stores" state left to get wrong. `mix_voice_first` is now `IFNDEF`'d out
+of the game entirely - sndtest still uses it - which the resident block needed, having had four
+bytes left in it.
+
+**Three wrap tests now compare only the high byte**, the ring's end being page-aligned, and an
+`ASSERT (RING_END & $FF) == 0` makes sure it stays that way.
+
+**What the gate's own two false starts are worth recording for:**
+The ring cursor is not at `RING_ADDR` when a probe starts, because the interrupt has been mixing
+since boot - silently, every voice inactive, but `mix_block` advances the cursor whether or not a
+voice contributes - so the probe calls `silence_ring` first. And the first model wrote the ring
+contiguously while the machine, through bug 2, did not. Both corrections were right and neither
+changed the verdict, which is what said the remaining faults were real.
 
 **For the record, the thing I5's own definition names: "the mixer output stays byte-exact on
 real sound resources".** Every check here proves the voice records that go *in* -

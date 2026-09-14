@@ -95,6 +95,11 @@ dma_prog_end:
 ; The fractional add sets carry, LD does not disturb it, so ADC HL,DE applies the
 ; integer increment and the fraction's carry in one 15 T instruction.
 ;-----------------------------------------------------------------------------
+; THE GAME DOES NOT ASSEMBLE THIS. Its mix_block fills each block with 128 and has every voice
+; accumulate, because `mva` onto 128 is byte-identical to the biased store below and it means a
+; voice that stops mid-block leaves silence rather than stale ring. sndtest still stores, so the
+; routine stays - but the game had four bytes left in its resident block and no use for it.
+        IFNDEF SND_NO_FIRST
 mix_voice_first:
         call    voice_regs
 mvf:
@@ -104,8 +109,12 @@ mvf:
         ld      a, (de)
         xor     $80                     ; signed -> the DAC's unsigned centre
         ld      (hl), a
-        inc     l
-        exx
+        inc     hl                      ; hl, NOT l: the destination has to CARRY. `inc l` meant
+        exx                             ; a block could not cross a 256-byte boundary in the
+                                        ; ring, and with BLK_A of 221 into 2,048 bytes it does -
+                                        ; the write wrapped back into the same page instead. Two
+                                        ; T-states a sample a voice, 0.63% of the machine, and
+                                        ; it removes a whole class of splitting from the caller.
         ld      a, c
 p_first:
         add     a, 0
@@ -114,6 +123,7 @@ p_first:
         dec     b
         jp      nz, mvf
         jp      voice_save
+        ENDIF
 
 mix_voice_add:
         call    voice_regs
@@ -134,8 +144,12 @@ mva_neg:
         xor     a
 mva_st:
         ld      (hl), a
-        inc     l
-        exx
+        inc     hl                      ; hl, NOT l: the destination has to CARRY. `inc l` meant
+        exx                             ; a block could not cross a 256-byte boundary in the
+                                        ; ring, and with BLK_A of 221 into 2,048 bytes it does -
+                                        ; the write wrapped back into the same page instead. Two
+                                        ; T-states a sample a voice, 0.63% of the machine, and
+                                        ; it removes a whole class of splitting from the caller.
         ld      a, c
 p_add:  add     a, 0
         ld      c, a
@@ -146,7 +160,9 @@ p_add:  add     a, 0
 
 voice_regs:
         ld      a, (ix + V_INCF)
+        IFNDEF SND_NO_FIRST
         ld      (p_first + 1), a
+        ENDIF
         ld      (p_add + 1), a
         SND_MAP_PAGES                   ; the includer's; see the header
         ld      l, (ix + V_POS)
@@ -181,10 +197,16 @@ voice_save:
 ; found out the hard way when a voice ran off its 512-byte ramp, past V_END, and started
 ; reading the RING as sample data and writing the result back over it.
 ;
-; The bound: with an integer increment of zero the pointer advances less than one byte a
-; sample, so V_END - V_POS samples is always safe. Otherwise divide by the integer part,
-; which UNDER-estimates because the fraction also advances - safe, and it only means the
-; caller loops again.
+; The bound: with an integer increment of zero the pointer advances at most one byte a sample,
+; so V_END - V_POS samples is always safe. Otherwise divide by the integer part PLUS ONE,
+; because a sample advances inci or inci+1 depending on the fraction's carry.
+;
+; This used to divide by the integer part alone, on the stated reasoning that it "under-
+; estimates because the fraction also advances". That is backwards: dividing by inci OVER-
+; estimates, and at 1.4453 bytes a sample it returned bytes_left samples where only
+; bytes_left/1.4453 fit - so the pointer ran past V_END, wrapped through $0000, and the voice
+; read on from the bottom of memory. Dividing by inci+1 can only under-estimate, which costs
+; the caller another turn of its loop and nothing else.
 ;-----------------------------------------------------------------------------
 ; voice_advance - the window has run out for this voice. If there is more sample behind it,
 ; step to the next page and rewind V_POS to the window's base; otherwise loop or stop.
@@ -198,8 +220,14 @@ voice_advance:
         jr      z, .no_more
         ; another page: up to 8K of it becomes reachable
         inc     (ix + V_PAGE)
-        ld      (ix + V_POS), SAMP_WIN & $FF
-        ld      (ix + V_POS + 1), SAMP_WIN >> 8
+        ; CARRY THE OVERSHOOT. The pointer crossed the window's end, and wrapping left the
+        ; remainder in it - so the new position is the window's base PLUS that, not the base.
+        ; Rewinding to the base dropped up to inci + 1 bytes at every page boundary, which
+        ; showed as a one-byte error at the first crossing and a drift after it. SAMP_WIN's low
+        ; byte is zero, so this is one add.
+        ld      a, (ix + V_POS + 1)
+        add     a, SAMP_WIN >> 8
+        ld      (ix + V_POS + 1), a
         ld      de, $2000
         or      a
         sbc     hl, de
@@ -254,10 +282,20 @@ voice_run:
         ; page mixed only its last partial page. check-snd never saw it - its sample is 1,024
         ; bytes and never gets a full-page window - and check-mus checks the voice records that
         ; go in, not the bytes that come out.
+        ; A BORROW MEANS ONE OF TWO THINGS. V_END may be the $0000 that means the window's end -
+        ; $10000, which no word holds - in which case HL is already right, because 0 - V_POS is
+        ; 0x10000 - V_POS exactly. Or the pointer has CROSSED that end and wrapped, which shows
+        ; as V_POS below the window's base: DE still holds it after the subtract.
+        ld      a, d
+        cp      SAMP_WIN >> 8
+        jr      c, .crossed
         ld      a, (ix + V_END)
         or      (ix + V_END + 1)
-        ret     nz                      ; a real end, genuinely behind us: nothing to mix
-        jr      .have_left
+        jr      z, .have_left
+.crossed:
+        xor     a                       ; nothing here, and the caller must advance. This
+        ret                             ; returned the OR's result before, which the caller
+                                        ; would have read as a sample count.
 .in_window:
         ld      a, h
         or      l
@@ -270,6 +308,8 @@ voice_run:
         ld      a, (ix + V_INCI)
         or      a
         jr      z, .whole               ; below 1:1 - every sample advances under a byte
+        inc     a                       ; inci + 1: the most one sample can advance
+        jr      z, .huge                ; inci was 255, so one sample at a time
 
         ; HL / A, sixteen by eight, the schoolbook way: ~16 shifts, once a block a voice
         ; against 18 T a sample a voice for the test it replaces.
@@ -319,6 +359,14 @@ voice_run:
         ld      a, (hl)
 .done:
         or      a
+        ret     nz
+        ; AT LEAST ONE SAMPLE while any byte remains. The bound divides by inci + 1 and so
+        ; under-estimates; near a window's edge that rounds to zero while a byte is still
+        ; there, and rewinding to the next page from short of the edge drops those bytes and
+        ; the fraction's phase with them. Letting the pointer CROSS instead - by at most
+        ; inci + 1, and the byte it reads on the way is still inside - keeps the phase exact,
+        ; and voice_advance picks the overshoot up.
+        inc     a
         ret
 
 ;-----------------------------------------------------------------------------

@@ -173,7 +173,10 @@ AW_SND       ?= 0xC3B4
 
 # The game's C sits HIGHER than the harness's, because the rasteriser and the reader
 # are resident alongside it: see the CC_ORG comment in src/aw.asm.
-AW_VM_ORG    ?= 0x9C00
+# 0x9C20, not 0x9C00: the resident assembly grew past 0x9C00 when the mixer's block
+# splitting went in, and the upper block had the slack to absorb the same shift at its end.
+# MUSIC_CODE in src/aw.asm moves with it and CC_ORG there must match this exactly.
+AW_VM_ORG    ?= 0x9C08
 
 # AND THE GAME'S STACK POINTER IS THE ONE IN MMU6, not $BF00. The CRT sets SP itself from
 # REGISTER_SP - that is how Gate D's stack was fixed in the first place - so setting it in

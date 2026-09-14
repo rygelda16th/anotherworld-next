@@ -48,7 +48,7 @@
 ; C's stack is the number to watch: $BF00 down to the end of its image. Gate D needed
 ; more than 779 bytes and was given 4,500; this is less, and if it is not enough the
 ; symptom is now a known one.
-CC_ORG          EQU $9C00               ; must match VM_ORG in the Makefile
+CC_ORG          EQU $9C08               ; must match AW_VM_ORG in the Makefile
 NR_TURBO        EQU $07
 NR_MMU0         EQU $50
 NR_MMU1         EQU $51
@@ -73,7 +73,7 @@ STACK_FLOOR     EQU $CF00
 ; Code ABOVE the C's image, in the tail the stack vacated when it moved into MMU6. The C is
 ; 7.8K from $9C00 and ends near $BB50, so this is the 1,100-odd bytes between that and $BF00 -
 ; which used to be stack and is now the only resident space left. Asserted at both ends.
-MUSIC_CODE      EQU $BB50   ; just past the C's image, which ends at $BB45
+MUSIC_CODE      EQU $BB58   ; just past the C's image
 INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
 ; I3's tables, in MMU6's page rather than the resident region, which the rasteriser and
 ; the C had already filled: 584 bytes of resource table and 146 of load state is 730, and
@@ -93,6 +93,7 @@ NR_PAL_VALUE    EQU $44
 ; writes per entry work, and it is the layout mkassets.py already emits.
 PAL_SEL_L2      EQU %00010000
 RING_ADDR       EQU $D400               ; permanently mapped; see the header
+RING_END        EQU RING_ADDR + RING_LEN  ; page-aligned, which every wrap test relies on
 VOLTAB          EQU $DC00
 VOICES          EQU $DD00
 ; THE C AND THE ASSEMBLY MUST AGREE ON THESE, and they are set in two files: AW_IN and
@@ -518,98 +519,132 @@ aw_frame_sync:
 
 ;-----------------------------------------------------------------------------
 ; mix_block - A = how many samples, into the ring at (ring_wr), which wraps.
-; The first active voice stores and the rest accumulate, which is what makes the
-; inner loop test-free; sndtest.asm's do_mix is the same shape and check-snd proves
-; the arithmetic of both.
+;
+; THE BLOCK IS SPLIT, which is what I5 owed. The old version had a crude guard - rewind if the
+; next block would not fit - and its own comment said proper end-of-sample and loop-point
+; handling was still to come. It was worse than crude: a FULL window has V_END = $0000, so
+; `V_POS + blocklen` never borrowed against it, the guard read "would overrun", and V_POS went
+; to V_LOOP - zero for an unlooped sample. The voice then read from address $0000. Measured
+; after 40 blocks of RES54: V_POS = $0096, V_LEFT still 14,506, V_PAGE unmoved.
+;
+; Three things can cut a piece short and all three have to:
+;   the sample's end, or the window's edge     voice_run, which voice_advance then steps
+;   a 256-byte boundary in the RING            because mix_voice_* does `inc l`, which does
+;                                              not carry - and BLK_A of 221 into 2,048 crosses
+;
+; AND EVERY VOICE ACCUMULATES; none stores. The block is filled with 128 first, which is what
+; the DAC reads as silence, and `mva` accumulating onto 128 is byte-identical to `mvf`s biased
+; store over the whole signed range: for s >= 0 it is 128 + s and cannot carry, and for s < 0
+; the carry produces exactly what the XOR would. That buys two things for one pass of stores,
+; 0.55% of the machine: a voice that stops part way through a block leaves silence behind it
+; rather than stale ring, and there is no "which voice stores" state left to get wrong.
 ;-----------------------------------------------------------------------------
 mix_block:
-        ld      (blocklen), a
+        ld      (blk_total), a
         ld      hl, (ring_wr)
-        ld      (mix_dst), hl
+        ld      (blk_dst), hl
+
+        ; silence first: every voice accumulates onto it. The ring's end is page-aligned, so
+        ; the wrap test is one high-byte compare.
+        ld      b, a
+.fill:  ld      (hl), 128
+        inc     hl
+        ld      a, h
+        cp      RING_END >> 8
+        jr      nz, .fill_on
+        ld      hl, RING_ADDR
+.fill_on:
+        djnz    .fill
 
         ld      ix, VOICES
         ld      b, 4
-        ld      c, 0                    ; have we stored yet
 .each:
         ld      a, (ix + V_ACTIVE)
         or      a
         jr      z, .next
-
-        ; KEEP THE VOICE INSIDE ITS SAMPLE, because the mixer will not.
-        ;
-        ; The gated inner loop has NO end-of-sample test - deliberately, because a test
-        ; per sample costs 18 T a voice and the design resolves it by cutting the block
-        ; short instead. But sndtest.asm only DESCRIBES that cut in a comment; its
-        ; setup_voices copies fields and never performs it, and check-snd never caught
-        ; the omission because its sample is 1,024 bytes against blocks that never
-        ; reach the end. So the mixer is gated for its ARITHMETIC and not for the
-        ; lifecycle of a sample.
-        ;
-        ; Here that showed as V_POS at $D610 after a few seconds: the voice had run off
-        ; its 512-byte ramp, past V_END, and was reading the RING as sample data and
-        ; writing the result back over it. The ring filled with what that produces.
-        ;
-        ; This is the crude version - rewind when the next block would not fit - and it
-        ; is enough for a voice that loops. Proper end-of-sample and loop-point handling
-        ; is I5's, with real resources behind it, and it is more unwritten code than the
-        ; plan credited.
-        ld      l, (ix + V_POS)
-        ld      h, (ix + V_POS + 1)
-        ld      a, (blocklen)
+        ld      a, (blk_total)
+        ld      (mix_left), a
+        ld      hl, (blk_dst)
+        ld      (mix_pc), hl
+.piece:
+        ; the piece is the lesser of what is left of the block and what fits before the RING's
+        ; end. The 256-byte boundary is no longer a cut: mix_voice_* advances its destination
+        ; with `inc hl` now, which carries.
+        ; only the ring's LAST page can hold less than 256 bytes of room, the end being
+        ; page-aligned, so the room is 256 - L there and more than a cap's worth anywhere else.
+        ld      hl, (mix_pc)
+        ld      a, h
+        cp      (RING_END >> 8) - 1
+        jr      nz, .room_full
+        ld      a, l
+        neg
+        jr      nz, .have_room
+.room_full:
+        ld      a, 255
+.have_room:
+        ld      hl, mix_left
+        cp      (hl)
+        jr      c, .capped
+        ld      a, (hl)
+.capped:
+        ld      (blocklen), a           ; voice_run caps against this, voice_regs counts by it
+        push    bc                      ; B IS THE VOICE COUNTER and voice_run's divide uses B
+        call    voice_run               ; as its own sixteen-step counter
+        pop     bc
+        jr      nz, .have
+        ; nothing available in this window: step the page, take the loop, or go quiet
+        push    bc
+        call    voice_advance
+        pop     bc
+        ld      a, (ix + V_ACTIVE)
+        or      a
+        jr      nz, .piece
+        jr      .next                   ; stopped, and the 128s already there are the rest
+.have:
+        ld      (blocklen), a           ; what voice_run settled on, which may be less
         ld      e, a
-        ld      d, 0
-        add     hl, de                  ; where this block would end
-        ld      e, (ix + V_END)
-        ld      d, (ix + V_END + 1)
-        or      a
-        sbc     hl, de
-        jr      c, .in_range
-        ld      a, (ix + V_LOOP)        ; it would overrun: back to the loop point
-        ld      (ix + V_POS), a
-        ld      a, (ix + V_LOOP + 1)
-        ld      (ix + V_POS + 1), a
-        ld      (ix + V_FRAC), 0
-.in_range:
-        ld      a, c
-        or      a
-        jr      nz, .accum
+        ld      hl, (mix_pc)
+        ld      (mix_dst), hl
         push    bc
-        call    mix_voice_first
-        pop     bc
-        ld      c, 1
-        jr      .next
-.accum:
-        push    bc
+        push    de
         call    mix_voice_add
+        pop     de
         pop     bc
+        ld      d, 0
+        ld      hl, (mix_pc)
+        add     hl, de                  ; a piece can land ON the end but never past it
+        ld      a, h
+        cp      RING_END >> 8
+        jr      nz, .pc_in
+        ld      hl, RING_ADDR
+.pc_in:
+        ld      (mix_pc), hl
+        ld      a, (mix_left)
+        sub     e
+        ld      (mix_left), a
+        jr      nz, .piece
 .next:
         ld      de, V_SIZE
         add     ix, de
         dec     b
         jp      nz, .each
 
-        ld      a, c
-        or      a
-        jr      nz, .advance
-        ; nothing active: silence, which for a DAC centred at 128 is 128
+        ; THE WRITE POINTER WRAPS MODULO, not by jumping back to the start. It used to test
+        ; `ring_wr + blocklen` against the end AFTER the block had been written and reset to
+        ; RING_ADDR if it passed - so the block that took it over the edge wrote up to 158
+        ; bytes PAST the ring, over VOLTAB, and the bytes near the end were never written at
+        ; all. Nine blocks of 221 reach 1,985 of 2,048, and the tenth did both.
         ld      hl, (ring_wr)
-        ld      a, (blocklen)
-        ld      b, a
-.sil:   ld      (hl), 128
-        inc     hl
-        djnz    .sil
-.advance:
-        ; wrap the write pointer at the end of the ring
-        ld      hl, (ring_wr)
-        ld      a, (blocklen)
+        ld      a, (blk_total)
         ld      e, a
         ld      d, 0
         add     hl, de
-        ld      de, RING_ADDR + RING_LEN
+        ld      de, RING_END
         or      a
         sbc     hl, de
         jr      c, .store
-        ld      hl, RING_ADDR           ; past the end: back to the start
+        ld      de, RING_ADDR           ; HL is how far past the end it went
+        add     hl, de
         ld      (ring_wr), hl
         ret
 .store:
@@ -2174,6 +2209,7 @@ draw_char6:
         nextreg NR_SAMP_MMU, a
         ENDM
 
+        DEFINE SND_NO_FIRST             ; every voice accumulates; see mix_block
         INCLUDE "src/inc/sound.inc"
 
 ;-----------------------------------------------------------------------------
@@ -2323,6 +2359,10 @@ vs_zero8:       db 0            ; 1 = zero four bytes at data+8, the module path
 n_mus_nores:    dw 0
         EXPORT n_mus_farloop
 n_mus_farloop:  dw 0
+blk_total:      db 0            ; the whole block, kept while blocklen holds one piece
+blk_dst:        dw 0            ; where the block starts in the ring
+mix_left:       db 0            ; samples of it this voice still owes
+mix_pc:         dw 0            ; where in the ring this voice's next piece goes
         EXPORT n_mix
 n_mix:          dw 0            ; interrupts that mixed; the game starts silent, so the ring
                                 ; alone cannot say whether the mixer ran
@@ -2550,6 +2590,9 @@ nm_tail:    db ".BIN", 0
         DISPLAY "> reciprocals at ", /H, INTERP_AT, " ending ", /H, $
         ASSERT $ <= RING_ADDR
 
+        ; THREE WRAP TESTS IN mix_block COMPARE ONLY THE HIGH BYTE, so the ring's end must be
+        ; page-aligned. It is, and now it has to stay so.
+        ASSERT (RING_END & $FF) == 0
         ASSERT RING_ADDR + RING_LEN <= VOLTAB
         ASSERT VOLTAB + 256 <= VOICES
         ASSERT VOICES + V_SIZE * 4 <= SAMPLE
