@@ -26,7 +26,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
         check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-save check-bitmap \
-        toolchain-diff
+        toolchain-diff play record
 
 help:
 	@echo "make certs          extract the corporate TLS-inspection CA for the image"
@@ -231,6 +231,31 @@ asm: | $(BUILD)
 
 emu:
 	$(DC) run --rm --service-ports tools $(ZESARUX)
+
+# ---- I10: a person plays, and the machine is recorded while they do ----------
+#
+# The gate is "a full playthrough under the patched ZEsarUX, RECORDED, with the per-frame
+# budget re-measured on the real thing against the per-part table". The playthrough is the
+# player's; the other two are not, and should not depend on anyone remembering them.
+#
+#     make play        native ZEsarUX, in a window, with the game and ZRCP open
+#     make record      attach and log until Ctrl-C, then report against the table
+#
+# Two terminals, `play` first. It is the NATIVE emulator, not the container's: the container
+# runs headless (--vo null) because every gate reads over a socket and none of them needs a
+# screen. A person does.
+#
+# O and P left and right, Q and A up and down, Space fire, ENTER to start - the boot
+# handshake, which nothing pokes on real hardware.
+PLAY_NEX  ?= build/aw.nex
+play:
+	@test -x "$(NATIVE_ZESARUX)" || { echo "no native ZEsarUX at $(NATIVE_ZESARUX)"; exit 1; }
+	@echo "  ENTER starts it.  O/P left-right, Q/A up-down, Space fire."
+	@echo "  In another terminal: make record"
+	"$(NATIVE_ZESARUX)" --machine tbblue --enable-remoteprotocol 		--remoteprotocol-port 10000 --enable-esxdos-handler 		--esxdos-root-dir "$(CURDIR)/$(BUILD)/assets" --nex-no-automount-esxdos 		--tbblue-max-turbo-rom 8 --tbblue-max-turbo-everywhere 8 		--quickload "$(CURDIR)/$(PLAY_NEX)"
+
+record:
+	python3 tools/record.py
 
 # ---- checks on the machine, over ZRCP ---------------------------------------
 check-span: asm
