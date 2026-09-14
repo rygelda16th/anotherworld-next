@@ -2037,7 +2037,7 @@ had failed to find in dozens.
 | ~~**I3**~~ | ~~resources arrive at runtime~~ **PARTLY DONE**, `make check-res` - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
 | ~~**I4**~~ | ~~text~~ **DONE**, `make check-text` - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
 | ~~**I5**~~ | ~~**sound in the game**~~ **DONE**, `make check-mus` - `op_playSound` and `op_playMusic` reach the player, the module is parsed, and the mixer maps each voice's own page | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | **PASSED**: three modules parsed and walked against a model of `sfxplayer.cpp`, the four voice records after 1, 70 and 100 events, and six `op_playSound` cases checked against the sample shapes the host probe logged the reference producing - a stop, a loop, three pages, both ends of the pitch table and the clamp. And the MIXER'S OUTPUT byte-exact on a real sample: all 2,048 ring bytes over 19,164 source bytes and two page boundaries, which took a rewrite of the per-voice loop and found five mixer bugs |
-| **I6** | **part transitions** - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
+| ~~**I6**~~ | ~~**part transitions**~~ **DONE**, `make check-part` - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
 | **I7** | **the full-screen bitmap path** | 70 of them load in the arena and no gate covers the machine half | the arena's bitmaps, on the machine, against the engine's pages |
 | **I8** | **the code screen, and its bypass** - which is a **starting part number**, not a subsystem | the wheel screen is `GAME_PART1` and is drawn by ordinary bytecode (`engine.cpp:71-73`); the bypass keeps every gate comparable to the reference build | the screen renders and accepts a correct code; with the flag set, part 2 starts directly, exactly as `BYPASS_PROTECTION` does |
 | **I9** | **save and load** | in the definition of done, and the reference has a format to match | save mid-part, reload, and both the VM state and the opcode stream from that point match a run that never saved |
@@ -2934,21 +2934,59 @@ through check-mus, including one that spans three pages. What is still not gated
 the **mixed output** of a real sample: every gate here checks the voice records that go in,
 not the bytes that come out.
 
-#### I6. Part transitions
+#### I6. Part transitions - DONE, `make check-part`
 
-`aw_part_req` is set and never acted on. The reference acts on it between frames -
-`setupPart` (`resource.cpp:280`) takes a part id, bounds-checks it against
-`GAME_PART_FIRST 0x3E80` and `GAME_PART_LAST 0x3E89`, and loads the **four**
-resources that part names.
+**Three parts set up on the machine exactly as `setupPart` describes**, checked against the
+reference's own `memListParts` (`parts.cpp`) through `tools/mkparts.py` - so a wrong table here
+would have to agree with the engine's to pass. The cases cover the shapes: the introduction (no
+second polygon set), a gameplay part that has one, and a cinematic that does not.
 
-That table is the whole structure of the game (`parts.cpp:14-28`): ten parts, each
-one a palette, a bytecode segment, a first video segment and an optional second.
-Parts 3 through 8 share video2 `0x11`; parts 9 and 10 share all three of `0x7D`,
-`0x7E`, `0x7F`.
+```
+part 1  palette 0x17, bytecode 0x18@73, polygons 0x19@75, no second set, silent
+part 2  palette 0x1a, bytecode 0x1b@73, polygons 0x1c@76 + 0x11@84, silent
+part 5  palette 0x23, bytecode 0x24@73, polygons 0x25@75, no second set, silent
+```
 
-**Gate:** the intro runs into part 2 and part 2 into part 3 unaided, and the opcode
-stream matches the engine's **across** the transition - which is where a missed
-`invalidateAll` or an un-reset thread table shows up.
+`aw_setup_part` takes a part **index** - the C turns the id into one and bounds-checks it, since
+that is where the id arrives - and does the reference's four things in order: stop the player and
+every channel (`initForPart`, before `setupPart` touches a resource), invalidate everything
+(`resource.cpp:298`), load the part's four resources (`:310`), and point the three windows at
+them. Every load goes through `aw_load_res`, the path `check-res` already proves byte for byte
+against the card, so this adds no new way to get a resource wrong - only a new reason to ask for
+one.
+
+**Three things had to become variable, and one of them could not afford to be.**
+
+| | |
+|---|---|
+| the cinematic segment | `seg_base` already was; it now comes from `cin_base` |
+| the **second** polygon set | new: `vid2_base`, and `aw_draw_poly` picks between them on the flag the C already sets. Five of the ten parts name one; a part without one still counts the draw and skips it, because there is nothing to read |
+| the bytecode window | a **patched immediate**, not a load. `aw_code_window` runs on every fetch, so reading a base out of memory would cost about 4% of a frame - `aw_setup_part` writes `code_add + 1`, the same trick the mixer uses for its increments |
+
+The palette is the one resource that is not simply paged in: `apply_palette` reads it out of the
+text page at `PAL_BASE`, so its 1,024 bytes are copied there once the resource is resident, with
+MMU7 borrowed and put back because the mixer reads a sample through the same slot from inside the
+interrupt. `check-part` compares those bytes against the card.
+
+**A bad part id records a fault rather than halting.** The reference calls `error()` on an id
+outside `0x3E80..0x3E89` (`resource.cpp:287`); ours sets `FAULT_BAD_PART` and carries on with the
+part it has, because a bad id would be a bug in our VM and a checker can read a fault where it
+cannot read a halt.
+
+**Space, again, and this time it came from I1's scaffolding.** `$DE00` held a 256-byte ramp that
+`init_voices` used to start four voices on; the game has started silent since I5, so nothing had
+read it. That 256 bytes is now `PART_CODE`, holding `aw_setup_part` and `probe_walk`, and
+`note_to_inc` had already moved to the seventy-two bytes between `SND_BLOCK` and the order table.
+MMU6 is mapped at every moment, so code runs from it as happily as data sits in it - which is
+what made both moves possible when the resident block had nothing left.
+
+**And a fourteenth jump-table slot**, which is three files that have to agree and an `ASSERT
+$ - jump_table == 42` in two of them. That assert exists because a slot was once added to one and
+not another.
+
+**What I6 does NOT yet prove:** that the VM then *runs* the new part - that its opcode stream is
+the engine's from the new bytecode, and that its first frames draw what the engine draws. The
+transition is right; the playing of what it set up is I9a's and I10's.
 
 #### I7. The full-screen bitmap path
 

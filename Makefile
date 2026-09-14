@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-bitmap \
+        check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bitmap \
         toolchain-diff
 
 help:
@@ -211,6 +211,7 @@ cc: | $(BUILD)
 
 asm: | $(BUILD)
 	python3 tools/mksndfreq.py $(PROBE) $(BUILD)/sndfreq.inc
+	python3 tools/mkparts.py $(PROBE) $(BUILD)/parts.inc
 	$(RUN) sh -c 'set -e; for f in src/*.asm; do \
 		b=$$(basename "$$f" .asm); echo "  ASM $$f"; \
 		sjasmplus --zxnext=cspect --fullpath --exp="$(BUILD)/$$b.exp" \
@@ -274,6 +275,13 @@ check-aw: cc-game
 	$(MAKE) asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkaw.py'
+
+# I6: a part transition, against what setupPart promises.
+check-part: cc-game
+	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
+	$(MAKE) asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkpart.py'
 
 # I5: the machine's module-header parse against tools/sfxmod.py's.
 check-mus: cc-game

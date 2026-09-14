@@ -216,8 +216,15 @@ DST_PAGE        EQU 1
 SRC_PAGE        EQU 0
 DST_P0          EQU (L2_BASE_BANK + DST_PAGE * 3) * 2
 SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * 3) * 2
-SAMPLE          EQU $DE00
-SAMPLE_LEN      EQU 256                 ; halved to make room for the quiet volume table
+; $DE00 HELD A 256-BYTE RAMP and now holds code. It was I1's scaffolding: init_voices used to
+; start four voices ACTIVE on it and ramp_sample filled it; check-snd's synthetic voices are
+; sndtest's own, not these. The game starts silent, so nothing has read it since - and MMU6 is
+; mapped at every moment, which is what aw_setup_part and probe_walk need and the resident block
+; could not give them.
+PART_CODE       EQU $DE00               ; aw_setup_part and probe_walk live here
+NR_PAL_SRC_MMU  EQU $52                 ; MMU2: the palette resource, while it is copied
+PAL_SRC_WIN     EQU $4000
+NR_TEXT_MMU_HI  EQU $57                 ; MMU7: the text page, where PAL_BASE lives
 ; TWO VOLUME TABLES, which is David's decision of 2026-09-14 and not an omission. The mixer
 ; scales through a 256-byte table and only two page-aligned slots were free here, against nine
 ; distinct instrument volumes and effects that move them further. The alternatives were a
@@ -285,6 +292,7 @@ jump_table:
         jp      aw_draw_string          ; $801E  I4
         jp      aw_play_music           ; $8021  I5
         jp      aw_play_sound           ; $8024  I5
+        jp      aw_setup_part           ; $8027  I6
         ; THIRTY-SIX. src/aw/jumptab.asm declares the same addresses to the C and this ASSERT
         ; is the only thing that catches a slot added to one file and not the other - which is
         ; exactly what happened: the edits that were supposed to add these two slots used a
@@ -294,7 +302,7 @@ jump_table:
         ;
         ; I4 did not notice because its gate calls aw_draw_string directly in assembly and
         ; never through the table. A slot nothing calls is a slot nothing tests.
-        ASSERT $ - jump_table == 39      ; thirteen slots; aw_play_sound made it thirteen
+        ASSERT $ - jump_table == 42      ; fourteen slots; aw_setup_part made it fourteen
 
 start:
         di
@@ -404,8 +412,8 @@ start:
         ld      h, 0
         call    aw_load_res
         call    aw_play_music
-        call    probe_walk              ; lives above the C: the resident block is full
-        jr      .stop
+        call    probe_walk              ; lives in MMU6 now: see PART_CODE
+        jp      .stop
 .not_mus:
         ; probe_snd: SND_BLOCK already holds op_playSound's four operands. Load the resource
         ; the way the bytecode would have, then hand it over - so the gate tests aw_play_sound
@@ -442,6 +450,15 @@ start:
         djnz    .mixb
         jp      .stop
 .not_snd:
+        ; probe_part: hand aw_setup_part a part index and stop, so the transition can be checked
+        ; without the VM asking for it. index + 1, because zero means "no probe".
+        ld      a, (probe_part)
+        or      a
+        jr      z, .not_part
+        dec     a
+        call    aw_setup_part
+        jp      .stop
+.not_part:
         ld      a, (probe_str)
         or      a
         jr      z, .not_str
@@ -873,17 +890,19 @@ init_voices:
 .one:
         ld      (ix + V_ACTIVE), 0      ; SILENT until a note says otherwise
         ld      (ix + V_FRAC), 0
-        ld      (ix + V_POS), SAMPLE & $FF
-        ld      (ix + V_POS + 1), SAMPLE >> 8
+        ; PARKED, not meaningful: an inactive voice's position is never read, and voice_setup
+        ; writes all of these before one plays. The window's base is the honest place to park.
+        ld      (ix + V_POS), SAMP_WIN & $FF
+        ld      (ix + V_POS + 1), SAMP_WIN >> 8
         ld      (ix + V_INCF), 0
         ld      (ix + V_INCI), 1        ; one sample in, one out
         ld      (ix + V_INCI + 1), 0
         ld      a, VOLTAB >> 8
         ld      (ix + V_VOL), a
-        ld      (ix + V_END), (SAMPLE + SAMPLE_LEN) & $FF
-        ld      (ix + V_END + 1), (SAMPLE + SAMPLE_LEN) >> 8
-        ld      (ix + V_LOOP), SAMPLE & $FF
-        ld      (ix + V_LOOP + 1), SAMPLE >> 8
+        ld      (ix + V_END), SAMP_WIN & $FF
+        ld      (ix + V_END + 1), SAMP_WIN >> 8
+        ld      (ix + V_LOOP), 0
+        ld      (ix + V_LOOP + 1), 0
         ld      de, V_SIZE
         add     ix, de
         dec     b
@@ -1380,12 +1399,20 @@ aw_draw_poly:
         ld      a, (DRAW_BLOCK + 9)
         or      a
         jr      z, .cinematic
+        ; VIDEO2 IS A SECOND SEGMENT, and five of the ten parts have one: setDataBuffer is
+        ; handed either the part's cinematic data or its video2 data, which is what the two
+        ; polygon opcodes choose between. A part with no video2 (vid2_base zero) still counts
+        ; and skips, because there is nothing to read.
+        ld      a, (vid2_base)
+        or      a
+        jr      nz, .have_seg
         ld      hl, (n_video2)
         inc     hl
         ld      (n_video2), hl
         jr      .restore
 .cinematic:
-        ld      a, POLY_PAGE
+        ld      a, (cin_base)
+.have_seg:
         ld      (seg_base), a
         xor     a
         ld      (rd_depth), a
@@ -2278,6 +2305,8 @@ probe_mus:  db 0            ; a resource id: load it and parse it, no VM
 probe_snd:  db 0            ; 1 = load SND_BLOCK's resource and run aw_play_sound
         EXPORT probe_mix
 probe_mix:  db 0            ; blocks to mix after it, with the interrupt's mixer off
+        EXPORT probe_part
+probe_part: db 0            ; a part index + 1: set that part up and stop
         EXPORT probe_str
 probe_str:  db 0            ; 1 = draw one string from STR_BLOCK and stop, no VM
         EXPORT probe_fill
@@ -2288,7 +2317,11 @@ probe_draw: db 0            ; 1 = do one draw from DRAW_BLOCK and stop, no VM
 stop_draw:  dw $FFFF        ; refuse the draw once this many have happened; $FFFF = no limit
 saved_mmu0: db 0
         EXPORT n_video2
-n_video2:   dw 0        ; draws that wanted the video2 segment, which is not loaded yet
+n_video2:   dw 0        ; draws that wanted a video2 segment the part does not have
+        EXPORT cin_base
+cin_base:   db POLY_PAGE    ; the part's cinematic polygons; the gates' fixed page until I6 sets it
+        EXPORT vid2_base
+vid2_base:  db 0            ; and its second polygon set, 0 when the part names none
         EXPORT cp_src
 cp_src:     db 0
         EXPORT cp_dst
@@ -2326,6 +2359,7 @@ n_mus_note:     dw 0            ; notes decoded
 n_mus_stop:     dw 0            ; channel stops seen
         EXPORT mus_mark
 mus_mark:       dw 0            ; what a 0xFFFD row wrote, for variable 0xF4
+part_ptr:       dw 0            ; the part's four-byte row in part_table
 mp_chan:        db 0
 mp_note1:       dw 0
 mp_note2:       dw 0
@@ -2395,54 +2429,6 @@ n_load:     dw 0
 n_inval:    dw 0
 
 
-; probe_walk - run the event walk (probe_ticks) times with the tick period forced to one
-; frame, so each call fires. The walk is what is under test, not the pacing. Up here with the
-; music code because the resident block below the C had fourteen bytes left in it - which
-; stopped being true when the stack moved to MMU6, so it is back down here and the upper
-; block's room went to aw_play_sound.
-probe_walk:
-        ld      a, (probe_ticks)
-        or      a
-        ret     z
-        ; LOAD THE INSTRUMENTS THE MODULE NAMES. The bytecode would have asked for them through
-        ; op_updateMemList long before it played any music; the probe loads the module alone, so
-        ; without this every note found its sample absent, counted n_mus_nores and left the voice
-        ; at its boot values - which read as "every channel has increment 256" because that is
-        ; what init_voices leaves.
-        ld      (pw_left), a            ; KEEP IT. The loop below runs `ld a,(hl)` fifteen times,
-                                        ; so the `ld b,a` that used to follow it took its event
-                                        ; count from a table byte - zero, every time, which djnz
-                                        ; reads as 256. EVERY probe run walked the module to its
-                                        ; end no matter what probe_ticks said, which is why all
-                                        ; four voices came up active for a one-event walk whose
-                                        ; only row was a stop.
-        ld      hl, MUS_INSTR_AT        ; the COMPACTED table: resource byte, volume byte
-        ld      b, 15
-.ins:
-        ld      a, (hl)
-        or      a
-        jr      z, .next_ins
-        push    bc
-        push    hl
-        ld      l, a
-        ld      h, 0
-        call    aw_load_res
-        pop     hl
-        pop     bc
-.next_ins:
-        inc     hl
-        inc     hl
-        djnz    .ins
-        ld      a, 1
-        ld      (mus_frames), a
-        ld      a, (pw_left)
-        ld      b, a
-.tick:
-        push    bc
-        call    music_tick
-        pop     bc
-        djnz    .tick
-        ret
 
 ;-----------------------------------------------------------------------------
 ; voice_locate - A = a resource id and (mp_chan) = the channel. On exit mv_page holds the
@@ -2512,6 +2498,169 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
         ; the mixer's loop restore went in. MMU6 is mapped at every moment, so code runs
         ; from it as happily as data sits in it, and the seventy-two bytes between
         ; SND_BLOCK and the order table were the largest gap left anywhere in the program.
+        ORG PART_CODE
+;-----------------------------------------------------------------------------
+; I6. aw_setup_part - A = the part INDEX, 0..9. setupPart, resource.cpp:280, and the half of
+; initForPart, vm.cpp, that is not the thread reset.
+;
+; The C has already turned op_updateMemList's id into an index and bounds-checked it, because
+; that is where the id arrives; this takes the index and does the four things the reference does
+; in order:
+;
+;   stop the player and every channel   initForPart, before setupPart touches a resource
+;   invalidate everything               invalidateAll, resource.cpp:298
+;   load the part's four resources      loadMarkedAsNeeded, resource.cpp:310
+;   point the three windows at them     segPalettes, segBytecode, segCinematic, _segVideo2
+;
+; Every load goes through aw_load_res, which is the path check-res already proves byte for byte
+; against the card - so this adds no new way to get a resource wrong, only a new reason to ask
+; for one. The palette is the exception: apply_palette reads it out of the text page at
+; PAL_BASE, so the 1,024 bytes are copied there once the resource is resident.
+;-----------------------------------------------------------------------------
+aw_setup_part:
+        add     a, a
+        add     a, a                    ; four bytes an entry - parts.cpp, via mkparts.py
+        ld      e, a
+        ld      d, 0
+        ld      hl, part_table
+        add     hl, de
+        ld      (part_ptr), hl
+
+        ; the player and all four voices, before anything moves underneath them
+        xor     a
+        ld      (mus_playing), a
+        ld      (mus_res), a
+        ld      ix, VOICES
+        ld      b, 4
+.quiet:
+        ld      (ix + V_ACTIVE), 0
+        ld      de, V_SIZE
+        add     ix, de
+        djnz    .quiet
+
+        call    aw_inval_res
+
+        ; the palette, to the text page where apply_palette looks for it
+        ld      hl, (part_ptr)
+        ld      a, (hl)
+        call    part_load
+        call    copy_palette
+
+        ; the bytecode, and the window's base with it
+        ld      hl, (part_ptr)
+        inc     hl
+        ld      a, (hl)
+        call    part_load
+        ld      (code_add + 1), a
+
+        ; the cinematic polygons
+        ld      hl, (part_ptr)
+        inc     hl
+        inc     hl
+        ld      a, (hl)
+        call    part_load
+        ld      (cin_base), a
+
+        ; and the second polygon set, which five of the ten parts do not have
+        ld      hl, (part_ptr)
+        inc     hl
+        inc     hl
+        inc     hl
+        ld      a, (hl)
+        ld      (vid2_base), a          ; zero stands for MEMLIST_PART_NONE, parts.h:32
+        or      a
+        ret     z
+        call    part_load
+        ld      (vid2_base), a
+        ret
+
+; A = a resource id. Loads it if it is not resident and returns its first page in A.
+part_load:
+        ld      l, a
+        ld      h, 0
+        push    hl
+        di                              ; esxDOS wants it off; see the boot path
+        call    aw_load_res
+        ei
+        pop     hl
+        ld      de, res_page
+        add     hl, de
+        ld      a, (hl)
+        ret
+
+; A = the palette resource's first page. Its 1,024 bytes go to PAL_BASE in the text page,
+; through MMU2 for the source and MMU7 for the destination - MMU7 borrowed and put back,
+; because the mixer reads a sample through the same slot from inside the interrupt.
+copy_palette:
+        nextreg NR_PAL_SRC_MMU, a
+        ld      bc, $243B
+        ld      a, NR_TEXT_MMU_HI
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        push    af
+        ld      a, TEXT_PAGE
+        nextreg NR_TEXT_MMU_HI, a
+        ld      hl, PAL_SRC_WIN
+        ld      de, PAL_BASE
+        ld      bc, 1024
+        ldir
+        pop     af
+        nextreg NR_TEXT_MMU_HI, a
+        ret
+
+; probe_walk - run the event walk (probe_ticks) times with the tick period forced to one
+; frame, so each call fires. The walk is what is under test, not the pacing. Up here with the
+; music code because the resident block had room at the time; it does not now, and MMU6's
+; freed ramp buffer does - so it lives at PART_CODE with aw_setup_part.
+probe_walk:
+        ld      a, (probe_ticks)
+        or      a
+        ret     z
+        ; LOAD THE INSTRUMENTS THE MODULE NAMES. The bytecode would have asked for them through
+        ; op_updateMemList long before it played any music; the probe loads the module alone, so
+        ; without this every note found its sample absent, counted n_mus_nores and left the voice
+        ; at its boot values - which read as "every channel has increment 256" because that is
+        ; what init_voices leaves.
+        ld      (pw_left), a            ; KEEP IT. The loop below runs `ld a,(hl)` fifteen times,
+                                        ; so the `ld b,a` that used to follow it took its event
+                                        ; count from a table byte - zero, every time, which djnz
+                                        ; reads as 256. EVERY probe run walked the module to its
+                                        ; end no matter what probe_ticks said, which is why all
+                                        ; four voices came up active for a one-event walk whose
+                                        ; only row was a stop.
+        ld      hl, MUS_INSTR_AT        ; the COMPACTED table: resource byte, volume byte
+        ld      b, 15
+.ins:
+        ld      a, (hl)
+        or      a
+        jr      z, .next_ins
+        push    bc
+        push    hl
+        ld      l, a
+        ld      h, 0
+        call    aw_load_res
+        pop     hl
+        pop     bc
+.next_ins:
+        inc     hl
+        inc     hl
+        djnz    .ins
+        ld      a, 1
+        ld      (mus_frames), a
+        ld      a, (pw_left)
+        ld      b, a
+.tick:
+        push    bc
+        call    music_tick
+        pop     bc
+        djnz    .tick
+        ret
+        DISPLAY "> part code at ", /H, PART_CODE, " ending ", /H, $
+        ASSERT $ <= VOLTAB_QUIET
+
+        INCLUDE "build/parts.inc"
+
         ORG NOTE_CODE
 ;-----------------------------------------------------------------------------
 ; note_to_inc - HL = an Amiga period, out as the mixer's 8.8 sample increment.
@@ -2600,10 +2749,8 @@ nm_tail:    db ".BIN", 0
         ASSERT (RING_END & $FF) == 0
         ASSERT RING_ADDR + RING_LEN <= VOLTAB
         ASSERT VOLTAB + 256 <= VOICES
-        ASSERT VOICES + V_SIZE * 4 <= SAMPLE
-        ASSERT SAMPLE + SAMPLE_LEN <= VOLTAB_QUIET
+        ASSERT VOICES + V_SIZE * 4 <= PART_CODE
         ASSERT VOLTAB_QUIET + 256 <= $E000
-        ASSERT SAMPLE + SAMPLE_LEN <= $E000
         ; the vector table and its trampoline, in the gap the expected stream leaves
         ; EVERY small block asserted, because STR_BLOCK sat inside DRAW_LOG's 200 bytes
         ; for three commits and only escaped notice because the two probe paths that use

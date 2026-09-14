@@ -37,6 +37,13 @@ aw_code_window:
         rlca
         rlca
         and     7                       ; H >> 5 = off >> 13
+        ; A PATCHED IMMEDIATE, not a load. This runs on every bytecode fetch, so the ten extra
+        ; T-states of reading the base out of memory would cost about 4% of a frame - and I6
+        ; needs it to change, because a part's bytecode arrives through aw_load_res at whatever
+        ; page the heap cursor had reached, not at the fixed CODE_PAGE the gates load into.
+        ; aw_setup_part writes code_add + 1; the same trick the mixer uses for its increments.
+        EXPORT code_add
+code_add:
         add     a, CODE_PAGE
         nextreg NR_MMU0, a
         inc     a

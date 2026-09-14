@@ -300,7 +300,7 @@ def main():
             if other == chan:
                 continue
             o = raw[other * V_SIZE:(other + 1) * V_SIZE]
-            if o[11] != 0 or (o[1] | (o[2] << 8)) != 0xDE00:
+            if o[11] != 0 or (o[1] | (o[2] << 8)) != 0xE000:
                 fails.append(f"channel {other} moved when {chan} was asked for")
         if fails:
             print(f"  play RES{res:02X} freq {fq} vol {vol} ch {chan} ({why}): "

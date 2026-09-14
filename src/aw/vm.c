@@ -40,6 +40,7 @@ extern void aw_inval_res(void);
 /* I5. The harness counts; the game parses the module's header. */
 extern void aw_play_music(void);
 extern void aw_play_sound(void);
+extern void aw_setup_part(uint8_t index) __z88dk_fastcall;
 /* The two shared regions are named by PLAIN ADDRESS CONSTANTS, not by extern
  * symbols declared with defc. That is the third arrangement tried and the first
  * that is unambiguous.
@@ -161,6 +162,7 @@ extern void aw_play_sound(void);
 #define EXP_OPS         ((const uint8_t *)AW_EXP)
 
 #define FAULT_PAST_END  1       /* the pc left the segment that was loaded */
+#define FAULT_BAD_PART  4       /* a part id outside 0x3E80..0x3E89 */
 #define FAULT_RESET     2       /* resetThread over a range outside the table */
 #define FAULT_BAD_OP    3       /* an opcode the reference calls error() on */
 #define FAULT_RET       4       /* ret with nothing on the call stack */
@@ -798,6 +800,24 @@ int main(void)
     CTL_DIV_AT = 0;
     for (f = 0; f < CTL_FRAMES; ++f) {
         aw_frame_sync();
+
+        /* THE PART REQUEST, at the top of the frame and before any thread runs - which is
+         * where the reference acts on it (vm.cpp:414, into initForPart). op_updateMemList
+         * only records it, because a part change invalidates the very bytecode the opcode
+         * that asked for it was read from.
+         *
+         * The reference calls error() on an id outside 0x3E80..0x3E89 (resource.cpp:287).
+         * Ours records a fault and carries on with the part it has: a bad id is a bug in
+         * our VM, and a checker can read a fault where it cannot read a halt. */
+        if (aw_part_req != 0) {
+            if (aw_part_req >= 0x3E80 && aw_part_req <= 0x3E89) {
+                aw_setup_part((uint8_t)(aw_part_req - 0x3E80));
+                aw_init_part();         /* the thread reset half of initForPart */
+            } else {
+                CTL_FAULT = FAULT_BAD_PART;
+            }
+            aw_part_req = 0;
+        }
         CTL_FRAMES_DONE = f;
         if (CTL_OUT_OF_BUDGET || CTL_FAULT)
             break;
