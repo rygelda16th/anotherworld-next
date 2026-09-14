@@ -386,21 +386,28 @@ start:
         ld      a, $5A
         ld      (ready), a
 
-        ; AND A KEY STARTS IT TOO, because nothing pokes `go` on a real Next.
+        ; AND ENTER STARTS IT TOO, because nothing pokes `go` on a real Next.
         ;
         ; `go` exists so a checker can set fname, the control block and the probe bytes AFTER
         ; the image has loaded and before the game reads any of them - smartload starts the
         ; program itself, so there is no earlier moment to do it in. On hardware there is no
         ; checker, and a .nex that waits for a byte nobody will ever write is a .nex that never
-        ; starts. Fire or Space releases it as well: every gate leaves both untouched, and it is
-        ; what a player presses anyway.
+        ; starts.
+        ;
+        ; ENTER, AND NOT FIRE, and that distinction cost a gate. The first version of this
+        ; released on in_button, which is Space or the Kempston fire button - and check-input
+        ; runs all thirty-two of its key combinations BEFORE it pokes `go`, reading what the
+        ; interrupt publishes while the boot path waits. Pressing fire started the game
+        ; underneath it and five combinations came back as zeros. ENTER is on a row the game
+        ; never reads and no gate ever presses, and testing it here directly also leaves
+        ; in_mask and in_button alone, which is the other half of why that broke.
 .wait:  ld      a, (go)
         or      a
         jr      nz, .begin
-        call    read_keys
-        ld      a, (in_button)
-        or      a
-        jr      z, .wait
+        ld      a, ROW_ENTER
+        in      a, ($FE)
+        bit     0, a                    ; 0 = pressed, as the whole matrix is
+        jr      nz, .wait
 .begin:
 
         ; I8. WHERE THE GAME STARTS, and how one binary serves both it and every gate.

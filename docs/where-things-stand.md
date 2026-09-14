@@ -28,27 +28,36 @@ measurement that is the **only** thing that needs to be.
 | D - the virtual machine | **done**, Gate D passed, 763 records identical, repeatably |
 | E - pacing, input, sound | **built and gated** |
 | F - the rest of the game | **scoped**, three known gaps |
-| **integration - a playable game** | **Chain 2, in progress: eight of thirteen steps done, one half done** |
+| **integration - a playable game** | **Chain 2, in progress: ten of thirteen steps done; I10, a playthrough, is the live one** |
 
 **The end goal is a fully playable Another World with sound**, and the state of that is:
-**it is one binary now, and almost all of it works, and it does not yet run.**
+**it is one binary, it runs, and nobody has yet played it to the end.**
 
-That sentence needs unpacking, because both halves are true. There is a single `build/aw.nex`
-which boots into part 0 - the protection screen - sets its palette, bytecode and polygons up
-correctly, and holds everything live at once: the frame interrupt, the DMA streaming a ring to
-the DAC, the mixer refilling it from inside the interrupt, the VM, the rasteriser, the loader,
-the text, the module player. Of the thirteen Chain 2 steps, **eight are done and gated** and one
-is half done. The VM draws the intro's four pages byte-for-byte against the engine; text is
-pixel-exact; resources arrive at runtime byte-for-byte against the card; sound plays real samples
-and real music, mixed byte-exact; parts transition; full-screen bitmaps present; a 198,272-byte
-save writes and every field in it matches the machine.
+There is a single `build/aw.nex` which boots into part 0 - the protection screen - sets its
+palette, bytecode and polygons up correctly, and holds everything live at once: the frame
+interrupt, the DMA streaming a ring to the DAC, the mixer refilling it from inside the interrupt,
+the VM, the rasteriser, the loader, the text, the module player. Of the thirteen Chain 2 steps,
+**ten are done and gated**. The VM draws the intro's four pages byte-for-byte against the engine;
+text is pixel-exact; resources arrive at runtime byte-for-byte against the card; sound plays real
+samples and real music, mixed byte-exact; parts transition; full-screen bitmaps present; and a
+198,272-byte save both writes and reads back with every field matching the machine.
 
-**And the shipped game runs zero frames.** The C's frame loop is bounded by `CTL_FRAMES`, which
-only a harness pokes and which the image leaves at zero, so booting normally sets part 0 up and
-then does nothing. The fix is six bytes of C and the margin between the C's top and the music code
-is smaller than that. It is a memory problem, not a logic one, and it is the single thing standing
-between "almost all of it works" and "it runs". See **I9** for the space, and **I10**, which
-cannot start until this is closed.
+**It started running on 2026-09-14**, and the entry that used to sit here - "the shipped game
+runs zero frames" - was right about the symptom and wrong about the cost. The C's loop was bounded
+by `CTL_FRAMES` and its threads by `CTL_BUDGET`, and the image ships the control block zeroed, so
+booting normally set part 0 up and then stopped before its first instruction. Reading zero as
+*the absence of a bound* rather than as *no work* costs **four bytes**, not the thirty-six this
+file recorded; the thirty-six was the price of a different expression. `make diag D=_plays` boots
+the image with nothing poked but `go` and reports 148 frames, 151 blits and three bitmaps with no
+fault, where it previously reported nothing at all.
+
+Two other things had to be true for that sentence to mean anything, and neither was:
+
+- **`part_table` was overlapping the quiet volume table**, and had been since I6 closed. Every
+  part but 0 read volume entries as resource ids. Part 0 worked because its index scales to
+  offset 0 whatever the base is - and the boot path is the only caller that passes 0.
+- **`go` was a byte only a debugger writes.** On hardware nothing would ever have written it, so
+  the .nex would have waited forever at a black screen.
 
 See **What "done" means** for the definition and **Chain 2** for the rest.
 
@@ -116,7 +125,7 @@ build the same `build/aw.nex` - the game** - and check one thing about it:
     make check-mus     I5: the module, the voices, op_playSound, and the mixer's OUTPUT
     make check-part    I6 and I8: part transitions, and the game's own boot into part 0
     make check-bmp     I7: a full-screen bitmap, in page 0, not resident
-    make check-save    I9: a save against the machine, and a load back (load half RED)
+    make check-save    I9: a save against the machine, and a load back
     make check-bitmap  I7: mkassets.py's deplaner IS the engine's, on real resources
 
 `make check-ref` and `make check-poly` need the host probe built and run first;
@@ -2076,14 +2085,14 @@ Same discipline, different question. Chain 1 asked *can this be done*. This asks
 | I6 | part transitions | **done** |
 | I7 | the full-screen bitmap path | **done** |
 | I8 | the code screen and its bypass | **done** |
-| I9 | save and load | **save done and gated; load written and running, its gate red** |
-| I9a | the whole suite, on the game | not started |
-| I10 | playable to the end | not started, and blocked on the zero-frames bug |
+| I9 | save and load | **done**, both halves gated; the round trip holds field for field |
+| I9a | the whole suite, on the game | **in progress** - the twelve gates re-run against this image |
+| I10 | playable to the end | **unblocked**: the image runs. Nothing driven end to end yet |
 | H1 | real hardware | unrunnable until the KS3 arrives |
 
 **25 gates.** `check-part`, `check-bmp` and `check-save` are new.
 
-### Three things this chain has taught that are not about any one step
+### Six things this chain has taught that are not about any one step
 
 **1. The C's BSS lives above the image sjasmplus measures, and an assertion that checks the
 image checks nothing.** `ASSERT $ <= MUSIC_CODE` compared the C's *image* end against the music
@@ -2109,12 +2118,43 @@ mixing gate proved the output byte-exact over two page boundaries and still miss
 **looping** sample wedging the interrupt, because its own sample does not loop. `check-aw` caught
 that one, as a hang, at exactly 549 records.
 
+**4. An instrument that cannot tell success from no-op proves nothing, and a sentinel can.**
+I9's load was instrumented to record "the first byte that landed" after each read, and it
+recorded `0x00` - which matched the file, so the reads were declared good and three attempts went
+looking for something that overwrote them afterwards. `0x00` was also what was already at that
+address. The check could not distinguish a successful read from no read at all. Painting every
+destination with `0xEE` first settled it in one run: not a sentinel byte survived, so the reads
+*were* landing, and the bytes they landed were nowhere in the 198,272-byte file, so they were not
+coming from it. That pair of facts named the open file, not the write. Before trusting an
+instrument, ask what it would show if the thing under test did nothing at all.
+
+**5. A list of what the assembler places is not a map of memory.** `part_table` had to move, so
+the block layout was read off the build's own `DISPLAY` lines and a gap picked: `$CD00`, empty by
+every ORG in the source. It is `VEC_TABLE`, built by `install_im2` at boot, and the machine came
+up with no interrupt at all. Runtime-built tables are declared as bare `EQU`s and appear in no
+listing of assembled blocks; both have to be checked. The same bug's *original* cause was the
+mirror image - `part_table` had no ORG of its own, so it sat wherever the preceding code ended,
+and the `ASSERT` meant to protect it was written **above** the `INCLUDE` and measured the code
+instead. **An assertion that runs before the thing it guards is not an assertion**, which is
+lesson 1 wearing a different hat.
+
+**6. A control block that ships zeroed makes zero mean something, so decide what.** `CTL_FRAMES`
+and `CTL_BUDGET` both read zero as *no work*, and the image ships them zero, so the shipped game
+stopped before its first instruction while every gate - which pokes values in - passed. Reading
+zero as *no bound* instead costs four bytes across both. The general form: any field a harness
+always writes has a default nobody is testing, and the shipped default is the one the player
+gets.
+
 **And one about method.** Guessing from a symptom has cost a gate run every time, and gate runs
 here are ten to fifteen minutes. I5's voice setup, the C's BSS, and I9's load each went the same
 way: three or four plausible inferences, then the answer arriving from reading the machine. The
 cheapest move is almost always to instrument first - and when a measurement seems to exonerate
 something, check its resolution before trusting it. A 250ms poll is twelve frames; "immediately
-after" was nothing of the kind.
+after" was nothing of the kind. And when the thing being timed is shorter than a round trip,
+stop timing it: I9's gate tried three ways to stop the VM inside a save from the outside before
+measurement showed the whole save finishes in under a tenth of a second. The stopper moved
+*inside* the machine - `sv_stop`, read by `sv_entry` on the way out - and the race stopped
+existing rather than being tuned.
 
 Every step names its gate, and where a step carries real risk it names the cheapest
 experiment that would kill it early - the habit that has paid for itself repeatedly

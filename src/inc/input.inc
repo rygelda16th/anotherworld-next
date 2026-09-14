@@ -23,6 +23,7 @@ ROW_QWERT       EQU $FB                 ; Q W E R T      Q is bit 0
 ROW_ASDFG       EQU $FD                 ; A S D F G      A is bit 0
 ROW_POIUY       EQU $DF                 ; P O I U Y      P is bit 0, O is bit 1
 ROW_SPACE       EQU $7F                 ; Space Sym M N B    Space is bit 0
+ROW_ENTER       EQU $BF                 ; Enter L K J H      Enter is bit 0
 KEMPSTON_PORT   EQU $1F
 K_RIGHT         EQU 0
 K_LEFT          EQU 1
