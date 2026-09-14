@@ -345,9 +345,13 @@ bisect-draw: cc-game
 		sleep 3; python3 tools/bisectdraw.py'
 
 # I2's gate: the game's own picture against the engine's, aligned on a blit.
+# I2's gate, against the intro or against a GAMEPLAY part - I9a's second half:
+#     make check-draw              the intro's four pages, as before
+#     make check-draw AW_PART=2    part 2's, from trace_part2.bin
 check-draw: cc-game
 	$(MAKE) asm
-	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+	@$(DC) run --rm -e PYTHONUNBUFFERED=1 -e AW_PART=$(AW_PART) tools \
+		sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkdraw.py'
 
 # I1a: the game reads a real keyboard and a Kempston joystick, and the reference's

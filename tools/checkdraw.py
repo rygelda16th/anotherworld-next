@@ -28,6 +28,38 @@ NEX = "build/aw.nex"
 EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
 PROBE = "preflight/hostprobe/probe"
 CODE_FILE = "RES18.BIN"
+
+# WHICH PART. I9a asks for this gate to be re-run against gameplay, and part 2 draws 1,947
+# polygons in thirty frames against the intro's 542, with twelve fills against three.
+#
+# THE TWO SIDES DO NOT START FROM THE SAME PICTURE, which is the obstacle here and is not a
+# missing fixture. The probe reaches a later part by JUMPING into it, so its pages carry what
+# part 1 left behind; a machine booting through start_part begins with whatever boot left. So
+# the reference is replayed from the trace's START - part 1's blits included - and the machine's
+# blit K is aligned with trace blit K + SKIP, where SKIP is the number of blits before the part
+# change. That is read out of the trace, not assumed.
+#
+# It is only sound once the picture no longer depends on what preceded it. MEASURED, by replaying
+# the same trace from two different starting pictures and finding where they agree: page 0 and
+# page 3 differ in all 49,152 bytes at one, two and three blits, and ALL FOUR PAGES ARE IDENTICAL
+# AT FIVE. The part change is at blit 3, so any machine blit from 2 onward is past it, and the
+# default of 8 is comfortably clear.
+AW_PART = os.environ.get("AW_PART", "")
+TRACE_FILE = f"trace_part{AW_PART}.bin" if AW_PART else "trace.bin"
+
+
+def blits_before_part_change(path):
+    """How many blits the trace spends in the part it started in."""
+    from refvideo import read_trace
+    n, seen = 0, 0
+    for kind, _ in read_trace(path):
+        if kind == "part":
+            seen += 1
+            if seen == 2:
+                return n
+        elif kind == "blit":
+            n += 1
+    return 0
 CTL = 0xC000
 W, H = 256, 192
 PAGE = W * H
@@ -97,12 +129,15 @@ def describe(name, got, want):
 def main():
     sym = symbols(EXP_ASM, EXP_C)
     seed = host_seed(os.path.join(PROBE, "ops.txt"))
-    trace = os.path.join(PROBE, "trace.bin")
+    trace = os.path.join(PROBE, TRACE_FILE)
 
-    ref, blits = replay(trace, cls=RefVideo8, stop_after=BLITS)
-    if blits < BLITS:
-        raise SystemExit(f"the trace only holds {blits} blits, fewer than the {BLITS} "
-                         f"asked for - lower AW_BLITS or lengthen the trace")
+    skip = blits_before_part_change(trace) if AW_PART else 0
+    ref, blits = replay(trace, cls=RefVideo8, stop_after=BLITS + skip)
+    if blits < BLITS + skip:
+        raise SystemExit(f"the trace only holds {blits} blits, fewer than the "
+                         f"{BLITS + skip} asked for - lower AW_BLITS or lengthen the trace")
+    print(f"part: {AW_PART or 'the intro'}, trace {TRACE_FILE}"
+          + (f", {skip} blits of it before the part change" if AW_PART else ""))
     print(f"the engine's trace: replayed to blit {blits}, seed {seed}")
 
     z = Zrcp()
@@ -116,7 +151,13 @@ def main():
     hdr = (seed.to_bytes(2, "little") + (2000).to_bytes(2, "little")
            + (60000).to_bytes(2, "little"))
     z.cmd(f"write-memory-raw {CTL} {hdr.hex()}")
-    z.cmd(f"write-memory-raw {sym['fname']} {(CODE_FILE.encode() + bytes(1)).hex()}")
+    if AW_PART:
+        # THE PART PATH, not the fixed load. A gameplay part needs its own palette and its own
+        # polygon segment, and the fixed path carries the intro's - it pokes a bytecode name and
+        # then loads fixed poly and palette files beside it.
+        z.cmd(f"write-memory {sym['start_part']} {int(AW_PART) + 1}")
+    else:
+        z.cmd(f"write-memory-raw {sym['fname']} {(CODE_FILE.encode() + bytes(1)).hex()}")
     z.cmd(f"write-memory-raw {sym['stop_blit']} "
           f"{BLITS.to_bytes(2, 'little').hex()}")
     z.cmd(f"write-memory {sym['go']} 1")
