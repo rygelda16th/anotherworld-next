@@ -133,6 +133,23 @@ def main():
     # counters cannot.
     pg1 = read(z, sym["pg_ptr1"], 1)[0] & 3
     p0 = (12 + pg1 * 3) * 2
+
+    # QUIESCE THE MIXER ACROSS THESE READS, and put it back before the soak.
+    #
+    # Everything below maps a page into MMU7 and then reads it in a SEPARATE ZRCP command, and
+    # MMU7 is not ours: it is the Layer 2 draw band, the loader's staging window and - since I5
+    # - the mixer's sample window, which the interrupt borrows and restores fifty times a second.
+    # It is restored, so the window is narrow; it is two commands, so the window exists. This is
+    # the same race that made check-res and check-draw differ from byte 2,048 exactly, and both
+    # of those were given snd_off. THIS GATE NEVER WAS - and it is the one where the mixer is
+    # most active, because its whole claim is that the DMA is streaming and the interrupt is
+    # refilling the ring while the VM runs.
+    #
+    # It passes; it has been passing on a narrow window. The soak at the end still runs with
+    # everything live, which is what that part of the claim rests on.
+    z.cmd(f"write-memory {sym['snd_off']} 1")
+    time.sleep(0.1)
+
     seen, samples = set(), 0
     for band in range(6):
         z.cmd(f"tbblue-set-register {0x57} {p0 + band}")
@@ -152,6 +169,7 @@ def main():
     pal_file = read(z, 0xEE00, 64)
     pal_now = read(z, sym["pal_now"], 1)[0]
     pal_req = read(z, sym["pal_req"], 1)[0]
+    z.cmd(f"write-memory {sym['snd_off']} 0")       # the soak needs it mixing again
 
     print(f"\nbefore the VM was let go: {t1 - t0} ticks in half a second "
           f"(50 a second is {25} in half)")
