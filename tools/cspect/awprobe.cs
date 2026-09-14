@@ -42,6 +42,11 @@ namespace AWProbe
         int blitAddr = 0, blitAt = 0; bool blitDumped = false;
         int paceTicks = 0, paceBlit = 0, pacePoly = 0, lastBlit = -1;
         StreamWriter pace;
+        // AWPROBE_POKE="addr=val,addr=val" (hex) is written the frame BEFORE the ENTER wait is
+        // released, so a run can choose its part and turn the synthetic player on.
+        List<int[]> pokes = new List<int[]>();
+        // AWPROBE_VOICES=<hex addr of the voice records> counts active voices every frame.
+        int voicesAddr = 0; long[] voiceHist = new long[5]; long voiceFrames = 0, voiceSum = 0;
         bool armed = false;
         int trapped = 0;
 
@@ -75,6 +80,15 @@ namespace AWProbe
                 pace = new StreamWriter(p + ".pace"); pace.AutoFlush = true;
                 pace.WriteLine("# blit ticks vmframes polys");
             }
+            string pk = Environment.GetEnvironmentVariable("AWPROBE_POKE");
+            if (!string.IsNullOrEmpty(pk))
+                foreach (var kv in pk.Split(','))
+                {
+                    var q = kv.Split('=');
+                    pokes.Add(new int[] { Convert.ToInt32(q[0], 16), Convert.ToInt32(q[1], 16) });
+                }
+            string va = Environment.GetEnvironmentVariable("AWPROBE_VOICES");
+            if (!string.IsNullOrEmpty(va)) voicesAddr = Convert.ToInt32(va, 16);
             string m = Environment.GetEnvironmentVariable("AWPROBE_MAX");
             if (!string.IsNullOrEmpty(m)) int.TryParse(m, out maxReports);
             log.WriteLine("# AWProbe up");
@@ -121,6 +135,9 @@ namespace AWProbe
             log.WriteLine(sb.ToString());
             hist.Clear();
             samples = 0;
+            if (voiceFrames > 0)
+                log.WriteLine(string.Format("# voices so far: mean {0:0.00} over {1} frames; 0:{2} 1:{3} 2:{4} 3:{5} 4:{6}",
+                    (double)voiceSum / voiceFrames, voiceFrames, voiceHist[0], voiceHist[1], voiceHist[2], voiceHist[3], voiceHist[4]));
             if (reports % 15 == 0 || reports >= maxReports) DumpScreen(reports);
             if (reports >= maxReports) CSpect.SetGlobal(eGlobal.DoQuit, true);
         }
@@ -170,6 +187,13 @@ namespace AWProbe
         {
             if (off) return;
             ticks++;
+            if (ticks == 149) foreach (var pp in pokes) CSpect.Poke((ushort)pp[0], (byte)pp[1]);
+            if (voicesAddr != 0 && ticks > 150)
+            {
+                int n = 0;
+                for (int v = 0; v < 4; v++) if (CSpect.Peek((ushort)(voicesAddr + v * 18 + 11)) != 0) n++;
+                voiceHist[n]++; voiceFrames++; voiceSum += n;
+            }
             if (goAddr != 0 && ticks == 150) { CSpect.Poke((ushort)goAddr, 1); log.WriteLine("# released the ENTER wait"); }
             if (pace != null)
             {
@@ -209,6 +233,9 @@ namespace AWProbe
         }
         public bool KeyPressed(int _id) { return false; }
         public void Reset() { }
-        public void Quit() { if (!off && log != null) { log.WriteLine("# AWProbe down"); log.Close(); } }
+        public void Quit() { if (!off && log != null && voiceFrames > 0) {
+                log.WriteLine(string.Format("# voices: mean {0:0.00} over {1} frames; 0:{2} 1:{3} 2:{4} 3:{5} 4:{6}",
+                    (double)voiceSum / voiceFrames, voiceFrames, voiceHist[0], voiceHist[1], voiceHist[2], voiceHist[3], voiceHist[4])); }
+            if (!off && log != null) { log.WriteLine("# AWProbe down"); log.Close(); } }
     }
 }
