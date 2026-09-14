@@ -3,8 +3,10 @@
 **This file is canonical.** Where it disagrees with anything else, including the
 published blueprint at
 `claude.ai/code/artifact/f4d9e319-0bbb-47c3-b675-3efd6413f0a3`, believe this one.
-The blueprint is the shareable version of the same material and is kept in step,
-but it is a copy.
+The blueprint is the shareable version of the same material, but it is a copy - and it is
+**out of step as of 2026-09-14**: it still describes the project before Chain 2 started. It has
+not been republished this session, and saying it "is kept in step" would be a claim this file
+cannot make for it.
 
 Last updated 2026-09-14.
 
