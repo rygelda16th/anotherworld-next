@@ -20,6 +20,10 @@ F_OPEN          EQU $9A
 F_CLOSE         EQU $9B
 F_READ          EQU $9D
 FA_READ         EQU $01
+F_WRITE         EQU $9E
+; $0C, not $0E: write + create + truncate. esxDOS takes $0E as something else and the open
+; fails, which is a lesson this project has already paid for once.
+FA_WRITE        EQU $0C
 ESX_DRIVE       EQU '*'
 
 ;-----------------------------------------------------------------------------

@@ -47,7 +47,7 @@ CODE_PAGE       EQU 48                  ; clear of the 48K image and of Layer 2
 DST_WIN         EQU $E000               ; the loader's staging window, MMU7
 NR_MMU7         EQU $57
 
-F_WRITE         EQU $9E
+; F_WRITE now comes from vmhost.inc, which the game and this harness both include.
 ; $0C is ESXDOS_MODE_CREAT_TRUNC - create, or replace an existing file - and it is
 ; accepted ON ITS OWN. $0E, which is that OR'd with the write bit and looks like the
 ; obvious thing to ask for, is not one of the cases the handler's switch knows and it

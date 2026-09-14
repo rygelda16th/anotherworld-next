@@ -3064,23 +3064,50 @@ a code and the player types it. That is `op_drawString` and the keyboard, both o
 driven by part 0's own bytecode - so it should need no new code, but nothing has watched it run.
 That is I10's business, and `BYPASS_PROTECTION` is what makes I10 reachable without it.
 
-#### I9. Save and load
+#### I9. Save and load - NOT DONE. The space to write it in exists now; the save itself does not.
 
-Five objects serialise, in this order (`engine.cpp:136-138` and its neighbours):
-`vm.saveOrLoad` (`vm.cpp:736`), `res.saveOrLoad` (`resource.cpp:358`),
-`video.saveOrLoad` (`video.cpp:624`), `player.saveOrLoad` (`sfxplayer.cpp:212`) and
-`mixer.saveOrLoad` (`mixer.cpp:156`). The engine drives it from two input flags,
-`sys->input.load` and `sys->input.save`, against a slot (`engine.cpp:98-104`), and
-writes a "quicksave" description.
+**The program ran out of the 48K it can address at once, and I9 is the step that hit the wall.**
+The resident block ends at `$9C04` against a `$9C08` ceiling - **four bytes** - and the C's image
+ends thirteen bytes below `MUSIC_CODE`. I7 only fitted by reclaiming 136 bytes that were sitting
+unused between the C and the music code and pushing `hex_digit` into MMU6. The natural place for
+I9's state-gathering is the C, because the C is where the state lives, and the C cannot grow by a
+byte.
 
-**Our format does not have to be theirs** - nothing reads our saves but us - so the
-work is enumerating the state, not matching a layout. The mixer and the player being
-in that list is the part worth noticing: a save taken mid-note has to restore the
-note.
+**Where the room came from.** Every `ORG` in `src/aw.asm` is at `$8000` or above, so
+**`$4000-$7FFF` - pages 10 and 11, bank 5, sixteen kilobytes - was empty in the image**, and
+SAVENEX never wrote it: the `.nex` was 33,280 bytes. Code ORGed there lands in page 10 and runs
+at its own assembled address the moment page 10 is mapped at MMU2, which is where it lives at
+boot anyway. The `.nex` is 49,664 bytes now, because SAVENEX writes the whole bank once anything
+is in it - 16K of load time for however much of it gets used.
 
-**Gate:** save mid-part, reload, and both the VM state and the opcode stream from
-that point match a run that never saved. The stream comparison is the real test; a
-state dump that matches can still resume wrongly.
+That is the right home for **rare** work: save and load run at a frame boundary, once, so the two
+NextReg writes to page it in cost nothing measurable. It is **not** a home for anything per-frame,
+because MMU2 and MMU3 are the polygon segment window and every draw re-maps them. And esxDOS pages
+itself over the **bottom** 16K during a file call, not `$4000`, which is what makes a file writer
+up there possible at all.
+
+**What is in place:** the region, its borrow-and-restore stub (`aw_write_file`, in MMU6 because the
+resident block had no room even for that), and an esxDOS writer - `F_WRITE`, and `FA_WRITE` of
+`$0C` rather than `$0E`, which this project has paid for once already. `check-map` and `check-aw`
+both pass with the bigger image, so the region is additive and harmless.
+
+**What is NOT in place, and is the whole of I9:** nothing calls the writer yet. The state has to be
+enumerated over the five objects the reference serialises, in this order (`engine.cpp:136-138`):
+`vm.saveOrLoad` (`vm.cpp:736` - 1,408 bytes of variables, call stack, thread pcs and channel
+flags), `res.saveOrLoad` (`resource.cpp:358` - an **ordered** list of resident ids plus the part
+id, replayed on load so the heap reconstructs identically), `video.saveOrLoad` (`video.cpp:624` -
+the palette ids, the page mask, and **all four pages**, which for us is 196,608 bytes),
+`player.saveOrLoad` (`sfxplayer.cpp:212`) and `mixer.saveOrLoad` (`mixer.cpp:156`).
+
+Our format does not have to be theirs - nothing reads our saves but us - so the work is enumerating
+the state, not matching a layout. The mixer and the player being in that list is the part worth
+noticing: a save taken mid-note has to restore the note, and since I5 a voice's record is eighteen
+bytes including the two fields a multi-page loop needs.
+
+**Gate:** save mid-part, reload, and both the VM state and the opcode stream from that point match
+a run that never saved. The stream comparison is the real test; a state dump that matches can still
+resume wrongly.
+
 
 #### I10. Playable to the end
 

@@ -77,6 +77,21 @@ POLY_PAGE       EQU 56                  ; and eight for the cinematic segment
 ; pointer, presents it at once and marks it NOT_NEEDED (resource.cpp:193, :211-214). Part 7 loads
 ; seventy of them, and seventy times six pages is more memory than the machine has.
 BMP_PAGE        EQU 64
+; THE PROGRAM RAN OUT OF THE 48K IT CAN ADDRESS AT ONCE, and this is where the room comes from.
+; Every ORG in this file is at $8000 or above, so $4000-$7FFF - pages 10 and 11, bank 5, sixteen
+; kilobytes - is empty in the .nex image and SAVENEX never writes it. Code ORGed there lands in
+; page 10 and runs at its own assembled address the moment page 10 is mapped at MMU2, which is
+; where it lives at boot anyway.
+;
+; That is the right home for work that is RARE: save and load run at a frame boundary, once, so
+; the two NextReg writes to page it in cost nothing measurable. It is NOT a home for anything
+; per-frame, because MMU2 and MMU3 are the polygon segment window and every draw re-maps them.
+;
+; esxDOS pages ITSELF over the bottom 16K during a file call - $0000-$3FFF, not $4000 - so file
+; calls made from code up here are safe, which is the whole reason the writer can live in it.
+PAGED_PAGE      EQU 10
+PAGED_WIN       EQU $4000
+NR_PAGED_MMU    EQU $52                 ; MMU2, page 10's own slot at boot
 RES_FIRST_PAGE  EQU 72
 RES_MAX_PAGES   EQU 40
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
@@ -2556,6 +2571,7 @@ n_str:      dw 0
         EXPORT n_str_miss
 n_str_miss: dw 0
 res_type:   db 0
+paged_saved: db 0           ; what MMU2 held before the paged code was called in
 bmp_src:    db 0            ; present_bitmap's walking source and destination bands
 bmp_dst:    db 0
         EXPORT n_bmp
@@ -2611,7 +2627,100 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
         ; the mixer's loop restore went in. MMU6 is mapped at every moment, so code runs
         ; from it as happily as data sits in it, and the seventy-two bytes between
         ; SND_BLOCK and the order table were the largest gap left anywhere in the program.
+;-----------------------------------------------------------------------------
+; PAGE 10, at $4000. See PAGED_PAGE for why anything is here at all.
+;-----------------------------------------------------------------------------
+        ORG PAGED_WIN
+write_file_body:
+        ld      (wf_src), hl
+        ld      (wf_left), bc
+        xor     a
+        ld      (err), a
+
+        ld      a, ESX_DRIVE
+        ld      ix, fname
+        ld      hl, fname
+        ld      b, FA_WRITE
+        rst     $08
+        db      F_OPEN
+        jr      nc, .opened
+        ld      (err), a
+        ret
+.opened:
+        ld      (handle), a
+.next:
+        ld      hl, (wf_left)
+        ld      a, h
+        or      l
+        jr      z, .close
+        ; at most 2K a call, so a long write is a loop rather than a promise about esxDOS
+        ld      bc, $0800
+        ld      de, $0800
+        or      a
+        sbc     hl, de
+        jr      nc, .full
+        ld      bc, (wf_left)
+.full:
+        ld      a, (handle)
+        ld      ix, (wf_src)
+        ld      hl, (wf_src)
+        rst     $08
+        db      F_WRITE
+        jr      nc, .wrote
+        ld      (err), a
+        jr      .close
+.wrote:
+        ld      a, b
+        or      c
+        jr      z, .close               ; it wrote nothing: stop rather than spin
+        ld      hl, (wf_src)
+        add     hl, bc
+        ld      (wf_src), hl
+        ld      hl, (wf_left)
+        or      a
+        sbc     hl, bc
+        ld      (wf_left), hl
+        jr      .next
+.close:
+        ld      a, (handle)
+        rst     $08
+        db      F_CLOSE
+        ret
+
+wf_src:     dw 0
+wf_left:    dw 0
+        DISPLAY "> paged code at ", /H, PAGED_WIN, " ending ", /H, $
+        ASSERT $ <= PAGED_WIN + $2000
+
         ORG PART_CODE
+;-----------------------------------------------------------------------------
+; aw_write_file - HL = source address, BC = length, (fname) = the name. Writes a file through
+; esxDOS and returns with (err) set or zero.
+;
+; The BODY of this lives in page 10, at $4000, because the resident 16K had four bytes left in
+; it. All that is down here is the borrow: map page 10 at MMU2, call in, put back what was
+; there. MMU2 is the polygon segment window and every draw re-maps it from seg_base before it
+; reads, so what is put back hardly matters - but reading it first costs three instructions and
+; means this is safe to call from anywhere.
+;-----------------------------------------------------------------------------
+aw_write_file:
+        push    hl
+        push    bc
+        ld      bc, $243B
+        ld      a, NR_PAGED_MMU
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        ld      (paged_saved), a
+        ld      a, PAGED_PAGE
+        nextreg NR_PAGED_MMU, a
+        pop     bc
+        pop     hl
+        call    write_file_body
+        ld      a, (paged_saved)
+        nextreg NR_PAGED_MMU, a
+        ret
+
 ; A = a low nibble, out as the ASCII hex digit. Uppercase, because that is what mkassets.py
 ; writes. Up here because the resident block ran out and MMU6 is mapped at every moment - both
 ; callers, aw_load_res's name builder and aw_setup_part's, reach it either way.
