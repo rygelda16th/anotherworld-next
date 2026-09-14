@@ -37,14 +37,18 @@ namespace AWProbe
         // ROM. Trapping execution of every address in that window catches the jump into data on
         // its FIRST instruction, with the stack still holding whatever put it there.
         const int WIN_TOP = 0x4000;
+        bool off = false;
         bool armed = false;
         int trapped = 0;
 
         public List<sIO> Init(iCSpect _CSpect)
         {
             CSpect = _CSpect;
+            // OPT IN, ALWAYS. The plugin quits the emulator when it has seen enough
+            // reports, and registers sixteen thousand execution traps to do it, so an
+            // ordinary play session must not get either. No AWPROBE_LOG, no probe.
             string p = Environment.GetEnvironmentVariable("AWPROBE_LOG");
-            if (string.IsNullOrEmpty(p)) p = "awprobe.txt";
+            if (string.IsNullOrEmpty(p)) { off = true; return new List<sIO>(); }
             logPath = p;
             log = new StreamWriter(p);
             log.AutoFlush = true;
@@ -136,14 +140,14 @@ namespace AWProbe
             log.WriteLine(pal.ToString());
         }
 
-        public void Tick() { ticks++; Sample(); }
+        public void Tick() { if (off) return; ticks++; Sample(); }
         public void OSTick() { osticks++; }
         public bool Write(eAccess _t, int _p, int _id, byte _v) { return false; }
 
         public byte Read(eAccess _t, int _p, int _id, out bool _valid)
         {
             _valid = false;                     // never substitute the opcode - just watch
-            if (_t != eAccess.Memory_EXE) return 0;
+            if (off || _t != eAccess.Memory_EXE) return 0;
 
             if (_p == 0x8731) { if (!armed) log.WriteLine("# armed at clear_code"); armed = true; return 0; }
             if (_p == 0x876E) { log.WriteLine("# load_code rst $08 reached"); return 0; }
@@ -167,6 +171,6 @@ namespace AWProbe
         }
         public bool KeyPressed(int _id) { return false; }
         public void Reset() { }
-        public void Quit() { if (log != null) { log.WriteLine("# AWProbe down"); log.Close(); } }
+        public void Quit() { if (!off && log != null) { log.WriteLine("# AWProbe down"); log.Close(); } }
     }
 }
