@@ -370,10 +370,25 @@ check-map: asm
 # the seed alone differs between probe runs. Make the reference LONGER than the
 # machine's own frame count: AW_OP_FRAMES=45 ./probe <data> 4000 45 0, with the last
 # 0 meaning no synthetic input, because the VM under test has no input either.
+# Gate D against a GAMEPLAY part as well as the intro - I9a's second half:
+#     make check-boot              the intro's 763 records, as before
+#     make check-boot AW_PART=2    part 2's bytecode against part 2's own stream
+# The stream comes from a probe run that JUMPED into that part, cut down to the part itself:
+#
+#     (cd <scratch> && AW_OP_FRAMES=30 ./probe <data> 30 30 0 2 0)     0 = no autoplay
+#     python3 tools/mkpartops.py <scratch>/ops.txt $(PROBE)/ops_part2.txt
+#
+# The cut matters and tools/mkpartops.py explains why: a jump is a REQUEST, so the run opens
+# with several frames of the part it was already in, and the harness starts the new part's
+# bytecode at its first instruction. Uncut, it diverges at record two. It did.
+AW_PART   ?=
+OPS_FILE   = $(if $(AW_PART),$(PROBE)/ops_part$(AW_PART).txt,$(PROBE)/ops.txt)
+
 check-boot: | $(BUILD)
-	python3 tools/mkexpected.py $(PROBE)/ops.txt $(BUILD)/expected_ops.inc
+	python3 tools/mkexpected.py $(OPS_FILE) $(BUILD)/expected_ops.inc
 	$(MAKE) cc asm
-	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+	@$(DC) run --rm -e PYTHONUNBUFFERED=1 -e AW_PART=$(AW_PART) tools \
+		sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkboot.py'
 
 # Step 5: how fast does esxDOS read? Needs `make assets` first.

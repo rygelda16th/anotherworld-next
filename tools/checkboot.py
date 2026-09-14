@@ -28,7 +28,26 @@ from zrcp import Zrcp  # noqa: E402
 NEX = "build/vmtest.nex"
 EXP_ASM, EXP_C = "build/vmtest.exp", "build/vm_c.exp"
 PROBE = "preflight/hostprobe/probe"
-CODE_FILE = "RES18.BIN"         # the intro cinematic's bytecode, 9,871 bytes
+# WHICH PART'S BYTECODE. Gate D proved 763 records of the INTRO's stream, and the intro is a
+# cinematic: it draws, blits and pauses. I9a asks for a second run against a gameplay part,
+# because later parts dispatch far more per frame and reach opcodes a cinematic never does.
+#
+# Neither side is given input, which is what makes the comparison clean: the reference is run
+# with autoplay OFF and the harness has no keyboard, so there is nothing to align. What is
+# under test is the DISPATCH, not the play.
+#
+#     make check-boot              the intro, as before
+#     make check-boot AW_PART=2    part 2's bytecode against part 2's stream
+AW_PART = os.environ.get("AW_PART", "")
+if AW_PART:
+    _rows = [l.split(";")[0].strip()[2:].split(",")        # "db $14, $15, $16, $00"
+             for l in open("build/parts.inc") if l.strip().startswith("db")]
+    _code = int(_rows[int(AW_PART)][1].strip().lstrip("$"), 16)   # the bytecode is column 1
+    CODE_FILE = f"RES{_code:02X}.BIN"
+    OPS_FILE = f"ops_part{AW_PART}.txt"
+else:
+    CODE_FILE = "RES18.BIN"     # the intro cinematic's bytecode, 9,871 bytes
+    OPS_FILE = "ops.txt"
 # How many frames the reference covers. Taken FROM the reference rather than fixed:
 # the first version of this gate had 40 here and 40 in the probe, and the machine
 # matched every one of the engine's 679 records and then produced a 680th with
@@ -77,7 +96,8 @@ def host_stream(path):
 
 def main():
     sym = symbols(EXP_ASM, EXP_C)
-    ops = os.path.join(PROBE, "ops.txt")
+    ops = os.path.join(PROBE, OPS_FILE)
+    print(f"part: {AW_PART or 'the intro'}, bytecode {CODE_FILE}, stream {OPS_FILE}")
     frames = int(os.environ.get("AW_FRAMES", str(ref_frames(ops))))
     seed, want = host_stream(ops)
     print(f"host stream: {len(want):,} records "
