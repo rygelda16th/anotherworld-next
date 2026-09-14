@@ -266,7 +266,23 @@ def main():
     z.cmd(f"write-memory {sym['snd_off']} 1")
     time.sleep(0.1)
     pages = [machine_page(z, p) for p in range(4)]
+    mach_ptrs = [int(z.cmd(f"read-memory {sym[n]} 1").strip(), 16)
+                 for n in ("pg_ptr1", "pg_ptr2", "pg_ptr3")]
     z.close()
+
+    if AW_PART:
+        # THE POINTERS, EVERY RUN, not only on failure. $FF resolves through pg_ptr3 and a blit
+        # of $FF swaps the pair, so a divergence here can appear, do its damage through one fill,
+        # and RE-SYNCHRONISE before the comparison ever looks - which is why sampling them only
+        # when the pixels disagree found them already back in step.
+        #
+        # The reference's cur1 is NOT comparable: neither trace contains a single `select`
+        # record, so the replay never learns a work page and takes each polygon's destination
+        # from the poly record instead. cur2 and cur3 are real.
+        print(f"  pointers: machine pg_ptr2={mach_ptrs[1]} pg_ptr3={mach_ptrs[2]}   "
+              f"reference cur2={ref.cur2} cur3={ref.cur3}"
+              + ("   <-- DIVERGED" if (mach_ptrs[1], mach_ptrs[2]) != (ref.cur2, ref.cur3)
+                 else ""))
 
     ok = True
     for p in range(4):
@@ -277,6 +293,43 @@ def main():
             print(f"  page {p}: IDENTICAL  ({PAGE:,} bytes)")
         else:
             ok = False
+
+    # WHEN IT FAILS, ASK WHETHER IT IS MERELY OUT OF STEP. The machine cannot be stopped before
+    # its third blit - it performs blits while the part is set up that the reference's records
+    # for that part do not contain - so the machine's blit K need not be the part's blit K. That
+    # is an OFFSET and an offset is measurable: replay the reference to the neighbouring counts
+    # and see whether any matches byte for byte. A gate that reports "wrong" when it means "out
+    # of step by one" sends the next session hunting a rasteriser bug that is not there, which is
+    # a mistake this gate has already made twice today.
+    if not ok and AW_PART:
+        # THE POINTERS, WHICH THIS GATE HAS NEVER COMPARED. $FF resolves through pg_ptr3 and
+        # $FE through pg_ptr2, and a blit of $FF SWAPS them - so one blit more or fewer inverts
+        # the pair for the rest of the run, and every later fill or copy through $FF lands on
+        # the other page. That is exactly the shape of a whole page differing while the other
+        # three match, and of the wrong page alternating between one comparison and the next.
+        # Pixels cannot say it; these three bytes can.
+
+
+        print(f"\n  the page pointers at this blit:")
+        print(f"    machine   pg_ptr1={mach_ptrs[0]} pg_ptr2={mach_ptrs[1]} "
+              f"pg_ptr3={mach_ptrs[2]}")
+        print(f"    reference cur1={ref.cur1} cur2={ref.cur2} cur3={ref.cur3}")
+        if (mach_ptrs[1], mach_ptrs[2]) == (ref.cur3, ref.cur2):
+            print("    THE PAIR IS INVERTED - one $FF blit more or fewer than the engine")
+        print("\n  out of step, or wrong? the reference replayed either side:")
+        for delta in (-3, -2, -1, 1, 2, 3):
+            n = BLITS + delta
+            if n < 1:
+                continue
+            alt, got_n = replay(trace, cls=RefVideo8, stop_after=n, start_at_part=2)
+            if got_n < n:
+                continue
+            same = [q for q in range(4) if bytes(alt.pages[q]) == pages[q]]
+            verdict = ("ALL FOUR IDENTICAL - out of step by "
+                       f"{delta:+d}, not wrong") if len(same) == 4 else f"pages agreeing: {same}"
+            print(f"    reference blit {n:>2} (machine {BLITS}{delta:+d}): {verdict}")
+            if len(same) == 4:
+                break
 
     if not ok:
         raise SystemExit("FAIL: the game's picture is not the engine's")
