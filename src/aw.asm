@@ -106,14 +106,15 @@ RES_MAX_PAGES   EQU 96                  ; pages 72..167; banks 40-111 stay free
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
 
 CTL             EQU $C000
-STACK_TOP       EQU $D400               ; grows down to $D080: 896 bytes
+STACK_TOP       EQU $D400               ; grows down to $D0A0: 864 bytes
 ; THE STACK WAS 1,280 BYTES BY ESTIMATE AND USES 514 BY MEASUREMENT. awprobe trapped every write
 ; to $CF00-$D3FF under CSpect (AWPROBE_STACK) through the intro and parts 2 to 7, and the lowest
 ; address written was $D1FE in all seven - the same spot every time, so the deepest point is a
-; path they share rather than anything scene-dependent. The bottom 384 bytes are code now: the
-; music clock took 256, and the dirty-band copies another 128. The stack keeps 1.74 times the most
-; it has been seen to use, which leaves room for polygon nesting deeper than those runs reached.
-STACK_FLOOR     EQU $D080
+; path they share rather than anything scene-dependent. The bottom 416 bytes are code now: the
+; music clock took 256, the dirty-band copies 128 and the blit's pacing 32. The stack keeps 1.68
+; times the most it has been seen to use, which leaves room for polygon nesting deeper than those
+; runs reached. Do not take more without measuring again.
+STACK_FLOOR     EQU $D0A0
 STACK_CODE      EQU $CF00               ; up to STACK_FLOOR: load_flat, the music clock, dirty bands
 DIRTY_BANDS     EQU 1                   ; raster.inc's band_set reports every band it draws into
 ; Code ABOVE the C's image, in the tail the stack vacated when it moved into MMU6. The C is
@@ -1375,6 +1376,7 @@ aw_blit:
         ld      a, $FF
         ld      (pal_req), a
 .present:
+        call    pace_blit               ; the script's pause, before the frame appears
         ; the visible Layer 2 bank is the page's first 16K bank
         ld      a, (pg_ptr2)
         ld      b, a
@@ -1703,34 +1705,11 @@ aw_frame_sync:
         ; that needs interrupts while C is running has to assert that for itself, and
         ; the frame boundary is the place to do it.
         ei
-        push    hl
-        push    de
-        ld      hl, (ticks)
-    IFDEF SPIN_BOUND
-        ; A BOUNDED WAIT, to separate "the interrupt is missing" from "something else is wrong".
-        ;
-        ; The trace says frame_sync is entered once and never returns, and that no interrupt
-        ; fires after the C is entered - so this loop is waiting for a tick that will never
-        ; come. Giving up after a while turns a hang into a slow game: if the picture then
-        ; appears, the MISSING INTERRUPT is the whole fault and everything else is sound.
-        ld      bc, 0
-.spin:  ld      de, (ticks)
-        ld      a, e
-        cp      l
-        jr      nz, .ticked
-        dec     bc
-        ld      a, b
-        or      c
-        jr      nz, .spin
-.ticked:
-    ELSE
-.spin:  ld      de, (ticks)
-        ld      a, e
-        cp      l
-        jr      z, .spin                ; one frame interrupt
-    ENDIF
-        pop     de
-        pop     hl
+        ; NO WAIT HERE ANY MORE. This used to spin until the next tick, which made one refresh a
+        ; frame the whole of the pacing and ignored the pause the script asks for. The reference
+        ; waits in exactly one place - op_blitFramebuffer, vm.cpp:285-297, before the frame is
+        ; shown - and runs a frame with no blit straight on into the next. pace_blit does that
+        ; now. The spin was also dead time: a frame that finished late still idled to a tick edge.
         ret
 
 
@@ -3970,6 +3949,47 @@ dt_dirty:       db 0, 0, 0, 0
         ASSERT (dt_dirty & $FF) <= 252   ; dirty_band indexes it by adding to the low byte
 cp_sidx:        db 0
 cp_didx:        db 0
+
+;-----------------------------------------------------------------------------
+; pace_blit - the pause a script asks for, vm.cpp:285-297, as a deadline carried forward.
+;
+; The reference sleeps pause_slices * 20 ms less whatever the frame took, then shows it. A frame
+; that took too long does not sleep, and on a PC that never happens. Here it does, so the
+; deadline advances by the pause WHATEVER happened - the E1 arrangement check-pace proves on its
+; own harness - and a late frame is made up by the light frames after it, which keeps the
+; pictures in step with the music, whose clock runs on real time. The debt is capped at
+; PACE_DEBT: past that - a load, say - the schedule starts again from now rather than racing.
+;-----------------------------------------------------------------------------
+PACE_DEBT       EQU 50                  ; a second of catching up at most
+pace_blit:
+        ei                              ; the wait needs the tick; see aw_frame_sync
+        ld      hl, (_aw_vars + $FF * 2)        ; VM_VARIABLE_PAUSE_SLICES, low byte
+        ld      h, 0
+        ld      de, (pace_due)
+        add     hl, de
+        ld      (pace_due), hl
+.wait:
+        ld      hl, (pace_due)
+        ld      de, (ticks)
+        or      a
+        sbc     hl, de                  ; the deadline, less now
+        ret     z                       ; due
+        jr      c, .late
+        ld      a, h
+        or      a
+        jr      z, .wait                ; early by under 256 ticks: wait for it
+        jr      .restart                ; further ahead than any pause: a stale deadline
+.late:
+        ld      a, h
+        inc     a
+        jr      nz, .restart            ; 256 or more behind
+        ld      a, l
+        cp      256 - PACE_DEBT
+        ret     nc                      ; behind, within the debt: no wait, catch up
+.restart:
+        ld      (pace_due), de          ; count from now
+        ret
+pace_due:       dw 0
 
         ASSERT $ <= STACK_FLOOR
         DISPLAY "> stack code at ", /H, STACK_CODE, " ending ", /H, $

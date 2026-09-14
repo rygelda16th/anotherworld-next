@@ -49,6 +49,10 @@ namespace AWProbe
         // AWPROBE_STACK=<lo>:<hi> traps every WRITE in that range and keeps the lowest address
         // written: the stack's real high-water mark, not an estimate.
         int stackLo = 0, stackHi = 0, stackMin = 0x10000;
+        // AWPROBE_PROF=<first blit>:<last blit> writes a profile to <log>.prof: at every frame
+        // interrupt the address it interrupted is the word at SP, so that is sampled instead of PC
+        // (which is always the IM2 trampoline at that instant). Needs AWPROBE_PACE for the blit count.
+        int profLo = -1, profHi = -1; Dictionary<int, long> prof = new Dictionary<int, long>(); long profN = 0;
         int voicesAddr = 0; long[] voiceHist = new long[5]; long voiceFrames = 0, voiceSum = 0;
         bool armed = false;
         int trapped = 0;
@@ -92,6 +96,8 @@ namespace AWProbe
                 }
             string st = Environment.GetEnvironmentVariable("AWPROBE_STACK");
             if (!string.IsNullOrEmpty(st)) { var q = st.Split(':'); stackLo = Convert.ToInt32(q[0], 16); stackHi = Convert.ToInt32(q[1], 16); }
+            string pf = Environment.GetEnvironmentVariable("AWPROBE_PROF");
+            if (!string.IsNullOrEmpty(pf)) { var q = pf.Split(':'); profLo = int.Parse(q[0]); profHi = int.Parse(q[1]); }
             string va = Environment.GetEnvironmentVariable("AWPROBE_VOICES");
             if (!string.IsNullOrEmpty(va)) voicesAddr = Convert.ToInt32(va, 16);
             string m = Environment.GetEnvironmentVariable("AWPROBE_MAX");
@@ -202,6 +208,26 @@ namespace AWProbe
                 voiceHist[n]++; voiceFrames++; voiceSum += n;
             }
             if (goAddr != 0 && ticks == 150) { CSpect.Poke((ushort)goAddr, 1); log.WriteLine("# released the ENTER wait"); }
+            if (profLo >= 0 && paceBlit != 0)
+            {
+                int bb = W(paceBlit);
+                Z80Regs rr = CSpect.GetRegs();
+                if (bb >= profLo && bb <= profHi && rr != null && rr.PC == 0xCECE)   // at the IM2 trampoline: SP holds where it came from
+                {
+                    int ret = W(rr.SP);
+                    long c0; prof.TryGetValue(ret, out c0); prof[ret] = c0 + 1; profN++;
+                    if ((profN & 63) == 0)
+                    {
+                        var top = new List<KeyValuePair<int, long>>(prof);
+                        top.Sort((x, y) => y.Value.CompareTo(x.Value));
+                        using (var pw = new StreamWriter(logPath + ".prof"))
+                        {
+                            pw.WriteLine("# samples " + profN);
+                            foreach (var kv in top) pw.WriteLine(string.Format("{0:X4} {1}", kv.Key, kv.Value));
+                        }
+                    }
+                }
+            }
             if (pace != null)
             {
                 int b = W(paceBlit);
