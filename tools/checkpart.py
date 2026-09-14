@@ -76,12 +76,21 @@ def main():
         if not boot:
             z.cmd(f"write-memory-raw {sym['fname']} {(b'RES18.BIN' + bytes(1)).hex()}")
             z.cmd(f"write-memory {sym['probe_part']} {index + 1}")
+        if boot:
+            # BOUND THE RUN, because "far short of" stopped being true.
+            #
+            # This used to sleep two seconds and read whatever was there, on the reasoning that
+            # two seconds is past the three resource loads and far short of the VM requesting a
+            # part of its own - which would change the very thing being checked. That was safe
+            # only while the image ran ZERO frames. It runs now, and the margin became a race:
+            # this gate failed once in a sweep and passed on the next run, which is the worst
+            # way for a gate to behave, because it teaches you to re-run until it is green.
+            #
+            # CTL_FRAMES makes the window exact. One frame is past the setup - the boot path
+            # loads the part BEFORE it enters the C - and cannot reach a part request.
+            z.cmd(f"write-memory-raw {0xC002} {(1).to_bytes(2, 'little').hex()}")
         z.cmd(f"write-memory {sym['go']} 1")
         if boot:
-            # THE GAME DOES NOT STOP. With no name poked the boot path sets the part up and then
-            # enters the C, whose main never returns - so `done` never comes. Two seconds is
-            # comfortably past the three resource loads and far short of the VM getting around
-            # to requesting a part of its own, which would change the very thing being checked.
             time.sleep(2.0)
         else:
             for _ in range(900):

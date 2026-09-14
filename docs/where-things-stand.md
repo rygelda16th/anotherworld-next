@@ -3578,7 +3578,7 @@ run until the KS3 arrives, and it is the only step in this document of which tha
 true. It is also where the one genuinely unmeasurable number lands: esxDOS read
 rate, which step 5 established the emulator cannot time.
 
-### Four gates are narrower than they sound - three are now settled, one is not
+### Four gates are narrower than they sound - all four are now settled
 
 Every gate in Chain 1 that used bytecode used **the intro's** bytecode. The intro is
 a cinematic: it draws polygons, blits, and pauses. It does not exercise what gameplay
@@ -3610,7 +3610,7 @@ now - and it is the difference between "the intro works" and "the game works".
 | **Gate D** | **DONE** - `make check-boot AW_PART=2` passes all 759 records of part 2's stream |
 | **I5** | effectively done by `check-mus`, which gates three modules, six `op_playSound` cases and the mixer's OUTPUT on a real sample. The paragraph above is about `check-snd`'s synthetic ramp and remains true of that gate alone |
 | **I4** | does not apply in the form written. `check-text` drives `drawString` directly BY DESIGN, because text needs input and every trace is input-free; it is not a per-part gate. What a second run would add is gameplay's own strings, and the machine can now reach them - see the synthetic player under I10 |
-| **I2** | **partly** - `make check-draw AW_PART=2` passes all four pages for five blits and then diverges transiently; the cause is localised and named below |
+| **I2** | **DONE** - `make check-draw AW_PART=2` passes all four pages at blits 5, 6 and 8 |
 
 **Gate D's gameplay run is the pattern for the rest, and the cut is the whole difficulty.** The
 probe reaches a later part through `instrJumpPart`, but a jump is a REQUEST: the engine finishes
