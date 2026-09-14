@@ -216,13 +216,21 @@ def compare(z, read, blob, sym, label):
     }
     if blob[4] != START_PART:
         bad.append(f"the part index is {blob[4]}, and the game boots into {START_PART}")
-    fields = [(5, "pal_now"), (7, "pg_ptr1"), (16, "mus_res"),
-              (17, "mus_playing"), (19, "mus_cur_order")]
+    fields = [(7, "pg_ptr1"), (16, "mus_res"), (17, "mus_playing"), (19, "mus_cur_order")]
     if label == "the save":
-        fields.append((6, "pal_req"))   # after a LOAD this deliberately holds the saved pal_now:
-                                        # apply_palette maps MMU2, which is where the load's own
-                                        # code runs, so the load asks aw_blit to do it instead -
-                                        # the reference's paletteIdRequested arrangement exactly
+        fields.append((5, "pal_now"))
+        fields.append((6, "pal_req"))
+    else:
+        # AFTER A LOAD THE SAVED pal_now IS IN pal_req, and pal_now is untouched: apply_palette maps
+        # MMU2, which is where the load's own code runs, so the load asks aw_blit to apply it -
+        # the reference's paletteIdRequested arrangement exactly. The VM is stopped the moment the
+        # load returns, so no blit ever consumes the request.
+        #
+        # This used to compare the file's pal_now with the machine's pal_now, which after a load
+        # is whatever palette the fresh run had reached two seconds in. It agreed only while the
+        # run's timing happened to put a palette change on the right side of that mark, and it
+        # stopped agreeing the day page copies got faster: 0x17 in the file, 0x13 on the machine.
+        fields.append((5, "pal_req"))
     for off, name in fields:
         if blob[off] != live[name]:
             bad.append(f"{name} is {blob[off]:#04x} in the file, {live[name]:#04x} on the machine")

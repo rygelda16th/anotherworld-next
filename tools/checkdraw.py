@@ -180,6 +180,10 @@ def main():
         # change, they are 2, 2 and 1. The same. There is nothing to warm.
     else:
         z.cmd(f"write-memory-raw {sym['fname']} {(CODE_FILE.encode() + bytes(1)).hex()}")
+    # AW_AUTOPLAY=1 runs the machine's synthetic player, for a reference the probe recorded with
+    # its own autoplay on - gameplay that nobody plays stands still and draws nothing worth testing.
+    if os.environ.get("AW_AUTOPLAY"):
+        z.cmd(f"write-memory {sym['autoplay']} 1")
     z.cmd(f"write-memory-raw {sym['stop_blit']} "
           f"{BLITS.to_bytes(2, 'little').hex()}")
     z.cmd(f"write-memory {sym['go']} 1")

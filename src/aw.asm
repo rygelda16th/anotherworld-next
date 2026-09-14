@@ -106,14 +106,16 @@ RES_MAX_PAGES   EQU 96                  ; pages 72..167; banks 40-111 stay free
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
 
 CTL             EQU $C000
-STACK_TOP       EQU $D400               ; grows down to $D000: 1,024 bytes
+STACK_TOP       EQU $D400               ; grows down to $D080: 896 bytes
 ; THE STACK WAS 1,280 BYTES BY ESTIMATE AND USES 514 BY MEASUREMENT. awprobe trapped every write
 ; to $CF00-$D3FF under CSpect (AWPROBE_STACK) through the intro and parts 2 to 7, and the lowest
 ; address written was $D1FE in all seven - the same spot every time, so the deepest point is a
-; path they share rather than anything scene-dependent. The bottom 256 bytes are code now, and the
-; stack keeps twice what it has ever been seen to use.
-STACK_FLOOR     EQU $D000
-STACK_CODE      EQU $CF00               ; up to STACK_FLOOR: load_flat and the music clock
+; path they share rather than anything scene-dependent. The bottom 384 bytes are code now: the
+; music clock took 256, and the dirty-band copies another 128. The stack keeps 1.74 times the most
+; it has been seen to use, which leaves room for polygon nesting deeper than those runs reached.
+STACK_FLOOR     EQU $D080
+STACK_CODE      EQU $CF00               ; up to STACK_FLOOR: load_flat, the music clock, dirty bands
+DIRTY_BANDS     EQU 1                   ; raster.inc's band_set reports every band it draws into
 ; Code ABOVE the C's image, in the tail the stack vacated when it moved into MMU6. The C is
 ; 7.8K from $9C00 and ends near $BB50, so this is the 1,100-odd bytes between that and $BF00 -
 ; which used to be stack and is now the only resident space left. Asserted at both ends.
@@ -1218,6 +1220,7 @@ aw_fill_page:
         ld      (fill_col), a
         ld      a, (jt_arg)
         call    resolve_page
+        call    dt_forget               ; see dirty_band
         call    page_to_p0
         ld      c, a                    ; C = the page's first 8K page
         ld      b, BANDS
@@ -1271,27 +1274,35 @@ aw_copy_page:
 .plain:
         ld      a, c
         call    resolve_page
+        ld      (cp_sidx), a
         call    page_to_p0
         ld      (cp_src), a
         ld      a, (cp_dstid)
         call    resolve_page
+        ld      (cp_didx), a
         call    page_to_p0
         ld      (cp_dst), a
+        call    dt_copy_mask            ; which bands actually differ; see dirty_band
         ld      d, BANDS
         ld      e, 0
 .cband:
+        srl     b                       ; dt_copy_mask left the band mask in B
+        jr      nc, .cskip
         ld      a, (cp_src)
         add     a, e
         nextreg NR_CPWIN_MMU, a
         ld      a, (cp_dst)
         add     a, e
         nextreg NR_DWIN_MMU, a
+        push    bc                      ; the mask: LDIR takes BC
         push    de
         ld      hl, CPWIN
         ld      de, DWIN
         ld      bc, $2000
         ldir
         pop     de
+        pop     bc
+.cskip:
         inc     e
         dec     d
         jr      nz, .cband
@@ -1774,6 +1785,8 @@ voice_locate:
 ; and parts 2 and 3 load none, so no budget so far has paid for it.
 ;-----------------------------------------------------------------------------
 present_bitmap:
+        xor     a
+        call    dt_forget               ; page 0 is replaced; see dirty_band
         ld      a, BMP_PAGE
         ld      (bmp_src), a
         ld      a, L2_BASE_BANK * 2     ; page 0's first 8K band
@@ -2431,6 +2444,7 @@ draw_char6:
         cp      (hl)
         jr      z, .band_ok
         ld      (hl), a
+        call    dirty_band              ; text draws into this band too
         ld      hl, dst_p0
         add     a, (hl)
         nextreg NR_DWIN_MMU, a
@@ -2925,6 +2939,7 @@ sv_load:
         ld      bc, 128
         call    sv_rblock
         call    sv_rpages
+        call    dt_reset                ; every page came off the card; see dirty_band
         call    sv_close
 
         ; and the scattered bytes, back out of the header
@@ -3834,6 +3849,127 @@ mus_set_period:
 mus_period:     dw 1
 mus_period_raw: dw $FFFF
 mus_last_tick:  dw 0
+
+;-----------------------------------------------------------------------------
+; DIRTY BANDS - a page copy moves only what the destination has had drawn on it since it was
+; last a copy of that same source.
+;
+; The intro copies a whole page before 57% of its blits, and a copy is 49,152 bytes of LDIR -
+; about 2.4 ticks of the machine, measured, whatever is drawn afterwards. Most of those copies
+; restore a background the previous frame drew a few small shapes over. So each page remembers:
+;
+;   dt_origin[p]  the page it was last copied from, while it still is an exact copy of it apart
+;                 from the bands in dt_dirty[p]; $FF when it is not
+;   dt_dirty[p]   bit n set = band n (32 rows, one 8K page) has been drawn into since that copy
+;
+; and a plain copy s -> d moves only dt_dirty[d] when dt_origin[d] == s, every band otherwise.
+; For that to be exact, ANY write to a page must end every mirror OF it (dt_unmirror): the source
+; changing invalidates the copies taken from it. The writers are band_set (spans and points),
+; draw_char6 (text), aw_fill_page, aw_copy_page itself, present_bitmap and the save's page
+; restore. Simulated against the reference on the intro's 700 blits first: every page identical
+; at every blit, and 50.6% of the bytes copied.
+;-----------------------------------------------------------------------------
+
+; dirty_band - A = a band about to be drawn into, on the page pg_ptr1 names. Keeps AF, BC, DE.
+dirty_band:
+        push    af
+        push    bc
+        ld      b, a
+        ld      a, (pg_ptr1)
+        ld      c, a
+        call    dt_unmirror             ; this page is changing: nothing mirrors it any more
+        ld      hl, dt_dirty
+        ld      a, l
+        add     a, c
+        ld      l, a                    ; the table does not straddle a 256-byte boundary: ASSERTed
+        inc     b
+        xor     a
+        scf
+.bit:   rla
+        djnz    .bit                    ; A = 1 << band
+        or      (hl)
+        ld      (hl), a
+        pop     bc
+        pop     af
+        ret
+
+; dt_forget - A = a page overwritten outright. It mirrors nothing, and nothing mirrors it.
+; Keeps AF and BC.
+dt_forget:
+        push    af
+        push    bc
+        ld      c, a
+        call    dt_unmirror
+        ld      hl, dt_origin
+        ld      b, 0
+        add     hl, bc
+        ld      (hl), $FF
+        pop     bc
+        pop     af
+        ret
+
+; dt_unmirror - C = a page that is changing. Every page recorded as a copy of it stops being one.
+; Keeps BC and DE.
+dt_unmirror:
+        ld      hl, dt_origin
+        ld      a, c
+        cp      (hl)
+        jr      nz, .one
+        ld      (hl), $FF
+.one:   inc     hl
+        cp      (hl)
+        jr      nz, .two
+        ld      (hl), $FF
+.two:   inc     hl
+        cp      (hl)
+        jr      nz, .three
+        ld      (hl), $FF
+.three: inc     hl
+        cp      (hl)
+        ret     nz
+        ld      (hl), $FF
+        ret
+
+; dt_copy_mask - a plain copy of page (cp_sidx) onto page (cp_didx) is about to run. Returns B =
+; the bands it must move, and records the destination as a fresh copy of the source.
+dt_copy_mask:
+        ld      a, (cp_didx)
+        ld      c, a
+        ld      a, (cp_sidx)
+        ld      b, 0
+        cp      c
+        ret     z                       ; the same page both ends: the reference returns too
+        call    dt_unmirror             ; the destination is changing
+        ld      hl, dt_origin
+        add     hl, bc                  ; B is 0, C the destination
+        ld      a, (cp_sidx)
+        cp      (hl)
+        ld      (hl), a                 ; from now on it mirrors this source
+        ld      de, 4
+        add     hl, de                  ; dt_dirty[destination]
+        ld      b, $3F                  ; all six bands, unless it already mirrored this source
+        jr      nz, .all
+        ld      b, (hl)
+.all:
+        ld      (hl), 0
+        ret
+
+; dt_reset - every page restored from somewhere else: nothing mirrors anything.
+dt_reset:
+        ld      a, $FF
+        ld      (dt_origin), a
+        ld      (dt_origin + 1), a
+        ld      (dt_origin + 2), a
+        ld      (dt_origin + 3), a
+        ret
+
+        EXPORT dt_origin
+dt_origin:      db $FF, $FF, $FF, $FF
+        EXPORT dt_dirty
+dt_dirty:       db 0, 0, 0, 0
+        ASSERT (dt_dirty & $FF) <= 252   ; dirty_band indexes it by adding to the low byte
+cp_sidx:        db 0
+cp_didx:        db 0
 
         ASSERT $ <= STACK_FLOOR
         DISPLAY "> stack code at ", /H, STACK_CODE, " ending ", /H, $

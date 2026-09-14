@@ -342,21 +342,7 @@ poly_draw:
         and     7
         ld      hl, cur_band
         cp      (hl)
-        jr      z, .band_ok
-        ld      (hl), a
-        ; THE DESTINATION PAGE IS A VARIABLE, not a constant. The harness draws into
-        ; one page for its whole run; the engine keeps four and selects among them with
-        ; selectVideoPage, so the band's page number has to be read rather than
-        ; assembled in. dst_p0 and src_p0 start as the harness's two constants, so
-        ; nothing changes for it.
-        push    af
-        ld      hl, dst_p0
-        add     a, (hl)
-        nextreg NR_DWIN_MMU, a
-        pop     af
-        ld      hl, src_p0
-        add     a, (hl)
-        nextreg NR_SWIN_MMU, a          ; the copy mode's source band
+        call    nz, band_set
 .band_ok:
         ; HL = DWIN + ((y & 31) << 8) + sx1 ; DE = length as a WORD.
         ; A word, not a byte: a full-width span is 256 pixels, which is 0 in a
@@ -979,6 +965,32 @@ copy_end:
 ;-----------------------------------------------------------------------------
 ; draw_point - the degenerate polygon. Video::drawPoint, at one byte a pixel.
 ;-----------------------------------------------------------------------------
+;-----------------------------------------------------------------------------
+; band_set - A = the band (y >> 5) to draw into next, known to differ from cur_band.
+; Maps the destination and the copy mode's source for it. Keeps BC and DE; A comes back.
+;
+; THE DESTINATION PAGE IS A VARIABLE, not a constant. The harness draws into one page for its
+; whole run; the engine keeps four and selects among them with selectVideoPage, so the band's page
+; number has to be read rather than assembled in. dst_p0 and src_p0 start as the harness's two
+; constants, so nothing changes for it.
+;-----------------------------------------------------------------------------
+band_set:
+        ld      (cur_band), a
+    IFDEF DIRTY_BANDS
+        call    dirty_band              ; the includer's: this band of this page is being drawn on
+    ENDIF
+        push    af
+        ld      hl, dst_p0
+        add     a, (hl)
+        nextreg NR_DWIN_MMU, a
+        pop     af
+        push    af
+        ld      hl, src_p0
+        add     a, (hl)
+        nextreg NR_SWIN_MMU, a          ; the copy mode's source band
+        pop     af
+        ret
+
 draw_point:
         ld      hl, (p_ptx)
         ld      de, SCR_W - 1
@@ -1007,14 +1019,15 @@ draw_point:
         rlca
         rlca
         and     7
+        ; THROUGH band_set, LIKE A SPAN. This used to map NR_MMU3 and NR_MMU2 with the constants
+        ; DST_P0 and SRC_P0 - polytest's slots and polytest's pages, written before the game had
+        ; either. In the game those are the POLYGON SEGMENT WINDOW, so every point unmapped the
+        ; reader's data, and the pixel went through DWIN into whatever band was last mapped
+        ; there - while cur_band claimed a band that nothing had mapped. Part 2 draws 15,734 points
+        ; in 700 blits. In polytest band_set does exactly what this did, so nothing changes there.
         ld      hl, cur_band
-        ld      (hl), a
-        push    af
-        add     a, DST_P0
-        nextreg NR_MMU3, a
-        pop     af
-        add     a, SRC_P0
-        nextreg NR_MMU2, a
+        cp      (hl)
+        call    nz, band_set
         ld      a, e
         and     31
         add     a, DWIN >> 8
