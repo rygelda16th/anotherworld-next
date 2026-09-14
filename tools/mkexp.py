@@ -38,6 +38,35 @@ LINE = re.compile(
     r"(?P<kind>\w+)\s*,\s*(?P<scope>\w+)")
 
 
+def append_cc_top(map_path, exp_path):
+    """Emit CC_TOP: the highest address the C occupies, which is NOT its image end.
+
+    sjasmplus reports the size of the C's image, and the assembly asserted MUSIC_CODE against
+    that - but the C's BSS lives ABOVE the image and is not in it. With a 3-byte margin the music
+    and text code landed inside the C's variables, and the VM dispatched thirteen records and
+    stopped; the assertion saw nothing wrong because the image did fit. This makes the real top
+    visible so the assertion can compare against it and the build fails loudly instead.
+
+    The highest symbol plus eight: a symbol's address is its start, and the map does not give
+    sizes, so eight covers the largest single object the compiler places last.
+    """
+    hi, who = 0, ""
+    for line in open(map_path, errors="replace"):
+        m = LINE.match(line)
+        if not m or m.group("kind") != "addr":
+            continue
+        a = int(m.group("addr"), 16)
+        if 0x8000 <= a < 0xC000 and a > hi:
+            hi, who = a, m.group("name")
+    if hi:
+        with open(exp_path, "a") as fh:
+            fh.write(f"; the C's highest address is {who} at 0x{hi:04X} - its BSS, which is NOT\n")
+            fh.write("; in the image sjasmplus measures. Plus eight, for the object's own size.\n")
+            fh.write(f"CC_TOP: EQU 0x{hi + 8:04X}\n")
+        print(f"  CC_TOP = 0x{hi + 8:04X}  (highest is {who} at 0x{hi:04X})")
+    return hi
+
+
 def convert(map_path, exp_path=None, want_kind="addr", want_scope="public"):
     """Returns the lines written. exp_path=None just returns them."""
     seen = {}
@@ -80,6 +109,7 @@ def main():
     src = sys.argv[1]
     dst = sys.argv[2] if len(sys.argv) > 2 else src.rsplit(".", 1)[0] + ".exp"
     lines, total = convert(src, dst)
+    top = append_cc_top(src, dst)
     print(f"{src}: {total:,} symbols read, {len(lines)} public addresses "
           f"written to {dst}")
     for line in lines[:12]:

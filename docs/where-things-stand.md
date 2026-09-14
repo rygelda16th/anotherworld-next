@@ -3090,12 +3090,42 @@ it is only consistent there. Interrupts are off throughout - esxDOS wants them o
 written out of MMU7 which the mixer borrows fifty times a second - so a save is silent for its
 duration, as the reference's is.
 
-**AND IT FOUND THAT I8 HAD SHIPPED A GAME THAT RAN ZERO FRAMES.** The C's frame loop was bounded
+**A LATENT TRAP MADE LOUD, and it cost most of a session to find.** `sjasmplus` reports the size
+of the C's **image**, and `ASSERT $ <= MUSIC_CODE` compared against that - but **the C's BSS lives
+above the image and is not in it**. `_aw_log_count` sits past the image's last byte. So a
+`MUSIC_CODE` that satisfies the assertion can still land inside the C's variables, and the
+assertion sees nothing wrong.
+
+Walking into it looked like this: the VM dispatched 13 records and stopped, nothing drew, the ring
+stayed silent - and on a second arrangement, 53,256 records and a fault code of 208 that no part of
+our code writes. Four hypotheses were wrong before the right one (the moved `aw_frame_sync`, a
+symbol collision from including the C's map, NEXLOAD's stack smashing the top of the upper block -
+that one measured **zero** corrupted bytes - and the loop bound itself). What found it was
+reverting `vm.c` to the exact revision where the gate last passed, which is the one experiment that
+could not be argued with.
+
+`tools/mkexp.py` now emits **`CC_TOP`** from the link map - the highest address the C occupies,
+plus eight for the last object's own size - and `aw.asm` asserts `CC_TOP <= MUSIC_CODE` alongside
+the old check. The build fails loudly now where it used to corrupt quietly.
+
+**AND THE SAVE FOUND THAT I8 HAD SHIPPED A GAME THAT RAN ZERO FRAMES.** The C's frame loop was bounded
 by `CTL_FRAMES`, which is zero-filled in the image and poked by every checker - so booting normally
 set part 0 up correctly and then did nothing at all. `check-part` could not see it, because it
 proves the part is *set up* and stops there; that limit is written down under I6 in as many words,
-and this is it biting. The loop now treats zero as unbounded. **A gate that stops one step short
-of the thing you care about will let exactly that thing through.**
+and this is it biting. **That fix is REVERTED and the gap is still open**, because closing it costs the C
+36 bytes and the margin between `CC_TOP` and `MUSIC_CODE` is 23 - the upper block cannot move up
+without crossing `$BF00`, which is the `.nex` loader's stack. So the shipped game still runs zero
+frames, and `check-save` pokes a frame count of its own like every other harness does. **A gate
+that stops one step short of the thing you care about will let exactly that thing through** - and
+the fix for this one is blocked on thirteen bytes of address space.
+
+**The gate had to freeze what it measures.** A save is a snapshot and the game keeps running, so
+the first attempt reported four differences that were nothing but elapsed time. Poking
+`CTL_FRAMES` to zero cut it to two - `pg_ptr1` and `aw_vars`, the fields the VM touches every
+frame. The answer is the C's own loop order: it runs `aw_frame_sync`, then the part block, then
+breaks on budget-or-fault, and only **after** that runs the frame's threads. So exhausting the
+budget in the same breath as the save request makes the saving frame the **last** frame, with no
+thread work after it, and the machine stands still on exactly the state the file holds.
 
 **What is left of I9:** the load. Reading the file back is the mirror of writing it, with one
 piece of real work - the resident resources have to be reloaded **in the saved order** so the heap

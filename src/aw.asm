@@ -3304,7 +3304,12 @@ nm_tail:    db ".BIN", 0
 
         ORG CC_ORG
         INCBIN  "build/aw_vm_CODE.bin"
-        ASSERT $ <= MUSIC_CODE          ; the C must not reach the music code
+        ; AGAINST CC_TOP, NOT AGAINST THIS. The C's BSS lives ABOVE the image sjasmplus
+        ; measures, so `$ <= MUSIC_CODE` here passed while the music code sat inside the C's
+        ; variables - the VM dispatched thirteen records and stopped, nothing drew, and no
+        ; assertion fired. tools/mkexp.py emits the real top from the link map now.
+        ASSERT $ <= MUSIC_CODE          ; the C's IMAGE must not reach the music code
+        ASSERT CC_TOP <= MUSIC_CODE     ; and neither must its variables
         DISPLAY "> the C is ", /D, $ - CC_ORG, " bytes at ", /H, CC_ORG
         ASSERT $ < VEC_TABLE
 

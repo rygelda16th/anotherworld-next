@@ -54,12 +54,25 @@ def main():
             out += bytes(int(raw[i:i + 2], 16) for i in range(0, 2 * k, 2))
         return bytes(out)
 
-    # boot the game proper - no name poked - let it settle into part 0, then ask for a save
+    # Boot the game proper - no NAME poked, so the boot path sets up START_PART - but DO poke a
+    # frame count, because the C's loop is bounded by CTL_FRAMES and the image leaves it zero.
+    # That the shipped game therefore runs zero frames is a real gap, recorded under I9: closing
+    # it costs the C 36 bytes and the memory map has 23. It is not this gate's business, which is
+    # whether a save is correct once frames are running.
     z.cmd(f"smartload /work/{NEX}")
     time.sleep(3.2)
     z.cmd("set-memory-zone -1")
+    z.cmd(f"write-memory-raw {0xC002} {(3000).to_bytes(2, 'little').hex()}")   # CTL_FRAMES
+    z.cmd(f"write-memory-raw {0xC004} {(60000).to_bytes(2, 'little').hex()}")  # CTL_BUDGET
     z.cmd(f"write-memory {sym['go']} 1")
     time.sleep(2.0)
+    # AND EXHAUST THE BUDGET IN THE SAME BREATH. The C's loop runs aw_frame_sync, then the part
+    # block, then breaks on budget-or-fault - and only AFTER that does it run the frame's threads.
+    # So a budget of zero makes the frame that performs the save the LAST frame, with no thread
+    # work after it, and the machine stands still on exactly the state the save captured. Without
+    # this the VM ran on between the save and the reading, and the two fields it touches every
+    # frame - pg_ptr1 and aw_vars - differed for that reason alone rather than any fault.
+    z.cmd(f"write-memory-raw {0xC004} {(0).to_bytes(2, 'little').hex()}")   # CTL_BUDGET
     z.cmd(f"write-memory {sym['save_req']} 1")
 
     for _ in range(300):                # the pages alone are 196,608 bytes through esxDOS
@@ -81,9 +94,14 @@ def main():
     if len(blob) != want_len:
         bad.append(f"the file is {len(blob):,} bytes, not {want_len:,}")
 
-    # quiesce before reading Layer 2 through MMU7, as every other gate must
+    # FREEZE THE MACHINE BEFORE COMPARING. A save is a SNAPSHOT and the game keeps running, so
+    # every field would differ by the time it was read - which is exactly what the first run of
+    # this reported: pg_ptr1, aw_vars, the thread pcs and all six bands of page 0. Poking
+    # CTL_FRAMES to zero ends the C's loop, which stops aw_frame_sync and with it music_tick;
+    # snd_off stops the interrupt's mixer, which would otherwise keep advancing V_POS.
+    z.cmd(f"write-memory-raw {0xC002} {(0).to_bytes(2, 'little').hex()}")
     z.cmd(f"write-memory {sym['snd_off']} 1")
-    time.sleep(0.1)
+    time.sleep(0.3)
 
     # ---- the header, field by field, against the machine ----------------------------------
     live = {
