@@ -3543,9 +3543,41 @@ cannot show inside a reasonable run - the first attempt at this measured nothing
 that reason. The counters are exported instead and the ARITHMETIC checked against the probe's
 own function, sample for sample. All 40 match, and the VM's own variables carry it.
 
-**Still owed here:** the playthrough itself, which needs more than synthetic input - the probe
-cannot reach the ending either, because the game's own route to the later parts is the password
-screen and its codes are not in the data.
+##### Left playing itself, it reaches part 2 and stays there - stable
+
+`make diag D=_playthrough`, the intro with the synthetic player and nothing else touched:
+
+    t=  1.0s  PART 1
+    t=  2.3s  PART 2
+    1,985 frames in 339s, 2,024 blits, 53 loads, 2 invalidations
+    parts, in order: 1 -> 2
+
+**Two things, and the second is the one that matters.** The port is stable under sustained play -
+nearly two thousand frames, no fault, no stall, 5.9 frames a second. And the synthetic player
+does not get past part 2: invalidations stay at 2, which is only the two part setups, so it is
+not even dying and restarting. The canned input simply does not get Lester through the level.
+
+That is the same limitation the host probe has, and it is why the reference reaches later parts
+by REQUESTING them rather than by playing to them.
+
+**Still owed here: the playthrough, and it needs a person.** That sentence was previously
+written as "the probe cannot reach the ending either, because the game's own route to the later
+parts is the password screen and its codes are not in the data" - and that was asserted, not
+established. It came from a comment in this project's own `instr.h`, written earlier and then
+repeated as though it were a finding. Part 9's bytecode is sitting in `build/assets/RES7E.BIN`
+and the password screen's validation is in it. That does not make the codes recoverable, but **"I
+have not found a route" is a different claim from "no route exists"**, and the two had stopped
+being distinguished. The measurement above is what the claim now rests on.
+
+##### A build to play
+
+    make cc-game && make asm ASMDEF=-DBYPASS_PROTECTION
+
+`-DBYPASS_PROTECTION` starts at part 1 and skips the code wheel; a plain `make asm` gives the
+wheel. For CSpect, `sd/aw/` has to be the SD **root** rather than a subfolder of it, because the
+game opens its resources by bare name - see `~/src/cspect/run-aw.sh`. Controls are the
+reference's: **O** and **P** left and right, **Q** and **A** up and down, **Space** fire, and
+**Enter** to start, which is the boot handshake nothing pokes on real hardware.
 
 ##### Two ways this fails silently, and both cost a session before they were understood
 
