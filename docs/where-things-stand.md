@@ -2094,7 +2094,7 @@ Same discipline, different question. Chain 1 asked *can this be done*. This asks
 | I7 | the full-screen bitmap path | **done** |
 | I8 | the code screen and its bypass | **done** |
 | I9 | save and load | **done**, both halves gated; the round trip holds field for field |
-| I9a | the whole suite, on the game | **in progress** - the twelve gates re-run against this image |
+| I9a | the whole suite, on the game | **half done** - twelve gates green on the image; the four narrow ones against a gameplay part still owed, enabler now in place |
 | I10 | playable to the end | **in progress**: part 1 to part 2 unaided, part 2 playing at 4.8 fps. Not driven to the end |
 | H1 | real hardware | unrunnable until the KS3 arrives |
 
@@ -3518,8 +3518,34 @@ frame in progress, and `rd_pcount` says so; only a machine advancing neither fra
 is stuck. The checker now tests both, because a gate that mislabels a slow part as a broken one
 sends the next session hunting a bug that is not there.
 
-**Still owed here:** real input driving a part rather than a tapped fire button, and the
-playthrough itself.
+##### The synthetic player, and why it had to be the probe's own
+
+`make diag D=_autocheck`. Every gameplay measurement in this document is the host probe's, and
+the probe only reaches gameplay because `headless.cpp` drives the engine with a fixed function
+of the frame number - walk right, jump, walk left, fire on a short cycle. Without it the run
+stops at the intro's "press fire" prompt, which is how 57,386 of 60,000 frames once came to draw
+nothing.
+
+The machine had no equivalent, and that is what stood between here and I9a's remaining half.
+**"Re-run the narrow gates against a gameplay part" is only meaningful if both sides were given
+identical input** - a machine tapping fire and an engine playing a scripted game do not produce
+comparable streams. So `auto_input` reproduces the probe's arithmetic exactly, and **f is the
+FRAME, not the tick**: the reference reads input once a frame, ours runs in the interrupt at
+50 Hz, so the two modular counters advance only when `CTL_FRAMES_DONE` changes.
+
+Three resident bytes, which is exactly what was left; the routine lives in MMU6 beside the part
+table, and `autoplay` is zero in the image so no gate that does not poke it sees any change.
+
+**And the obvious test of it is a bad one.** The synthetic player walks into things and dies,
+and a death restarts the part, so `n_inval` climbing would prove it works. It does not appear:
+the probe's cycle is 400 frames and the machine reaches about 370 in a minute, so the signature
+cannot show inside a reasonable run - the first attempt at this measured nothing for exactly
+that reason. The counters are exported instead and the ARITHMETIC checked against the probe's
+own function, sample for sample. All 40 match, and the VM's own variables carry it.
+
+**Still owed here:** the playthrough itself, which needs more than synthetic input - the probe
+cannot reach the ending either, because the game's own route to the later parts is the password
+screen and its codes are not in the data.
 
 ##### Two ways this fails silently, and both cost a session before they were understood
 
