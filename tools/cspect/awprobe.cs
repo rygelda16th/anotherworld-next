@@ -46,6 +46,9 @@ namespace AWProbe
         // released, so a run can choose its part and turn the synthetic player on.
         List<int[]> pokes = new List<int[]>();
         // AWPROBE_VOICES=<hex addr of the voice records> counts active voices every frame.
+        // AWPROBE_STACK=<lo>:<hi> traps every WRITE in that range and keeps the lowest address
+        // written: the stack's real high-water mark, not an estimate.
+        int stackLo = 0, stackHi = 0, stackMin = 0x10000;
         int voicesAddr = 0; long[] voiceHist = new long[5]; long voiceFrames = 0, voiceSum = 0;
         bool armed = false;
         int trapped = 0;
@@ -87,6 +90,8 @@ namespace AWProbe
                     var q = kv.Split('=');
                     pokes.Add(new int[] { Convert.ToInt32(q[0], 16), Convert.ToInt32(q[1], 16) });
                 }
+            string st = Environment.GetEnvironmentVariable("AWPROBE_STACK");
+            if (!string.IsNullOrEmpty(st)) { var q = st.Split(':'); stackLo = Convert.ToInt32(q[0], 16); stackHi = Convert.ToInt32(q[1], 16); }
             string va = Environment.GetEnvironmentVariable("AWPROBE_VOICES");
             if (!string.IsNullOrEmpty(va)) voicesAddr = Convert.ToInt32(va, 16);
             string m = Environment.GetEnvironmentVariable("AWPROBE_MAX");
@@ -98,6 +103,7 @@ namespace AWProbe
             for (int a = 0; a < WIN_TOP; a++) io.Add(new sIO(a, eAccess.Memory_EXE, 0, 0));
             // Arm only once our own code is running: the NEX loader and the ROM execute the
             // low window legitimately before that, and those hits are not the fault.
+            for (int a = stackLo; stackHi != 0 && a < stackHi; a++) io.Add(new sIO(a, eAccess.Memory_Write, 1, 0));
             io.Add(new sIO(0x8731, eAccess.Memory_EXE, 0, 0));   // clear_code
             io.Add(new sIO(0x876E, eAccess.Memory_EXE, 0, 0));   // load_code's rst $08
             return io;
@@ -135,6 +141,7 @@ namespace AWProbe
             log.WriteLine(sb.ToString());
             hist.Clear();
             samples = 0;
+            if (stackHi != 0) log.WriteLine(string.Format("# stack low-water: ${0:X4}", stackMin));
             if (voiceFrames > 0)
                 log.WriteLine(string.Format("# voices so far: mean {0:0.00} over {1} frames; 0:{2} 1:{3} 2:{4} 3:{5} 4:{6}",
                     (double)voiceSum / voiceFrames, voiceFrames, voiceHist[0], voiceHist[1], voiceHist[2], voiceHist[3], voiceHist[4]));
@@ -204,7 +211,11 @@ namespace AWProbe
             Sample();
         }
         public void OSTick() { osticks++; }
-        public bool Write(eAccess _t, int _p, int _id, byte _v) { return false; }
+        public bool Write(eAccess _t, int _p, int _id, byte _v)
+        {
+            if (_t == eAccess.Memory_Write && _id == 1 && ticks > 150 && _p < stackMin) stackMin = _p;
+            return false;                       // never swallow the write
+        }
 
         public byte Read(eAccess _t, int _p, int _id, out bool _valid)
         {

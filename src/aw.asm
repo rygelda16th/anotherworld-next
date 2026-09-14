@@ -106,8 +106,14 @@ RES_MAX_PAGES   EQU 96                  ; pages 72..167; banks 40-111 stay free
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
 
 CTL             EQU $C000
-STACK_TOP       EQU $D400               ; grows down to $CF00: 1,280 bytes
-STACK_FLOOR     EQU $CF00
+STACK_TOP       EQU $D400               ; grows down to $D000: 1,024 bytes
+; THE STACK WAS 1,280 BYTES BY ESTIMATE AND USES 514 BY MEASUREMENT. awprobe trapped every write
+; to $CF00-$D3FF under CSpect (AWPROBE_STACK) through the intro and parts 2 to 7, and the lowest
+; address written was $D1FE in all seven - the same spot every time, so the deepest point is a
+; path they share rather than anything scene-dependent. The bottom 256 bytes are code now, and the
+; stack keeps twice what it has ever been seen to use.
+STACK_FLOOR     EQU $D000
+STACK_CODE      EQU $CF00               ; up to STACK_FLOOR: load_flat and the music clock
 ; Code ABOVE the C's image, in the tail the stack vacated when it moved into MMU6. The C is
 ; 7.8K from $9C00 and ends near $BB50, so this is the 1,100-odd bytes between that and $BF00 -
 ; which used to be stack and is now the only resident space left. Asserted at both ends.
@@ -1559,8 +1565,11 @@ aw_play_music:
         ld      a, (MUS_BLOCK + 0)      ; the resource number
         or      a
         jr      nz, .have
-        ; resNum zero: the reference treats that as "carry on", and pos zero as a rewind
-        ret
+        ; resNum ZERO IS NOT "CARRY ON". snd_playMusic (vm.cpp:726-733) retimes the running module
+        ; when the delay is non-zero and stops it when the delay is zero, and the intro does both:
+        ; 15,700 -> 15,900 at 45 s, and a stop at 117 s. This used to return, so the music kept
+        ; its first tempo and never stopped.
+        jp      mus_zero
 .have:
         ld      (mus_res), a
         ; where did aw_load_res put it? zero means it never arrived
@@ -1623,28 +1632,9 @@ aw_play_music:
         ld      (mus_cur_order), a
         ld      hl, 0
         ld      (mus_cur_pos), hl
-        ; The tick period in FRAMES. The reference's delay is delay * 60 / 7050 milliseconds
-        ; and a frame is 20 ms, so frames = raw * 60 / 7050 / 20 = raw / 2350. For the intro's
-        ; 15,240 that is 6 frames, 120 ms against the reference's 129 - the truncation is one
-        ; frame at worst and the alternative is a divide by 2350 with a remainder nobody hears.
-        ld      hl, (mus_delay_raw)
-        ld      bc, 2350
-        ld      de, 0
-.frames:
-        or      a
-        sbc     hl, bc
-        jr      c, .got_frames
-        inc     de
-        jr      .frames
-.got_frames:
-        ld      a, e
-        or      a
-        jr      nz, .at_least_one
-        inc     a                       ; never zero: that would fire every frame
-.at_least_one:
-        ld      (mus_frames), a
-        xor     a
-        ld      (mus_count), a
+        ; THE EVENT TIMER STARTS HERE, in milliseconds; see music_clock. It used to be a count of
+        ; VM frames, which the intro's 80 ms frames turned into a quarter-speed tune.
+        call    mus_clock_start
 
         ld      a, 1
         ld      (mus_playing), a
@@ -1682,7 +1672,7 @@ aw_frame_sync:
         call    aw_saveload             ; 1 saves, 2 loads; it reads the byte and clears it
 .no_save:
     IFNDEF NO_MUSIC
-        call    music_tick
+        call    music_clock
     ELSE
         ; NO_MUSIC: does the module player return?
         ;
@@ -1807,7 +1797,7 @@ present_bitmap:
         djnz    .band
         ret
 ;-----------------------------------------------------------------------------
-; music_tick - counts frames and runs an event when one is due. handleEvents,
+; music_tick - ONE event, now; music_clock decides when. handleEvents,
 ; sfxplayer.cpp: the order table selects a 1024-byte pattern block, four channels of four
 ; bytes are read at curPos, curPos advances sixteen, and at 1024 it wraps to the next order.
 ; Reaching numOrder stops the module - the reference removes its timer and stops every
@@ -1821,12 +1811,6 @@ music_tick:
         ld      a, (mus_playing)
         or      a
         ret     z
-        ld      hl, mus_count
-        inc     (hl)
-        ld      a, (mus_frames)
-        cp      (hl)
-        ret     nz                      ; not due yet
-        ld      (hl), 0
 
         ld      hl, (n_mus_ev)
         inc     hl
@@ -2624,10 +2608,8 @@ mus_cur_order:  db 0
 mus_cur_pos:    dw 0
         EXPORT mus_playing
 mus_playing:    db 0
-        EXPORT mus_frames
-mus_frames:     db 0            ; the tick period, in frames
-        EXPORT mus_count
-mus_count:      db 0            ; frames since the last event
+        EXPORT mus_acc
+mus_acc:        dw 0            ; milliseconds owed to the event timer; see music_clock
         EXPORT n_mus_ev
 n_mus_ev:       dw 0            ; events handled
         EXPORT n_mus_note
@@ -2970,10 +2952,8 @@ sv_load:
         ld      (mus_cur_order), a
         ld      hl, (SV_HDR + 20)
         ld      (mus_cur_pos), hl
-        ld      a, (SV_HDR + 22)
-        ld      (mus_count), a
-        ld      a, (SV_HDR + 23)
-        ld      (mus_frames), a
+        ld      hl, (SV_HDR + 22)
+        ld      (mus_acc), hl           ; the period is recomputed from mus_delay_raw on its own
         ld      hl, (SV_HDR + 24)
         ld      (mus_delay_raw), hl
         ld      hl, (SV_HDR + 26)
@@ -3183,10 +3163,8 @@ sv_header:
         ld      (SV_HDR + 19), a
         ld      hl, (mus_cur_pos)
         ld      (SV_HDR + 20), hl
-        ld      a, (mus_count)
-        ld      (SV_HDR + 22), a
-        ld      a, (mus_frames)
-        ld      (SV_HDR + 23), a
+        ld      hl, (mus_acc)
+        ld      (SV_HDR + 22), hl
         ld      hl, (mus_delay_raw)
         ld      (SV_HDR + 24), hl
         ld      hl, (mus_mark)
@@ -3612,8 +3590,6 @@ probe_walk:
         inc     hl
         inc     hl
         djnz    .ins
-        ld      a, 1
-        ld      (mus_frames), a
         ld      a, (pw_left)
         ld      b, a
 .tick:
@@ -3680,10 +3656,21 @@ note_to_inc:
         DISPLAY "> note_to_inc at ", /H, NOTE_CODE, " ending ", /H, $
         ASSERT $ <= MUS_ORDER_AT
 
-        ORG     $C3DE
+
+
+        ORG     STACK_CODE
 ;-----------------------------------------------------------------------------
-; MMU6, $C3DE. load_flat lives up here, out of the resident block, because that block
-; had four bytes left in it and this slot is always paged - the stack is in it.
+; STACK_CODE, $CF00-$CFFF: the bottom of what used to be stack. See STACK_FLOOR for the
+; measurement that freed it. MMU6 is always paged - the stack is in it - so code here can be
+; called from anywhere.
+;
+; load_flat WAS AT $C3DE, and that was a fault of mine: $C400 is MUS_ORDER_AT and $C480 is
+; MUS_INSTR_AT, run-time tables the assembler never places, so the page's DISPLAY lines showed
+; the space as free. op_playMusic copies the order table over load_flat's tail. It survived only
+; because load_flat runs once, at boot, before any music - and the music clock, which runs
+; every frame, did not survive it at all: check-aw caught the VM running wild on its first try.
+; A list of what the assembler places is not a map of memory; this project has now learned
+; that twice.
 ;-----------------------------------------------------------------------------
 ;-----------------------------------------------------------------------------
 ; load_flat - (fname) straight into memory at DE, BC bytes, no paging.
@@ -3728,8 +3715,128 @@ load_flat:
 lf_dst:     dw 0
 lf_len:     dw 0
 
-        ASSERT $ <= $C500               ; the reciprocal table starts here
-        DISPLAY "> load_flat at $C3DE ending ", /H, $
+
+;-----------------------------------------------------------------------------
+; music_clock - the module's event timer, run from the frame boundary and driven by the TICK.
+;
+; The reference plays a module from a system timer: addTimer(_delay) with _delay = delay * 60 /
+; 7050 milliseconds (sfxplayer.cpp:43 and :103), and eventsCallback returns the delay again, so
+; events come every _delay ms whatever the rest of the game is doing. This used to count calls
+; from aw_frame_sync instead - VM FRAMES - against a period of delay / 2350 FRAMES, so every
+; intro frame that took four ticks made the tune four times slower. Measured in CSpect: 2.09
+; events a second against the reference's 7.71, and exactly one event per six VM frames.
+;
+; So elapsed ticks are counted as 20 ms each into mus_acc, and every event that is due runs.
+; Events are still only RUN at a frame boundary - the walk pages the module into MMU2, which a
+; draw may own, so it cannot move into the interrupt - so a slow frame delays them and the next
+; boundary catches up. The tempo is right; the jitter is at most one frame.
+;-----------------------------------------------------------------------------
+music_clock:
+        ld      a, (mus_playing)
+        or      a
+        ret     z
+        ; a new delay - a start, a retime, a restored save - means a new period
+        ld      hl, (mus_delay_raw)
+        ld      de, (mus_period_raw)
+        or      a
+        sbc     hl, de
+        call    nz, mus_set_period
+        ; ticks since the last call, ALL of them owed. The reference's timer runs through a slow
+        ; frame, and the intro has real frames of 33 and 155 ticks: an earlier half-second cap
+        ; here threw 6.2% of the intro's time away and measured the tune 4.5% slow. Only a gap
+        ; over 255 ticks - five seconds, a clock that genuinely was not running - counts as one.
+        ld      hl, (ticks)
+        ld      de, (mus_last_tick)
+        ld      (mus_last_tick), hl
+        or      a
+        sbc     hl, de
+        ld      a, h
+        or      a
+        jr      z, .fresh
+        ld      hl, 1
+.fresh:
+        add     hl, hl                  ; ticks * 20 ms
+        add     hl, hl
+        ld      d, h
+        ld      e, l
+        add     hl, hl
+        add     hl, hl
+        add     hl, de
+        ld      de, (mus_acc)
+        add     hl, de
+        ld      (mus_acc), hl
+        ld      b, 0                    ; up to 256 events a boundary: a 155-tick frame owes 23
+.due:
+        ld      hl, (mus_acc)
+        ld      de, (mus_period)
+        or      a
+        sbc     hl, de
+        ret     c
+        ld      (mus_acc), hl
+        push    bc
+        call    music_tick
+        pop     bc
+        ld      a, (mus_playing)
+        or      a
+        ret     z                       ; the module ended on that event
+        djnz    .due
+        ret
+
+; op_playMusic with a zero resource: snd_playMusic, vm.cpp:729-733.
+mus_zero:
+        ld      hl, (MUS_BLOCK + 1)
+        ld      a, h
+        or      l
+        jr      z, .stop
+        ld      (mus_delay_raw), hl     ; setEventsDelay: music_clock picks the new period up
+        ret
+.stop:
+        xor     a                       ; SfxPlayer::stop removes the TIMER and nothing else -
+        ld      (mus_playing), a        ; notes already sounding carry on (sfxplayer.cpp:106-113)
+        ret
+
+; A module starts: nothing owed, and the clock runs from now.
+mus_clock_start:
+        ld      hl, 0
+        ld      (mus_acc), hl
+        ld      hl, (ticks)
+        ld      (mus_last_tick), hl
+        ; and on into the period
+
+; mus_period = mus_delay_raw * 60 / 7050 ms, the reference's own integer arithmetic. 60/7050 is
+; 2/235 exactly, so it is a 17-bit dividend over an 8-bit divisor: raw * 2 in A:HL, then
+; subtract 235 until it borrows. At most 557 turns, and only when the delay changes.
+mus_set_period:
+        ld      hl, (mus_delay_raw)
+        ld      (mus_period_raw), hl
+        xor     a
+        add     hl, hl
+        adc     a, a
+        ld      bc, 235
+        ld      de, 0
+.div:
+        or      a
+        sbc     hl, bc
+        sbc     a, 0
+        jr      c, .done
+        inc     de
+        jr      .div
+.done:
+        ld      a, d
+        or      e
+        jr      nz, .ok
+        inc     e                       ; never zero: the loop in music_clock would never end
+.ok:
+        ld      (mus_period), de
+        ret
+
+        EXPORT mus_period
+mus_period:     dw 1
+mus_period_raw: dw $FFFF
+mus_last_tick:  dw 0
+
+        ASSERT $ <= STACK_FLOOR
+        DISPLAY "> stack code at ", /H, STACK_CODE, " ending ", /H, $
 
         ORG SND_FREQ
         INCLUDE "build/sndfreq.inc"
@@ -3968,7 +4075,7 @@ diag_palette:
         ld      c, a
         djnz    .one
         ret
-        ASSERT $ <= STACK_FLOOR
+        ASSERT $ <= STACK_CODE
         DISPLAY "> the diagnostic block at ", /H, diag_enter_c, ", palette at ", /H, diag_palette
     ENDIF
 
@@ -4027,7 +4134,7 @@ auto_47:    db 0
         ASSERT INTERP_AT    >= MUS_INSTR_AT + 30
         ASSERT VEC_TABLE   >= MUS_INSTR_AT + 30
         ASSERT VEC_TRAMP   >= VEC_TABLE + 257
-        ASSERT STACK_FLOOR >= VEC_TRAMP + 3
+        ASSERT STACK_CODE >= VEC_TRAMP + 3
         ASSERT STACK_TOP   <= RING_ADDR
         ASSERT DRAW_LOG    >= MUS_INSTR_AT + 30
         ASSERT DRAW_LOG + DRAW_LOG_MAX * 10 <= INTERP_AT
