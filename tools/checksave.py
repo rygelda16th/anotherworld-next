@@ -56,30 +56,18 @@ def main():
             out += bytes(int(raw[i:i + 2], 16) for i in range(0, 2 * k, 2))
         return bytes(out)
 
-    # Boot the game proper - no NAME poked, so the boot path sets up START_PART - but DO poke a
-    # frame count, because the C's loop is bounded by CTL_FRAMES and the image leaves it zero.
-    # That the shipped game therefore runs zero frames is a real gap, recorded under I9: closing
-    # it costs the C 36 bytes and the memory map has 23. It is not this gate's business, which is
-    # whether a save is correct once frames are running.
+    # Boot the game proper - no NAME poked, so the boot path sets up START_PART - and poke a
+    # frame count, because this gate wants a BOUNDED run it can reason about. The image ships
+    # CTL_FRAMES zero, which now means no bound at all rather than no frames.
     z.cmd(f"smartload /work/{NEX}")
     time.sleep(3.2)
     z.cmd("set-memory-zone -1")
     z.cmd(f"write-memory-raw {0xC002} {(3000).to_bytes(2, 'little').hex()}")   # CTL_FRAMES
     z.cmd(f"write-memory-raw {0xC004} {(60000).to_bytes(2, 'little').hex()}")  # CTL_BUDGET
+    arm(z, sym)
     z.cmd(f"write-memory {sym['go']} 1")
     time.sleep(2.0)
-    # AND EXHAUST THE BUDGET IN THE SAME BREATH. The C's loop runs aw_frame_sync, then the part
-    # block, then breaks on budget-or-fault - and only AFTER that does it run the frame's threads.
-    # So a budget of zero makes the frame that performs the save the LAST frame, with no thread
-    # work after it, and the machine stands still on exactly the state the save captured. Without
-    # this the VM ran on between the save and the reading, and the two fields it touches every
-    # frame - pg_ptr1 and aw_vars - differed for that reason alone rather than any fault.
-    # THE REQUEST FIRST, THEN THE BUDGET. Between two ZRCP commands the machine keeps running, so
-    # zeroing the budget first lets the loop break in the gap - and then nothing is left to read
-    # the request. Asking for the save first means the next frame boundary takes it; the budget
-    # lands during the save, which runs for seconds with interrupts off, and the break follows it.
-    z.cmd(f"write-memory {sym['save_req']} 1")
-    z.cmd(f"write-memory-raw {0xC004} {(0).to_bytes(2, 'little').hex()}")   # CTL_BUDGET
+    request(z, read, sym, 1)
 
     for _ in range(300):                # the pages alone are 196,608 bytes through esxDOS
         time.sleep(0.2)
@@ -100,12 +88,8 @@ def main():
     if len(blob) != want_len:
         bad.append(f"the file is {len(blob):,} bytes, not {want_len:,}")
 
-    # FREEZE THE MACHINE BEFORE COMPARING. A save is a SNAPSHOT and the game keeps running, so
-    # every field would differ by the time it was read - which is exactly what the first run of
-    # this reported: pg_ptr1, aw_vars, the thread pcs and all six bands of page 0. Poking
-    # CTL_FRAMES to zero ends the C's loop, which stops aw_frame_sync and with it music_tick;
-    # snd_off stops the interrupt's mixer, which would otherwise keep advancing V_POS.
-    z.cmd(f"write-memory-raw {0xC002} {(0).to_bytes(2, 'little').hex()}")
+    # request() already stopped the VM. snd_off stops the interrupt's mixer too, which would
+    # otherwise keep advancing V_POS in the voice records the file captured.
     z.cmd(f"write-memory {sym['snd_off']} 1")
     time.sleep(0.3)
 
@@ -123,6 +107,7 @@ def main():
     z.cmd("set-memory-zone -1")
     z.cmd(f"write-memory-raw {0xC002} {(3000).to_bytes(2, 'little').hex()}")
     z.cmd(f"write-memory-raw {0xC004} {(60000).to_bytes(2, 'little').hex()}")
+    arm(z, sym)
     z.cmd(f"write-memory {sym['go']} 1")
     time.sleep(2.0)
     # FREEZE WITH CTL_FAULT, NOT THE BUDGET. The C's loop runs aw_frame_sync, then the part block,
@@ -137,31 +122,7 @@ def main():
     # this gate saw both. It is also unnecessary: measured directly, with nothing poked after the
     # request, the restored fields were identical twelve frames later. A state whose threads the
     # save caught inactive leaves the VM quiescent, which is the state a load lands in.
-    # THE REQUEST, THEN WAIT FOR THE LOAD TO BE UNDERWAY, THEN THE STOPPER - and the middle step
-    # has to be a MEASUREMENT, not a sleep. The C's loop runs aw_frame_sync, then the part block,
-    # then breaks on budget-or-fault, and only AFTER that runs the frame's threads. So a fault
-    # that is already set when the load's frame_sync returns breaks the loop with no thread work
-    # at all, which is the state this gate wants to read.
-    #
-    # The race is narrow and real in both directions. Poke the fault first and the loop can break
-    # at the check before any frame_sync reads the request, so the load never happens. Poke it
-    # after a fixed sleep and the sleep can outlast the whole load - which is what a sentinel run
-    # measured: the load finishes in about 0.3s, not the "seconds" this comment used to claim, so
-    # a 0.3s pause armed the stopper AFTER it and left a frame or two of threads to move aw_vars.
-    #
-    # sv_first closes both. sv_load clears it and the first read of the run stamps it $5A, so it
-    # says the load has started and cannot say so early. Waiting on it puts the fault squarely
-    # inside the load every time. It lives in page 10, which is already mapped at MMU2 while the
-    # load's own code is running there.
-    z.cmd(f"write-memory {sym['save_req']} 2")                              # 2 = load
-    for _ in range(200):
-        z.cmd(f"tbblue-set-register {NR_MMU2} {PAGED_PAGE}")
-        if read(sym["sv_first"], 1)[0] == 0x5A:
-            break
-        time.sleep(0.01)
-    else:
-        raise SystemExit("FAIL: the load never started - aw_frame_sync did not read save_req")
-    z.cmd(f"write-memory {0xC00D} 1")                                       # CTL_FAULT
+    request(z, read, sym, 2)                                                # 2 = load
 
     # sv_done lives in page 10, so reading it means mapping page 10 where it was assembled
     done = False
@@ -203,6 +164,41 @@ PASS: a {len(blob):,}-byte save and a load that puts it all back. Every field ma
       STILL OWED: the plan also asks that the opcode stream from the reload match a run that
       never saved. A round trip that holds is necessary and not sufficient - a state that
       matches can still resume wrongly.""")
+
+
+def arm(z, sym):
+    """Set sv_stop, so the save or load faults the VM the instant it returns.
+
+    BOTH HALVES WANT THE SAME THING: the frame that does the file work must be the LAST frame,
+    with no thread work after it, because the VM touches pg_ptr1 and aw_vars every frame and a
+    snapshot compared against a machine that has moved on differs for that reason alone.
+
+    EVERY WAY OF ARRANGING THAT FROM OUT HERE IS A RACE, and this gate lost it four times. The
+    C's loop runs aw_frame_sync, then the part block, then breaks on budget-or-fault, and only
+    AFTER that runs the frame's threads. So a stopper poked BEFORE the request can break the
+    loop before any frame_sync reads the request, and the file work never happens; and one poked
+    AFTER can arrive too late, because a save through ZEsarUX's esxDOS finishes in well under a
+    tenth of a second - less than one ZRCP round trip. An instrumented run measured exactly that:
+    the file held vars[3] = 0x10 and the machine had run on to 0x0c by the time it stopped.
+
+    sv_stop ends it by moving the stopper inside, where there is nothing to race: see sv_entry.
+
+    It is armed HERE, before `go`, and not later - mapping page 10 at MMU2 is only safe while the
+    VM is not running, because MMU2 is the polygon segment window the rest of the time.
+    """
+    z.cmd(f"tbblue-set-register {NR_MMU2} {PAGED_PAGE}")
+    z.cmd(f"write-memory {sym['sv_stop']} 1")
+
+
+def request(z, read, sym, mode):
+    """Ask for a save (1) or a load (2) and wait for the VM to stop itself."""
+    z.cmd(f"write-memory {sym['save_req']} {mode}")
+    for _ in range(400):
+        if read(0xC00A, 1)[0] == 0x5A:                                      # CTL_FINISHED
+            return
+        time.sleep(0.05)
+    raise SystemExit("FAIL: the VM never stopped - the request was never taken, or sv_stop "
+                     "is not set")
 
 
 def compare(z, read, blob, sym, label):

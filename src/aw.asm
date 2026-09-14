@@ -129,6 +129,15 @@ RING_ADDR       EQU $D400               ; permanently mapped; see the header
 RING_END        EQU RING_ADDR + RING_LEN  ; page-aligned, which every wrap test relies on
 VOLTAB          EQU $DC00
 VOICES          EQU $DD00
+; part_table, in the half of VOICES' slot that four 18-byte records do not use. It had been
+; sitting wherever the part code happened to end, which put all but its first row on top of
+; VOLTAB_QUIET - see the ORG for it, and its bound, near the reciprocal table.
+;
+; AND THE GAP HAS TO BE FREE AT RUN TIME, not just unclaimed by an ORG. The first attempt at
+; this put the table at $CD00 because the assembled blocks left it empty - but VEC_TABLE is
+; $CD00, built by install_im2 at boot, and the machine came up with no interrupt at all. A
+; list of what the assembler places is not a map of memory.
+PART_TABLE_AT   EQU $DD80               ; ten four-byte rows; VOICES uses $DD00..$DD48
 ; THE C AND THE ASSEMBLY MUST AGREE ON THESE, and they are set in two files: AW_IN and
 ; AW_DRAW in the Makefile, IN_BLOCK and DRAW_BLOCK here. Moving one without the other made
 ; the C write its polygon parameters to $D310 while this read $C390 - all zeros, so the
@@ -376,9 +385,23 @@ start:
 
         ld      a, $5A
         ld      (ready), a
+
+        ; AND A KEY STARTS IT TOO, because nothing pokes `go` on a real Next.
+        ;
+        ; `go` exists so a checker can set fname, the control block and the probe bytes AFTER
+        ; the image has loaded and before the game reads any of them - smartload starts the
+        ; program itself, so there is no earlier moment to do it in. On hardware there is no
+        ; checker, and a .nex that waits for a byte nobody will ever write is a .nex that never
+        ; starts. Fire or Space releases it as well: every gate leaves both untouched, and it is
+        ; what a player presses anyway.
 .wait:  ld      a, (go)
         or      a
+        jr      nz, .begin
+        call    read_keys
+        ld      a, (in_button)
+        or      a
         jr      z, .wait
+.begin:
 
         ; I8. WHERE THE GAME STARTS, and how one binary serves both it and every gate.
         ;
@@ -2690,8 +2713,31 @@ sv_entry:
         ld      (save_req), a
         ld      a, b
         dec     a
-        jp      z, sv_save
-        jp      sv_load
+        jr      nz, .load
+        call    sv_save
+        jr      .stopped
+.load:
+        call    sv_load
+.stopped:
+        ; AND OPTIONALLY STOP THE MACHINE HERE, which is the only place it can be done exactly.
+        ;
+        ; A save is a SNAPSHOT, so a gate comparing it against the machine has to read a machine
+        ; that has not moved since. Every way of arranging that from OUTSIDE is a race with the
+        ; frame boundary, and this gate lost it four times: the C breaks on a fault or an empty
+        ; budget at the check right after aw_frame_sync, so a stopper poked before the request
+        ; can break the loop before the request is ever read, and one poked after can arrive too
+        ; late - a save through ZEsarUX's esxDOS finishes in well under a tenth of a second, far
+        ; inside one ZRCP round trip, which is what a measured run finally showed.
+        ;
+        ; Setting the fault HERE cannot race anything: the save has returned, the C's next act is
+        ; the check that reads it, and no thread has run in between. sv_stop is zero in the image
+        ; and only a checker writes it, so the shipped game never takes this branch - the same
+        ; arrangement as the probe_ bytes the boot path already carries.
+        ld      a, (sv_stop)
+        or      a
+        ret     z
+        ld      (CTL + $0D), a          ; CTL_FAULT, and any non-zero value is a fault
+        ret
 
 ;-----------------------------------------------------------------------------
 ; I9. THE LOAD. The mirror of the save, with one piece of real work: the resident resources are
@@ -3276,6 +3322,8 @@ sv_byte:    db 0            ; and the first byte it put down
 sv_ferr:    db 0            ; or the esxDOS error, if it failed
         EXPORT sv_done
 sv_done:    db 0            ; $5A once a load has finished; page 10, read by mapping it
+        EXPORT sv_stop
+sv_stop:    db 0            ; a checker sets this to have the save or load fault the VM on return
 sv_mmu7:    db 0
         DISPLAY "> paged code at ", /H, PAGED_WIN, " ending ", /H, $
         ASSERT $ <= SV_HDR
@@ -3494,8 +3542,6 @@ probe_walk:
         DISPLAY "> part code at ", /H, PART_CODE, " ending ", /H, $
         ASSERT $ <= VOLTAB_QUIET
 
-        INCLUDE "build/parts.inc"
-
         ORG NOTE_CODE
 ;-----------------------------------------------------------------------------
 ; note_to_inc - HL = an Amiga period, out as the mixer's 8.8 sample increment.
@@ -3578,6 +3624,27 @@ nm_tail:    db ".BIN", 0
         INCLUDE "build/interp.inc"
         DISPLAY "> reciprocals at ", /H, INTERP_AT, " ending ", /H, $
         ASSERT $ <= RING_ADDR
+
+        ; part_table, WITH AN ORG AND A BOUND OF ITS OWN, which is the whole point of moving it.
+        ;
+        ; It used to be INCLUDEd immediately after the part code with no ORG, so it started
+        ; wherever that code happened to end - $DEFC on the build that was measured. VOLTAB_QUIET
+        ; is at $DF00. Four bytes of the table fitted below it and the other thirty-six did not,
+        ; so part 0's row survived and every other part read the quiet volume table instead: part
+        ; 1 "loaded" resource 1 and part 2 loaded 1 and 2, which are volume entries, not ids.
+        ;
+        ; Part 0 working is exactly what hid it. The index is scaled by four, so part 0 reads
+        ; offset 0 whatever the base is, and the boot path is the only caller that passes 0.
+        ;
+        ; The ASSERT above it was real and passed: it bounded the part CODE, and it was written
+        ; before the INCLUDE, so it never measured the table it was meant to protect. An
+        ; assertion that runs before the thing it guards is not an assertion. Same shape as the
+        ; CC_TOP trap, where the check saw the C's image and its variables lived above it.
+        ASSERT PART_TABLE_AT >= VOICES + V_SIZE * 4
+        ORG PART_TABLE_AT
+        INCLUDE "build/parts.inc"
+        DISPLAY "> the part table at ", /H, PART_TABLE_AT, " ending ", /H, $
+        ASSERT $ <= PART_CODE
 
         ; THREE WRAP TESTS IN mix_block COMPARE ONLY THE HIGH BYTE, so the ring's end must be
         ; page-aligned. It is, and now it has to stay so.

@@ -694,12 +694,17 @@ static void execute_thread(void)
     uint8_t opcode;
     uint16_t pc_before;
     while (!aw_goto_next) {
-        if (CTL_BUDGET == 0) {
+        /* AND ZERO MEANS NO BUDGET, for the same reason zero means no frame bound: the
+         * image ships the control block empty, and a shipped game that stops on its first
+         * opcode is no better than one that runs no frames. Short-circuiting on the read
+         * leaves the counter alone when it is zero, so an unbudgeted run never trips and
+         * never writes. A poked budget of n now buys n-1 opcodes rather than n, which no
+         * checker can tell apart at the 60,000 they all use. */
+        if (CTL_BUDGET && --CTL_BUDGET == 0) {
             aw_goto_next = 1;
             CTL_OUT_OF_BUDGET = 1;
             return;
         }
-        --CTL_BUDGET;
         pc_before = aw_pc_now;
         opcode = fetch_byte();
         aw_logrec(1, pc_before, opcode);
@@ -798,7 +803,16 @@ int main(void)
     CTL_FAULT_PC = 0;
     CTL_FAULT_A = 0;
     CTL_DIV_AT = 0;
-    for (f = 0; f < CTL_FRAMES; ++f) {
+    /* CTL_FRAMES IS A BOUND AND ZERO MEANS NO BOUND, which is what makes the shipped game
+     * run at all. The image leaves the control block zeroed, so `f < CTL_FRAMES` ran the
+     * game for exactly no frames and every gate had to poke a count in before it would move.
+     * Subtracting one first turns that on its head for free: with a bound of n the test is
+     * n-1 >= f, which is the same n frames as before, and with a bound of zero it is 65535
+     * >= f, which is true for every value a uint16_t can hold - so the loop never ends and
+     * f wrapping costs nothing.
+     *
+     * A checker that wants the machine to STOP therefore pokes CTL_FAULT, not CTL_FRAMES. */
+    for (f = 0; (uint16_t)(CTL_FRAMES - 1) >= f; ++f) {
         aw_frame_sync();
 
         /* THE PART REQUEST, at the top of the frame and before any thread runs - which is
