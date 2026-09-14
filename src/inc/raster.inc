@@ -21,7 +21,13 @@
 ; during a copy, when the polygon window is not in use. That was the second conflict
 ; integration turned up, after the sound ring.
 ;
-; It must also define SCR_W and SCR_H (256 and 192), NR_MMU0 and NR_MMU1, a small
+; EVERY SLOT THIS FILE TOUCHES MUST COME FROM THE INCLUDER, and the one place that forgot cost
+; I10 a day: the hierarchy's recursion restored NR_MMU0/NR_MMU1 rather than the segment window's
+; own NR_SEG_MMU_LO/HI. In polytest those are the same pair, so no gate here could ever see it.
+; A shared file that reaches past its own contract for a slot number is only correct in the
+; configuration it was written in - the same shape as RD_LOG_RECS two paragraphs up.
+;
+; It must also define SCR_W and SCR_H (256 and 192), a small
 ; rd_log for the reader's leaf log - whose LENGTH the includer sets in RD_LOG_RECS, because
 ; this wrapped at a hard-coded thirty-two records while aw.asm reserved eight. The reader
 ; therefore ran the log 192 bytes past its reservation in the game, and because the wrap
@@ -834,9 +840,16 @@ poly_read:
 
         pop     af
         ld      (rd_page), a
-        nextreg NR_MMU0, a
+        ; THE SEGMENT'S OWN SLOTS, which is the whole reason this line is spelled this way.
+        ; It used to restore NR_MMU0 and NR_MMU1, and in polytest - where this reader was
+        ; written - the segment window IS MMU0 and MMU1, so it was right and every reader gate
+        ; passed. The GAME cannot put it there: MMU0 and MMU1 are the bytecode window and the VM
+        ; is mid-opcode when the reader runs, so aw.asm maps the segment at $4000 on MMU2 and
+        ; MMU3. Restoring the wrong pair wrote segment pages into the BYTECODE window and left
+        ; the segment window holding whatever the child had mapped.
+        nextreg NR_SEG_MMU_LO, a
         inc     a
-        nextreg NR_MMU1, a              ; the parent's window, back again
+        nextreg NR_SEG_MMU_HI, a        ; the parent's window, back again
         pop     de
         ld      (rd_kids), de
         pop     de
