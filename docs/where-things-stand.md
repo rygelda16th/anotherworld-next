@@ -6,7 +6,7 @@ published blueprint at
 The blueprint is the shareable version of the same material and is kept in step,
 but it is a copy.
 
-Last updated 2026-09-13.
+Last updated 2026-09-14.
 
 ---
 
@@ -26,15 +26,29 @@ measurement that is the **only** thing that needs to be.
 | D - the virtual machine | **done**, Gate D passed, 763 records identical, repeatably |
 | E - pacing, input, sound | **built and gated** |
 | F - the rest of the game | **scoped**, three known gaps |
-| **integration - a playable game** | **not started.** Chain 2, thirteen steps |
+| **integration - a playable game** | **Chain 2, in progress: eight of thirteen steps done, one half done** |
 
-**The end goal is a fully playable Another World with sound**, and the state of that
-is: **nothing is playable yet.** Every `.nex` in `build/` is a single-purpose test
-harness. The VM's video callbacks increment counters; four opcodes consume their
-operands and do nothing; nothing loads a resource at runtime; there is no text, no
-part transition, no save, no code screen. What *is* true is that every expensive
-uncertainty has been turned into a number, which is what the nine gates were for.
-See **What "done" means** for the definition and **Chain 2** for the plan to reach it.
+**The end goal is a fully playable Another World with sound**, and the state of that is:
+**it is one binary now, and almost all of it works, and it does not yet run.**
+
+That sentence needs unpacking, because both halves are true. There is a single `build/aw.nex`
+which boots into part 0 - the protection screen - sets its palette, bytecode and polygons up
+correctly, and holds everything live at once: the frame interrupt, the DMA streaming a ring to
+the DAC, the mixer refilling it from inside the interrupt, the VM, the rasteriser, the loader,
+the text, the module player. Of the thirteen Chain 2 steps, **eight are done and gated** and one
+is half done. The VM draws the intro's four pages byte-for-byte against the engine; text is
+pixel-exact; resources arrive at runtime byte-for-byte against the card; sound plays real samples
+and real music, mixed byte-exact; parts transition; full-screen bitmaps present; a 198,272-byte
+save writes and every field in it matches the machine.
+
+**And the shipped game runs zero frames.** The C's frame loop is bounded by `CTL_FRAMES`, which
+only a harness pokes and which the image leaves at zero, so booting normally sets part 0 up and
+then does nothing. The fix is six bytes of C and the margin between the C's top and the music code
+is smaller than that. It is a memory problem, not a logic one, and it is the single thing standing
+between "almost all of it works" and "it runs". See **I9** for the space, and **I10**, which
+cannot start until this is closed.
+
+See **What "done" means** for the definition and **Chain 2** for the rest.
 
 **All nine gates of Chain 1 pass**, and that is a statement about risk rather than
 about progress: it means nothing remains that we know of that could stop this
@@ -87,8 +101,26 @@ are now optional. See *What has been measured*.
     make voices        how many mixer voices are live, and at what rates
     make toolchain-diff  has the shared toolchain drifted from wolf3d-next?
 
+The above are Chain 1's, and each builds its own single-purpose harness. **Chain 2's gates all
+build the same `build/aw.nex` - the game** - and check one thing about it:
+
+    make check-map     I1: all five windows and the resident code coexist
+    make check-aw      I1: one program, everything live, Gate D re-run inside it
+    make check-boot    I1: the VM dispatches exactly what the engine dispatches
+    make check-input   I1a: a real keyboard, through to the VM's own variables
+    make check-draw    I2: the intro's four pages, byte for byte against the engine
+    make check-res     I3: every resource the bytecode asks for, against the card
+    make check-text    I4: every string the intro draws, pixel-exact
+    make check-mus     I5: the module, the voices, op_playSound, and the mixer's OUTPUT
+    make check-part    I6 and I8: part transitions, and the game's own boot into part 0
+    make check-bmp     I7: a full-screen bitmap, in page 0, not resident
+    make check-save    I9: a save against the machine, and a load back (load half RED)
+    make check-bitmap  I7: mkassets.py's deplaner IS the engine's, on real resources
+
 `make check-ref` and `make check-poly` need the host probe built and run first;
-see `preflight/hostprobe/README.md`.
+see `preflight/hostprobe/README.md`. `make diag D=_name` runs a one-off script in
+`tools/` against a live emulator - the habit that has settled more of these than
+reasoning has.
 
 ---
 
@@ -2011,6 +2043,12 @@ operands and do nothing; nothing loads a resource at runtime; there are no part
 transitions, no text, no save, no code screen. The parts are proven and the seams
 between them are untouched.
 
+> That paragraph is Chain 1's verdict and is left as written, because it is what was true when
+> Chain 1 closed. **Chain 2 has since closed all of it bar the last clause**: there is one binary,
+> the callbacks draw, all four opcodes do their work, resources load at runtime, and there are
+> part transitions, text, bitmaps, sound and a save. What is still true is the shape of the
+> remaining problem - the seams. See *Where Chain 2 has got to*.
+
 ---
 
 ## Chain 2 - integration, to a playable game
@@ -2023,6 +2061,58 @@ Same discipline, different question. Chain 1 asked *can this be done*. This asks
 2. **Every step after it leaves something that RUNS.** No step is allowed to end
    with a component that only a checker can see. From I2 onward there is always a
    `.nex` a person can boot, and it does more than the one before it.
+
+### Where Chain 2 has got to
+
+| | | |
+|---|---|---|
+| I1, I1a | one program, the memory map, a real keyboard | **done** |
+| I2 | the VM draws | **done** |
+| I3 | resources at runtime | **partly** - loading gated; *claim 2* still owed |
+| I4 | text | **done** |
+| I5 | sound in the game | **done**, six parts gated |
+| I6 | part transitions | **done** |
+| I7 | the full-screen bitmap path | **done** |
+| I8 | the code screen and its bypass | **done** |
+| I9 | save and load | **save done and gated; load written and running, its gate red** |
+| I9a | the whole suite, on the game | not started |
+| I10 | playable to the end | not started, and blocked on the zero-frames bug |
+| H1 | real hardware | unrunnable until the KS3 arrives |
+
+**25 gates.** `check-part`, `check-bmp` and `check-save` are new.
+
+### Three things this chain has taught that are not about any one step
+
+**1. The C's BSS lives above the image sjasmplus measures, and an assertion that checks the
+image checks nothing.** `ASSERT $ <= MUSIC_CODE` compared the C's *image* end against the music
+code, but the C's variables sit past it - so a margin that satisfied the assertion still put the
+music code inside `aw_vars`. It presented as the VM dispatching thirteen records and stopping,
+and on another arrangement as 53,256 records and a fault code nothing in our source writes. Four
+hypotheses were wrong before the right one. `tools/mkexp.py` emits **`CC_TOP`** from the link map
+now and the build asserts against that, so it fails loudly instead of corrupting quietly.
+
+**2. Paged code at MMU2 can host only what never touches MMU2 - which is more than "what
+doesn't draw".** The 16K at `$4000-$7FFF` was empty in the image and is now where save and load
+live. But MMU2 is the polygon segment window, *and* `copy_palette`'s source, *and*
+`apply_palette`'s text page. The load called `aw_setup_part`, which mapped the palette over the
+very code that was running, and the next instruction fetch came from palette data - showing as a
+load that never finished with **no esxDOS error to explain it**. Anything moved into paged space
+has to be audited for **MMU2 use**, not merely for drawing.
+
+**3. A gate that stops one step short of the thing you care about will let exactly that thing
+through.** `check-part` proves a part is *set up* and stops there - which is why it could not see
+that the shipped game then runs zero frames. That limit was written into I6's own notes in as
+many words, and it still took the save gate to find it. The same shape recurred inside I5: the
+mixing gate proved the output byte-exact over two page boundaries and still missed a multi-page
+**looping** sample wedging the interrupt, because its own sample does not loop. `check-aw` caught
+that one, as a hang, at exactly 549 records.
+
+**And one about method.** Guessing from a symptom has cost a gate run every time, and gate runs
+here are ten to fifteen minutes. I5's voice setup, the C's BSS, and I9's load each went the same
+way: three or four plausible inferences, then the answer arriving from reading the machine. The
+cheapest move is almost always to instrument first - and when a measurement seems to exonerate
+something, check its resolution before trusting it. A 250ms poll is twelve frames; "immediately
+after" was nothing of the kind.
 
 Every step names its gate, and where a step carries real risk it names the cheapest
 experiment that would kill it early - the habit that has paid for itself repeatedly
