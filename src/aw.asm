@@ -432,7 +432,17 @@ start:
         ld      a, (fname)
         or      a
         jr      nz, .fixed
-        ld      a, START_PART
+        ; WHICH PART, and start_part generalises what BYPASS_PROTECTION does at build time to
+        ; something a checker can choose at run time: the index PLUS ONE, so zero means "the
+        ; build's own choice" and the byte can be left alone. I10 needs it - "playable to the
+        ; end" is a claim about every part, and until now the only way to reach one was to set
+        ; it up with probe_part, which stops before the VM ever runs.
+        ld      a, (start_part)
+        or      a
+        jr      nz, .chosen
+        ld      a, START_PART + 1
+.chosen:
+        dec     a
         call    aw_setup_part
         jp      .ready                  ; NOT .loaded: that sets the pc guard from the loader's
                                         ; last read, and aw_setup_part has already set it right
@@ -2515,6 +2525,8 @@ probe_snd:  db 0            ; 1 = load SND_BLOCK's resource and run aw_play_soun
 probe_mix:  db 0            ; blocks to mix after it, with the interrupt's mixer off
         EXPORT probe_part
 probe_part: db 0            ; a part index + 1: set that part up and stop
+        EXPORT start_part
+start_part: db 0            ; a part index + 1 to boot into and RUN; 0 = the build's own
         EXPORT probe_bmp
 probe_bmp:  db 0            ; a bitmap resource id: load and present it, then stop
         EXPORT probe_str
