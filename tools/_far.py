@@ -55,9 +55,18 @@ def main():
             return None, page
         return next((n for n, r in enumerate(rows) if r[1] == rid), None), page
 
+    # AND PRESS FIRE, because the scripts wait for it. A host run with no input at all stalls
+    # at a "press fire" prompt and 57,386 of 60,000 frames draw nothing - that measurement is
+    # already in the record. This is not play; it is the minimum that lets a cinematic advance.
+    def tap():
+        z.cmd("send-keys-event 128 1 nomenu")
+        time.sleep(0.08)
+        z.cmd("send-keys-event 128 0 nomenu")
+
     seen, last, t0 = [], None, time.time()
     for _ in range(SECONDS):
-        time.sleep(1.0)
+        tap()
+        time.sleep(0.9)
         part, page = which_part()
         f, flt = w(FRAMES_DONE), read(FAULT, 1)[0]
         if part != last:

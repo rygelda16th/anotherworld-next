@@ -209,12 +209,24 @@ cc: | $(BUILD)
 		python3 tools/mkexp.py $(BUILD)/$$b.map $(BUILD)/$${b}_c.exp; \
 	done
 
+# Extra assembler defines. The only one that exists is the code-wheel bypass, which is a
+# STARTING PART NUMBER and not a feature - see START_PART in src/aw.asm:
+#
+#     make asm ASMDEF=-DBYPASS_PROTECTION            the game starts at part 1, the intro
+#
+# Use the short form. `--define=KEY` with no value swallows the next argument, which is
+# --exp, and the symbol file then lands next to the source instead of in build/.
+#
+# Every gate builds without it, so the wheel screen is what the suite sees and what a player
+# gets. I10's playthrough is the one thing that needs it.
+ASMDEF     ?=
+
 asm: | $(BUILD)
 	python3 tools/mksndfreq.py $(PROBE) $(BUILD)/sndfreq.inc
 	python3 tools/mkparts.py $(PROBE) $(BUILD)/parts.inc
 	$(RUN) sh -c 'set -e; for f in src/*.asm; do \
 		b=$$(basename "$$f" .asm); echo "  ASM $$f"; \
-		sjasmplus --zxnext=cspect --fullpath --exp="$(BUILD)/$$b.exp" \
+		sjasmplus --zxnext=cspect --fullpath $(ASMDEF) --exp="$(BUILD)/$$b.exp" \
 			--lst="$(BUILD)/$$b.lst" "$$f"; done'
 
 emu:

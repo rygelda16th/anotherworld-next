@@ -70,8 +70,17 @@ START_PART      EQU 0
     ENDIF
 POLY_PAGE       EQU 56                  ; and eight for the cinematic segment
 ; I3's heap: resources the bytecode asks for at runtime, allocated a page at a time.
-; The reference's own high-water mark across the parts measured is 305,919 bytes - 38
-; pages - so 40 is the reservation, and running past it is a fault rather than a wrap.
+;
+; NINETY-SIX PAGES, NOT FORTY, and the forty was sized against the wrong number. The
+; reference's high-water across the parts measured is 305,919 bytes - 38 pages - but that is
+; a BYTE heap. Ours rounds every resource up to a whole 8K page, and this file's own memory-map
+; section had already measured that waste at about 4K a resource across the 53 seen live, which
+; is 27 pages of slack nobody added to the reservation.
+;
+; Part 2 found it. It asks for 45 loads, and at page 112 - exactly RES_FIRST_PAGE + 40 - the
+; heap refused the rest: 23 resident, 22 dropped silently, and the polygon reader then walked a
+; cinematic segment with holes in it for as long as it was left running. Pages 80-223 are free
+; on the 2 MB profile the .nex asks for, so this costs nothing that was being used.
 ; I7. SIX PAGES OF BITMAP SCRATCH, between the cinematic segment's eight and the heap's forty.
 ; A full-screen bitmap is never resident: loadMarkedAsNeeded loads an RT_POLY_ANIM into a scratch
 ; pointer, presents it at once and marks it NOT_NEEDED (resource.cpp:193, :211-214). Part 7 loads
@@ -93,7 +102,7 @@ PAGED_PAGE      EQU 10
 PAGED_WIN       EQU $4000
 NR_PAGED_MMU    EQU $52                 ; MMU2, page 10's own slot at boot
 RES_FIRST_PAGE  EQU 72
-RES_MAX_PAGES   EQU 40
+RES_MAX_PAGES   EQU 96                  ; pages 72..167; banks 40-111 stay free
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
 
 CTL             EQU $C000
