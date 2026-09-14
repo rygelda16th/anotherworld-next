@@ -2087,7 +2087,7 @@ Same discipline, different question. Chain 1 asked *can this be done*. This asks
 |---|---|---|
 | I1, I1a | one program, the memory map, a real keyboard | **done** |
 | I2 | the VM draws | **done** |
-| I3 | resources at runtime | **partly** - loading gated; *claim 2* still owed |
+| I3 | resources at runtime | **done** - all three claims gated; claim 2 closed 2026-09-14 |
 | I4 | text | **done** |
 | I5 | sound in the game | **done**, six parts gated |
 | I6 | part transitions | **done** |
@@ -2191,7 +2191,7 @@ had failed to find in dozens.
 | ~~**I1**~~ | ~~one program, and the memory map that lets it exist~~ **DONE**, `make check-map` and `make check-aw` | the last thing that could force a redesign | **PASSED**: all 763 records of the engine's stream with the frame interrupt pacing the VM, the DMA streaming, and the mixer refilling from inside the interrupt | everything resident at once and a frame runs: Gate D re-run *inside* the integrated program, with the frame interrupt and the sound interrupt both live, for 60 seconds |
 | ~~**I1a**~~ | ~~read a real keyboard~~ **DONE**, `make check-input` | nothing in this project read input at all; `petest.asm` is handed a poked byte | **PASSED**: all 32 combinations from the emulator's own keys, through `read_keys` and the reference's mapping, to the VM's own variables |
 | ~~**I2**~~ | ~~the VM draws~~ **DONE**, `make check-draw` - the six counting callbacks become the real rasteriser and reader | this is D4, and it is the first step that produces something recognisable | `check-ref` pointed at the MACHINE instead of at the Python reference: the intro's four pages, byte for byte against the engine |
-| ~~**I3**~~ | ~~resources arrive at runtime~~ **PARTLY DONE**, `make check-res` - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
+| ~~**I3**~~ | ~~resources arrive at runtime~~ **DONE**, `make check-res` - `op_updateMemList` loads, the memory list, invalidation between parts | nothing past the intro exists without it | every resource the intro and part 2 ask for arrives, its CRC cancels on the machine, the heap stays under its reservation, and the in-frame load is measured |
 | ~~**I4**~~ | ~~text~~ **DONE**, `make check-text` - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
 | ~~**I5**~~ | ~~**sound in the game**~~ **DONE**, `make check-mus` - `op_playSound` and `op_playMusic` reach the player, the module is parsed, and the mixer maps each voice's own page | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | **PASSED**: three modules parsed and walked against a model of `sfxplayer.cpp`, the four voice records after 1, 70 and 100 events, and six `op_playSound` cases checked against the sample shapes the host probe logged the reference producing - a stop, a loop, three pages, both ends of the pitch table and the clamp. And the MIXER'S OUTPUT byte-exact on a real sample: all 2,048 ring bytes over 19,164 source bytes and two page boundaries, which took a rewrite of the per-voice loop and found five mixer bugs |
 | ~~**I6**~~ | ~~**part transitions**~~ **DONE**, `make check-part` - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
@@ -2635,7 +2635,7 @@ measured and reported.
 frame and the largest is 65,230 bytes. Step 5 established that the emulator cannot
 time esxDOS, so this frame's cost is unknown until H1 - report it, do not model it.
 
-#### I3 loads, and two of its three claims hold
+#### I3 is CLOSED - it loads, and all three of its claims hold
 
 `make check-res`. `op_updateMemList` now does what `loadPartsOrMemoryEntry` does
 (`resource.cpp:258`): zero invalidates, an id above the memory list requests a part,
@@ -2653,15 +2653,34 @@ game's trace buffer dropped from 256 records to 32, which costs nothing real - `
 gates the opcode stream at 763 in the harness, so the game's copy is a post-mortem
 convenience.
 
-**CLAIM 2 IS NOT CHECKED AND THE CHECKER SAYS SO.** "It asked for the same resources the
-engine did" needs the probe to log resource **ids**, and its sound log is keyed by time and
-type. **A port that silently skipped a load would pass the other two claims.** Closing it
-means an `instrOp` in `loadPartsOrMemoryEntry`; until then the count is reported, not
-verified.
+**CLAIM 2 IS CHECKED, as of 2026-09-14.** "It asked for the same resources the engine did"
+needed the probe to log resource **ids** - `instrHeap` logged every load but keyed by time,
+type and size, so there was nothing to compare against, and the failure mode it left open is
+the quiet one: **a port that silently SKIPPED a load passes the other two claims without
+difficulty**, because everything it did load is byte-correct and the heap it did not fill is
+comfortably under its limit. `instrLoadId`, called where `readBank` succeeds, writes
+`loads.txt`; the engine loads 23 at run time for the intro and the machine has **the same 23
+ids, every one of them**.
 
-**And 33 of 40 pages is tighter than it looks.** That is the intro alone, and the
-reference's measured high-water across the parts is 38 pages - so the reservation has
-seven pages of headroom for parts that load more than the intro does. I6 will find out.
+Two decisions make the comparison mean something. The part's own palette, bytecode and
+cinematic are excluded, because this gate drives the FIXED path and those arrive by name into
+fixed pages rather than onto the heap - the engine loads them at frame 0 and everything else at
+frame 3. And it compares **sets, not sequences**: `loadMarkedAsNeeded` repeatedly picks the
+highest `rankNum` still marked, which is the engine's own scheduling, while ours takes each id
+as the script asks for it. Comparing the order would be comparing a decision neither side ever
+promised the other; the set is the claim, and the set is what a skipped load breaks.
+
+**Regenerating the probe was the risk, and it was contained.** Every gate's fixture comes out of
+that one directory, so the instrumented build was run in a scratch copy and required to
+reproduce the committed files exactly before anything was taken from it. It does: all four page
+dumps byte-identical, and `ops.txt` differing in exactly ONE line - the random seed. That the
+whole 807-line opcode stream is identical under two different seeds is itself the proof that the
+intro's first 45 frames do not branch on the seed, which is what makes a load list taken from
+one run valid for the other.
+
+**And 33 of 40 pages was tighter than it looked.** That is the intro alone. Part 2 hit the
+ceiling and lost 22 of its 45 loads: see **I10** for what that cost and why 40 was the wrong
+number to have chosen.
 
 #### I4 is CLOSED - the machine draws the game's text
 
