@@ -3138,11 +3138,26 @@ mus_cur_order  0x00 in the file, 0x80 on the machine
 the four voice records, aw_vars at byte 1, aw_call_stack at byte 0, aw_pc at byte 0
 ```
 
-**Two candidates and no evidence yet.** Either the load writes some of these wrongly, or the
-freeze still admits one frame of thread work after the load returns - `aw_pc` differing at byte 0
-is exactly what a frame of threads does, and `pg_ptr1` holding `0x12` is not a page index at all,
-which points the other way. Deciding it needs a measurement, not another guess: read `pg_ptr1`
-immediately after `sv_done` and again a frame later, and see whether it moves.
+**MEASURED, not guessed: the load writes them wrongly.** Reading the fields the instant `sv_done`
+is stamped, with nothing else poked, and again twelve frames later:
+
+```
+the file says   pg_ptr1=0x01 mus_cur_order=0x00 aw_pc[0]=ffff aw_vars[0]=0000
+at sv_done      pg_ptr1=0x12 mus_cur_order=0x80 aw_pc[0]=0807 aw_vars[0]=0001
+a moment later  pg_ptr1=0x12 mus_cur_order=0x80 aw_pc[0]=0807 aw_vars[0]=0001
+```
+
+Already wrong when the load finishes, and unchanged afterwards - so the gate's freeze is sound and
+the fault is in `sv_load`. The values are telling: `aw_pc[0]` holds `0x0708`, a **live** program
+counter, where the file holds `0xFFFF` for an inactive thread. That is not corruption - **it is
+the running game's own value, untouched.** The arrays were not written at all.
+
+**The likeliest cause, to test first:** `sv_rblock` opens with `ld a,(err) / or a / ret nz`, so a
+non-zero `err` makes every subsequent read silently do nothing while the routine still runs to its
+end and stamps `sv_done`. `sv_load` clears `err` at entry, but between that and the second pass it
+calls `aw_setup_part`, which loads four resources through `load_code` - and `load_code` writes
+`err` itself. The next step is to read `err` at the top of pass two, and to make a failed read
+loud rather than silent.
 
 **Two real bugs were found getting this far, both the same shape.** `copy_palette` mapped the
 palette resource into **MMU2** for its source, and `apply_palette` maps the text page into MMU2
