@@ -3560,7 +3560,42 @@ not even dying and restarting. The canned input simply does not get Lester throu
 That is the same limitation the host probe has, and it is why the reference reaches later parts
 by REQUESTING them rather than by playing to them.
 
-**Still owed here: the playthrough, and it needs a person.** That sentence was previously
+**Still owed here: the playthrough, and it needs a person** - but everything around it is now
+in place, so that a playthrough counts when it happens:
+
+| | |
+|---|---|
+| `make play` | native ZEsarUX in a window, the game loaded, ZRCP open |
+| `make record` | attach from another terminal, log until Ctrl-C, report against the table |
+| `preflight/hostprobe/probe/parts_polys.txt` | the per-part budget, committed - it had existed only in a scratch directory |
+
+The gate is three things - a playthrough, RECORDED, with the per-frame budget re-measured
+against the per-part table - and **only the first needs a person**. Treating all three as blocked
+was an error: a playthrough that reaches the ending while nothing samples the machine leaves the
+gate exactly as open as before. `tools/record.py` never writes to the machine; a recorder that
+perturbs what it records is worse than none.
+
+**The first real budget figure, from the recorder's own self-test: part 2's average frame costs
+54 ms against the 80 ms its script asks for.** It fits, with headroom, and the machine's 75
+polygons a frame sits just under the reference's 87. That is the budget claim measured on the
+machine rather than modelled from the host, which is what I10 asks for.
+
+##### Why it needs a person, checked rather than assumed
+
+Two independent checks, because this document previously asserted it on the strength of a
+comment I had written myself:
+
+- **The synthetic player cannot do it.** Left running for 5.6 minutes it reaches part 2 and
+  stays, stable - 1,985 frames, no fault - with invalidations at 2, the two part setups, so it
+  is not even dying and restarting. The canned input does not get Lester through the level, and
+  this is the same limitation the host probe has.
+- **The checkpoint codes are not in the English string table.** Zero four-letter all-caps
+  entries. That closes the one place worth looking cheaply; it does **not** prove they are
+  nowhere in the data, and the honest statement is that no route has been found, not that none
+  exists. A password jump would not be a playthrough in any case - it is `start_part` through
+  the game's own menu.
+
+ That sentence was previously
 written as "the probe cannot reach the ending either, because the game's own route to the later
 parts is the password screen and its codes are not in the data" - and that was asserted, not
 established. It came from a comment in this project's own `instr.h`, written earlier and then
