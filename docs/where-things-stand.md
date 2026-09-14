@@ -3127,7 +3127,42 @@ breaks on budget-or-fault, and only **after** that runs the frame's threads. So 
 budget in the same breath as the save request makes the saving frame the **last** frame, with no
 thread work after it, and the machine stands still on exactly the state the file holds.
 
-**What is left of I9:** the load. Reading the file back is the mirror of writing it, with one
+**THE LOAD IS WRITTEN AND RUNS; ITS HALF OF THE GATE FAILS AND I HAVE NOT ISOLATED WHY.**
+`make check-save` passes the save half and fails the load half on six fields. The load reaches its
+end - it stamps `sv_done`, which is how the gate knows a 198,272-byte read finished - and most of
+the state comes back. What does not match:
+
+```
+pg_ptr1        0x01 in the file, 0x12 on the machine
+mus_cur_order  0x00 in the file, 0x80 on the machine
+the four voice records, aw_vars at byte 1, aw_call_stack at byte 0, aw_pc at byte 0
+```
+
+**Two candidates and no evidence yet.** Either the load writes some of these wrongly, or the
+freeze still admits one frame of thread work after the load returns - `aw_pc` differing at byte 0
+is exactly what a frame of threads does, and `pg_ptr1` holding `0x12` is not a page index at all,
+which points the other way. Deciding it needs a measurement, not another guess: read `pg_ptr1`
+immediately after `sv_done` and again a frame later, and see whether it moves.
+
+**Two real bugs were found getting this far, both the same shape.** `copy_palette` mapped the
+palette resource into **MMU2** for its source, and `apply_palette` maps the text page into MMU2
+too - and MMU2 is where page 10's code executes from. The load sawed off the branch it was sitting
+on: the next instruction fetch came from palette data. It showed as a load that never finished
+with **no esxDOS error to explain it**. The source moved to MMU3, where page 11 is empty, and the
+load now sets `pal_req` and lets `aw_blit` apply it - which is the reference's own
+`paletteIdRequested` arrangement, so it is more faithful as well as safer.
+
+**That is the constraint written down under I9's groundwork, biting from a direction I had not
+checked.** Anything else moved into paged space has to be audited for **MMU2 use**, not merely
+for drawing - which matters for I9a and I10.
+
+**And the gate's freeze took three attempts, all ordering.** Between two ZRCP commands the machine
+keeps running, so whichever of the pair stops the VM must be poked **second**: zeroing the budget
+or setting the fault first ends the loop in the gap, and then nothing is left to read the request.
+Zeroing the budget also does not stop the frame the load happens in, because only opcodes spend
+budget - `CTL_FAULT` breaks at the very next check, before any thread work.
+
+**What is left of I9:** the load's six fields. Reading the file back is the mirror of writing it, with one
 piece of real work - the resident resources have to be reloaded **in the saved order** so the heap
 reconstructs identically - and then the gate the plan asks for: save mid-part, reload, and compare
 the opcode stream from that point against a run that never saved. The stream comparison is the

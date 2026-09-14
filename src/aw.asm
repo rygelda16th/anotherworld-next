@@ -255,8 +255,13 @@ SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * 3) * 2
 ; mapped at every moment, which is what aw_setup_part and probe_walk need and the resident block
 ; could not give them.
 PART_CODE       EQU $DE00               ; aw_setup_part and probe_walk live here
-NR_PAL_SRC_MMU  EQU $52                 ; MMU2: the palette resource, while it is copied
-PAL_SRC_WIN     EQU $4000
+; MMU3, NOT MMU2. aw_setup_part is called by the LOAD, which executes from page 10 - and page 10
+; is mapped at MMU2. Mapping the palette resource there pulled the ground out from under the
+; routine doing the mapping: the next instruction fetch came from palette data. It showed as a
+; load that never finished with no esxDOS error to explain it. MMU3 holds page 11, which is
+; empty, and the segment window is re-mapped from seg_base before every draw anyway.
+NR_PAL_SRC_MMU  EQU $53
+PAL_SRC_WIN     EQU $6000
 NR_TEXT_MMU_HI  EQU $57                 ; MMU7: the text page, where PAL_BASE lives
 ; TWO VOLUME TABLES, which is David's decision of 2026-09-14 and not an omission. The mixer
 ; scales through a 256-byte table and only two page-aligned slots were free here, against nine
@@ -1603,9 +1608,7 @@ aw_frame_sync:
         ld      a, (save_req)
         or      a
         jr      z, .no_save
-        xor     a
-        ld      (save_req), a
-        call    aw_save
+        call    aw_saveload             ; 1 saves, 2 loads; it reads the byte and clears it
 .no_save:
         call    music_tick
         ; EI, EVERY FRAME, AND IT IS NOT BELT-AND-BRACES. z88dk's CRT does `di` as its
@@ -2677,6 +2680,257 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
 SV_HDR          EQU PAGED_WIN + $1000   ; 256 bytes of header, built here before it is written
 SV_BANDS        EQU 24                  ; four Layer 2 pages of six 8K bands
 
+; save_req carries the mode so that a second byte does not have to exist: the resident block has
+; four spare and MMU6's last gap has four. Clearing it here rather than in the caller makes the
+; caller shorter too.
+sv_entry:
+        ld      a, (save_req)
+        ld      b, a
+        xor     a
+        ld      (save_req), a
+        ld      a, b
+        dec     a
+        jp      z, sv_save
+        jp      sv_load
+
+;-----------------------------------------------------------------------------
+; I9. THE LOAD. The mirror of the save, with one piece of real work: the resident resources are
+; reloaded IN THE SAVED ORDER, so the heap lands exactly as it did - which is what makes the
+; restored bytecode window and polygon window point at the right pages.
+;
+; IN TWO PASSES over the file, because esxDOS gives no seek. The first reads the header alone and
+; closes; the part is then set up and the resources replayed, which toggles interrupts freely
+; because aw_load_res must. The second re-opens, reads the header again and throws it away to get
+; back to the right offset, and then reads the VM's arrays and the four pages with interrupts off
+; throughout. One wasted 256-byte read is cheaper than carrying a seek we do not have.
+;-----------------------------------------------------------------------------
+sv_load:
+        xor     a
+        ld      (err), a
+        ld      (sv_done), a            ; cleared here, stamped at the end: a checker has no other
+                                        ; way to know a 198,272-byte read has finished
+        ld      hl, sv_name
+        ld      de, fname
+        ld      bc, 11
+        ldir
+
+        ; pass one: the header
+        di
+        call    sv_ropen
+        ld      a, (err)
+        or      a
+        jp      nz, .give_up
+        ld      hl, SV_HDR
+        ld      bc, 256
+        call    sv_rblock
+        call    sv_close
+        ei
+
+        ; is it ours? a wrong magic is a refusal, not a crash
+        ld      hl, SV_HDR
+        ld      de, sv_magic
+        ld      b, 4
+.magic:
+        ld      a, (de)
+        cp      (hl)
+        jp      nz, .bad_magic          ; jp: the load's body puts the refusal out of jr's reach
+        inc     hl
+        inc     de
+        djnz    .magic
+
+        ; the part, which invalidates everything and loads its own four
+        ld      a, (SV_HDR + 4)
+        cp      10
+        jp      nc, .bad_magic
+        call    aw_setup_part
+
+        ; then the rest of the heap, in the order it was built. aw_load_res returns at once for
+        ; anything already resident, so the part's own resources cost nothing the second time.
+        ld      a, (SV_HDR + 15)
+        or      a
+        jr      z, .no_order
+        ld      b, a
+        ld      hl, SV_HDR + 128
+.each_res:
+        push    bc
+        push    hl
+        ld      l, (hl)
+        ld      h, 0
+        call    aw_load_res
+        pop     hl
+        inc     hl
+        pop     bc
+        djnz    .each_res
+.no_order:
+
+        ; pass two: everything that is a straight copy back
+        di
+        call    sv_ropen
+        ld      a, (err)
+        or      a
+        jp      nz, .give_up
+        ld      hl, SV_HDR
+        ld      bc, 256
+        call    sv_rblock               ; the header again, thrown away: esxDOS has no seek
+        ld      hl, _aw_vars
+        ld      bc, 512
+        call    sv_rblock
+        ld      hl, _aw_call_stack
+        ld      bc, 512
+        call    sv_rblock
+        ld      hl, _aw_pc
+        ld      bc, 256
+        call    sv_rblock
+        ld      hl, _aw_state
+        ld      bc, 128
+        call    sv_rblock
+        call    sv_rpages
+        call    sv_close
+
+        ; and the scattered bytes, back out of the header
+        ld      a, (SV_HDR + 6)
+        ld      (pal_req), a
+        ld      a, (SV_HDR + 7)
+        ld      (pg_ptr1), a
+        ld      a, (SV_HDR + 8)
+        ld      (pg_ptr2), a
+        ld      a, (SV_HDR + 9)
+        ld      (pg_ptr3), a
+        ld      a, (SV_HDR + 10)
+        ld      (_aw_sp), a
+        ld      a, (SV_HDR + 11)
+        ld      (_aw_goto_next), a
+        ld      hl, (SV_HDR + 12)
+        ld      (_aw_part_req), hl
+        ld      a, (SV_HDR + 16)
+        ld      (mus_res), a
+        ld      a, (SV_HDR + 17)
+        ld      (mus_playing), a
+        ld      a, (SV_HDR + 18)
+        ld      (mus_page), a
+        ld      a, (SV_HDR + 19)
+        ld      (mus_cur_order), a
+        ld      hl, (SV_HDR + 20)
+        ld      (mus_cur_pos), hl
+        ld      a, (SV_HDR + 22)
+        ld      (mus_count), a
+        ld      a, (SV_HDR + 23)
+        ld      (mus_frames), a
+        ld      hl, (SV_HDR + 24)
+        ld      (mus_delay_raw), hl
+        ld      hl, (SV_HDR + 26)
+        ld      (mus_mark), hl
+        ld      a, (SV_HDR + 28)
+        ld      (mus_num_order), a
+        ld      hl, SV_HDR + 32
+        ld      de, VOICES
+        ld      bc, V_SIZE * 4
+        ldir                            ; the mixer, mid-note and all
+
+        ; THE PALETTE IS REQUESTED, NOT APPLIED. apply_palette maps the text page at MMU2 - the
+        ; same slot this code is running from - so calling it here would be the second way to
+        ; saw off the branch. aw_blit consumes pal_req and applies it, which is the reference's
+        ; own arrangement too (paletteIdRequested, video.cpp), so the next blit does it.
+        ld      a, (SV_HDR + 5)
+        cp      32
+        jr      nc, .done_load
+        ld      (pal_req), a
+.done_load:
+        ld      a, $5A
+        ld      (sv_done), a
+        ei
+        ret
+.bad_magic:
+        ld      a, $FF
+        ld      (err), a
+        ret
+.give_up:
+        call    sv_close
+        ei
+        ret
+
+; The four Layer 2 pages, read back band by band through MMU7, which is put back after.
+sv_rpages:
+        ld      bc, $243B
+        ld      a, NR_DWIN_MMU
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        ld      (sv_mmu7), a
+        ld      a, L2_BASE_BANK * 2
+        ld      (sv_band), a
+        ld      b, SV_BANDS
+.band:
+        push    bc
+        ld      a, (sv_band)
+        nextreg NR_DWIN_MMU, a
+        ld      hl, DWIN
+        ld      bc, $2000
+        call    sv_rblock
+        ld      hl, sv_band
+        inc     (hl)
+        pop     bc
+        djnz    .band
+        ld      a, (sv_mmu7)
+        nextreg NR_DWIN_MMU, a
+        ret
+
+sv_ropen:
+        ld      a, ESX_DRIVE
+        ld      ix, fname
+        ld      hl, fname
+        ld      b, FA_READ
+        rst     $08
+        db      F_OPEN
+        jr      c, .failed
+        ld      (handle), a
+        ret
+.failed:
+        ld      (err), a
+        ret
+
+; HL = destination, BC = length. In 2K pieces, as the writer is.
+sv_rblock:
+        ld      a, (err)
+        or      a
+        ret     nz
+        ld      (sv_src), hl
+        ld      (sv_left), bc
+.next:
+        ld      hl, (sv_left)
+        ld      a, h
+        or      l
+        ret     z
+        ld      de, $0800
+        or      a
+        sbc     hl, de
+        jr      nc, .full
+        ld      bc, (sv_left)
+        jr      .go
+.full:
+        ld      bc, $0800
+.go:
+        ld      a, (handle)
+        ld      ix, (sv_src)
+        ld      hl, (sv_src)
+        rst     $08
+        db      F_READ
+        jr      nc, .read
+        ld      (err), a
+        ret
+.read:
+        ld      a, b
+        or      c
+        ret     z                       ; short read: stop rather than spin
+        ld      hl, (sv_src)
+        add     hl, bc
+        ld      (sv_src), hl
+        ld      hl, (sv_left)
+        or      a
+        sbc     hl, bc
+        ld      (sv_left), hl
+        jr      .next
+
 sv_save:
         di
         xor     a
@@ -2963,13 +3217,16 @@ sv_src:     dw 0
 sv_left:    dw 0
 sv_band:    db 0
 sv_n:       db 0            ; sv_order's count, which a register could not survive
+        EXPORT sv_done
+sv_done:    db 0            ; $5A once a load has finished; page 10, read by mapping it
 sv_mmu7:    db 0
         DISPLAY "> paged code at ", /H, PAGED_WIN, " ending ", /H, $
         ASSERT $ <= SV_HDR
 
         ORG PART_CODE
 ;-----------------------------------------------------------------------------
-; aw_save - writes the whole save to (fname). All of it lives in page 10; this is the borrow.
+; aw_saveload - save_req says which: 1 to write the save, 2 to read it back. All of both
+; lives in page 10, and this is the borrow that maps it in.
 ;
 ; The BODY of this lives in page 10, at $4000, because the resident 16K had four bytes left in
 ; it. All that is down here is the borrow: map page 10 at MMU2, call in, put back what was
@@ -2977,7 +3234,7 @@ sv_mmu7:    db 0
 ; reads, so what is put back hardly matters - but reading it first costs three instructions and
 ; means this is safe to call from anywhere.
 ;-----------------------------------------------------------------------------
-aw_save:
+aw_saveload:
         ld      bc, $243B
         ld      a, NR_PAGED_MMU
         out     (c), a
@@ -2986,7 +3243,7 @@ aw_save:
         ld      (paged_saved), a
         ld      a, PAGED_PAGE
         nextreg NR_PAGED_MMU, a
-        call    sv_save
+        call    sv_entry
         ld      a, (paged_saved)
         nextreg NR_PAGED_MMU, a
         ret

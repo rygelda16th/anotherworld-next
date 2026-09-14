@@ -23,6 +23,8 @@ SAVE = os.path.join(ASSETS, "AWSAVE.BIN")
 L2_BASE_BANK, BANDS, BAND, DWIN, NR_MMU7 = 12, 24, 8192, 0xE000, 0x57
 HDR, VM_BYTES, PAGE_BYTES = 256, 512 + 512 + 256 + 128, BANDS * BAND
 START_PART = 0
+NR_MMU2, PAGED_PAGE = 0x52, 10          # where page 10 goes when its own code is read
+N_RES, ORDER = [0], []                  # filled in by compare(), quoted by the PASS text
 
 
 def symbols(path):
@@ -72,8 +74,12 @@ def main():
     # work after it, and the machine stands still on exactly the state the save captured. Without
     # this the VM ran on between the save and the reading, and the two fields it touches every
     # frame - pg_ptr1 and aw_vars - differed for that reason alone rather than any fault.
-    z.cmd(f"write-memory-raw {0xC004} {(0).to_bytes(2, 'little').hex()}")   # CTL_BUDGET
+    # THE REQUEST FIRST, THEN THE BUDGET. Between two ZRCP commands the machine keeps running, so
+    # zeroing the budget first lets the loop break in the gap - and then nothing is left to read
+    # the request. Asking for the save first means the next frame boundary takes it; the budget
+    # lands during the save, which runs for seconds with interrupts off, and the break follows it.
     z.cmd(f"write-memory {sym['save_req']} 1")
+    z.cmd(f"write-memory-raw {0xC004} {(0).to_bytes(2, 'little').hex()}")   # CTL_BUDGET
 
     for _ in range(300):                # the pages alone are 196,608 bytes through esxDOS
         time.sleep(0.2)
@@ -103,6 +109,82 @@ def main():
     z.cmd(f"write-memory {sym['snd_off']} 1")
     time.sleep(0.3)
 
+    bad += compare(z, read, blob, sym, "the save")
+
+    # ---- I9's SECOND HALF: read it back and see whether the machine becomes the file --------
+    #
+    # The plan asks for save mid-part, reload, and a machine that matches a run which never
+    # saved. This is the round trip that has to hold first: after a load, every field the save
+    # captured must be back. It is the same comparison, against the same file, on a machine that
+    # reached its state by READING rather than by running - which is the only way to tell a
+    # restore that works from a state dump that merely looks right.
+    z.cmd(f"smartload /work/{NEX}")
+    time.sleep(3.2)
+    z.cmd("set-memory-zone -1")
+    z.cmd(f"write-memory-raw {0xC002} {(3000).to_bytes(2, 'little').hex()}")
+    z.cmd(f"write-memory-raw {0xC004} {(60000).to_bytes(2, 'little').hex()}")
+    z.cmd(f"write-memory {sym['go']} 1")
+    time.sleep(2.0)
+    # FREEZE WITH CTL_FAULT, NOT THE BUDGET. The C's loop runs aw_frame_sync, then the part block,
+    # then breaks on budget-or-fault, and only AFTER that runs the frame's threads. The budget is
+    # only spent by opcodes, so zeroing it does not stop the frame the load happens in - and that
+    # frame's threads then moved pg_ptr1, aw_vars, the call stack and the voices before anything
+    # could be read. A fault breaks on the very next check, so the load's frame does no thread
+    # work at all and the machine stands still on exactly what the file put there.
+    # THE REQUEST FIRST, THE FAULT SECOND - the same ordering the save half needs, and I got it
+    # backwards here. A fault ends the loop at the very next break check, so poking it first
+    # stops the machine in the gap between two ZRCP commands and nothing is left to read the
+    # request. Asking first means the next frame boundary takes the load, which runs for seconds
+    # with interrupts off; the fault lands during it and breaks the loop the moment it returns,
+    # before that frame's threads run.
+    z.cmd(f"write-memory {sym['save_req']} 2")                              # 2 = load
+    z.cmd(f"write-memory {0xC00D} 1")                                       # CTL_FAULT
+
+    # sv_done lives in page 10, so reading it means mapping page 10 where it was assembled
+    done = False
+    for _ in range(400):
+        time.sleep(0.25)
+        z.cmd(f"tbblue-set-register {NR_MMU2} {PAGED_PAGE}")
+        if read(sym["sv_done"], 1)[0] == 0x5A:
+            done = True
+            break
+    if not done:
+        err = read(sym["err"], 1)[0]
+        bad.append(f"the load never finished; err = {err:#04x}"
+                   + (" - esxDOS refused the open" if err else " - sv_load never ran"))
+    else:
+        z.cmd(f"write-memory {sym['snd_off']} 1")
+        time.sleep(0.3)
+        before = len(bad)
+        bad += compare(z, read, blob, sym, "the load")
+        if len(bad) == before:
+            print("  the round trip holds: every field the save captured came back")
+    z.close()
+
+    if bad:
+        print("\n  " + "\n  ".join(bad[:6]))
+        raise SystemExit(f"FAIL: {len(bad)} thing(s) wrong across the save and the load")
+    print(f"""
+  the load order holds {N_RES[0]} ids: {' '.join(f'{r:#04x}' for r in ORDER)}
+
+PASS: a {len(blob):,}-byte save and a load that puts it all back. Every field matches the
+      machine it was taken from AND the machine that read it back - the VM's variables, call
+      stack, thread pcs and channel flags byte for byte; the palette and page state; the player
+      down to its pattern position; all four voice records; the heap's load order, in heap order
+      and every id resident; and all {BANDS} bands of the four Layer 2 pages.
+
+      The part index and the load order are DERIVED at save time rather than kept, which is why
+      this cost no resident memory - and on the way back the resources are reloaded IN THAT
+      ORDER, so the heap reconstructs identically and the restored windows point where they did.
+
+      STILL OWED: the plan also asks that the opcode stream from the reload match a run that
+      never saved. A round trip that holds is necessary and not sufficient - a state that
+      matches can still resume wrongly.""")
+
+
+def compare(z, read, blob, sym, label):
+    """Every field of the file against the machine. Used for the save and again after the load."""
+    bad = []
     # ---- the header, field by field, against the machine ----------------------------------
     live = {
         "part": None,                   # derived; checked against START_PART below
@@ -115,8 +197,14 @@ def main():
     }
     if blob[4] != START_PART:
         bad.append(f"the part index is {blob[4]}, and the game boots into {START_PART}")
-    for off, name in ((5, "pal_now"), (6, "pal_req"), (7, "pg_ptr1"),
-                      (16, "mus_res"), (17, "mus_playing"), (19, "mus_cur_order")):
+    fields = [(5, "pal_now"), (7, "pg_ptr1"), (16, "mus_res"),
+              (17, "mus_playing"), (19, "mus_cur_order")]
+    if label == "the save":
+        fields.append((6, "pal_req"))   # after a LOAD this deliberately holds the saved pal_now:
+                                        # apply_palette maps MMU2, which is where the load's own
+                                        # code runs, so the load asks aw_blit to do it instead -
+                                        # the reference's paletteIdRequested arrangement exactly
+    for off, name in fields:
         if blob[off] != live[name]:
             bad.append(f"{name} is {blob[off]:#04x} in the file, {live[name]:#04x} on the machine")
 
@@ -127,6 +215,7 @@ def main():
     # the heap's load order, and that it is not empty - part 0 loads three resources at least
     n_res = blob[15]
     order = list(blob[128:128 + n_res])
+    N_RES[0], ORDER[:] = n_res, order
     pages = read(sym["res_page"], 256)
     if n_res < 3:
         bad.append(f"the load order holds {n_res} ids; part 0 loads at least three")
@@ -157,23 +246,7 @@ def main():
         o += BAND
     if diff_bands:
         bad.append(f"bands {diff_bands[:6]} of the four pages differ from the machine's")
-    z.close()
-
-    if bad:
-        print("\n  " + "\n  ".join(bad[:6]))
-        raise SystemExit(f"FAIL: {len(bad)} thing(s) wrong with the save")
-    print(f"""
-  the load order holds {n_res} ids: {' '.join(f'{r:#04x}' for r in order)}
-
-PASS: the save is {len(blob):,} bytes and every field in it matches the machine it was taken
-      from - the VM's variables, call stack, thread pcs and channel flags byte for byte; the
-      palette and page state; the player down to its pattern position; all four voice records;
-      the heap's load order, in heap order and every id resident; and all {BANDS} bands of the
-      four Layer 2 pages. The part index and the load order are DERIVED at save time rather
-      than kept, which is why this cost no resident memory.
-
-      This is the first half of I9. Nothing reads the save back yet - that, and a stream
-      comparison across a reload, is the other half.""")
+    return [f"{label}: {b}" for b in bad]
 
 
 if __name__ == "__main__":
