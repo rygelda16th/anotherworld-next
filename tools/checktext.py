@@ -38,6 +38,7 @@ CASES = [
     (0x264, 7, 0, 40),       # the longest, 174 characters
     (0x003, 15, 34, 64),     # far right: impossible with eight-pixel cells
     (0x006, 3, 20, 100),
+    (0x192, 5, 22, 16),      # "IDENTIFICATION", as the intro draws it at blit 1,123
 ]
 
 

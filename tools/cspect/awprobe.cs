@@ -56,6 +56,9 @@ namespace AWProbe
         // AWPROBE_NRLOG=<hex reg> traps every write to that Next register - from the CPU or, if the
         // emulator routes them the same way, from the copper - and checks each value steps by +-8
         // from the last, which is coptest's triangle.
+        // AWPROBE_TEXTWATCH=1 traps writes to $E000-$EDFF and reports those made while MMU7 maps page 1,
+        // TEXT_PAGE - the font and the strings, which nothing should ever write after boot.
+        bool textWatch = false; int textHits = 0; long textAll = 0;
         int nrReg = -1; long nrWrites = 0, nrGood = 0, nrBad = 0; int nrLast = -1;
         int voicesAddr = 0; long[] voiceHist = new long[5]; long voiceFrames = 0, voiceSum = 0;
         bool armed = false;
@@ -100,6 +103,7 @@ namespace AWProbe
                 }
             string st = Environment.GetEnvironmentVariable("AWPROBE_STACK");
             if (!string.IsNullOrEmpty(st)) { var q = st.Split(':'); stackLo = Convert.ToInt32(q[0], 16); stackHi = Convert.ToInt32(q[1], 16); }
+            textWatch = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("AWPROBE_TEXTWATCH"));
             string nr = Environment.GetEnvironmentVariable("AWPROBE_NRLOG");
             if (!string.IsNullOrEmpty(nr)) nrReg = Convert.ToInt32(nr, 16);
             string pf = Environment.GetEnvironmentVariable("AWPROBE_PROF");
@@ -116,6 +120,12 @@ namespace AWProbe
             // Arm only once our own code is running: the NEX loader and the ROM execute the
             // low window legitimately before that, and those hits are not the fault.
             if (nrReg >= 0) io.Add(new sIO(nrReg, eAccess.NextReg_Write, 2, 0));
+            if (textWatch) for (int a = 0xE000; a < 0xEE00; a++) io.Add(new sIO(a, eAccess.Memory_Write, 4, 0));
+            // THE PROFILER SAMPLES AT THE IM2 TRAMPOLINE, from an execution trap: with the copper
+            // driving the DAC the game's interrupts are LINE interrupts, and the frame-time Tick no
+            // longer lands on the trampoline. At $CECE the interrupt has just pushed the address it
+            // interrupted, so it is the word at SP.
+            if (profLo >= 0) io.Add(new sIO(0xCECE, eAccess.Memory_EXE, 3, 0));
             for (int a = stackLo; stackHi != 0 && a < stackHi; a++) io.Add(new sIO(a, eAccess.Memory_Write, 1, 0));
             io.Add(new sIO(0x8731, eAccess.Memory_EXE, 0, 0));   // clear_code
             io.Add(new sIO(0x876E, eAccess.Memory_EXE, 0, 0));   // load_code's rst $08
@@ -154,6 +164,7 @@ namespace AWProbe
             log.WriteLine(sb.ToString());
             hist.Clear();
             samples = 0;
+            if (textWatch) log.WriteLine(string.Format("# text watch: {0} writes to $E000-$EDFF seen, {1} while MMU7 was page 1", textAll, textHits));
             if (nrReg >= 0) log.WriteLine(string.Format("# nextreg ${0:X2}: {1} writes, {2} steps of 8, {3} others, osticks {4}", nrReg, nrWrites, nrGood, nrBad, osticks));
             if (stackHi != 0) log.WriteLine(string.Format("# stack low-water: ${0:X4}", stackMin));
             if (voiceFrames > 0)
@@ -216,11 +227,9 @@ namespace AWProbe
                 voiceHist[n]++; voiceFrames++; voiceSum += n;
             }
             if (goAddr != 0 && ticks == 150) { CSpect.Poke((ushort)goAddr, 1); log.WriteLine("# released the ENTER wait"); }
-            if (profLo >= 0 && paceBlit != 0)
+            if (false)
             {
-                int bb = W(paceBlit);
-                Z80Regs rr = CSpect.GetRegs();
-                if (bb >= profLo && bb <= profHi && rr != null && rr.PC == 0xCECE)   // at the IM2 trampoline: SP holds where it came from
+                int bb = 0; Z80Regs rr = null;
                 {
                     int ret = W(rr.SP);
                     long c0; prof.TryGetValue(ret, out c0); prof[ret] = c0 + 1; profN++;
@@ -247,6 +256,22 @@ namespace AWProbe
         public void OSTick() { osticks++; }
         public bool Write(eAccess _t, int _p, int _id, byte _v)
         {
+            if (_t == eAccess.Memory_Write && _id == 4)
+            {
+                textAll++;
+                if (ticks > 150 && textHits < 40 && CSpect.GetNextRegister(0x57, -1) == 1)
+                {
+                    textHits++;
+                    Z80Regs r = CSpect.GetRegs();
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendFormat("TEXTWRITE ${0:X4}=${1:X2} PC=${2:X4} SP=${3:X4} IFF1={4} blit={5} MMU=", _p, _v, r.PC, r.SP, r.IFF1 ? 1 : 0, paceBlit != 0 ? W(paceBlit) : -1);
+                    for (int m = 0; m < 8; m++) sb.AppendFormat("{0}{1}", m == 0 ? "" : ",", CSpect.GetNextRegister((byte)(0x50 + m), -1));
+                    sb.Append(" stack:");
+                    for (int i = 0; i < 8; i++) sb.AppendFormat(" ${0:X4}", W((r.SP + 2 * i) & 0xFFFF));
+                    log.WriteLine(sb.ToString());
+                }
+                return false;
+            }
             if (_t == eAccess.NextReg_Write && _id == 2)
             {
                 nrWrites++;
@@ -263,6 +288,27 @@ namespace AWProbe
             _valid = false;                     // never substitute the opcode - just watch
             if (off || _t != eAccess.Memory_EXE) return 0;
 
+            if (_id == 3 && profLo >= 0 && paceBlit != 0)
+            {
+                int bb = W(paceBlit);
+                if (bb >= profLo && bb <= profHi)
+                {
+                    Z80Regs rr = CSpect.GetRegs();
+                    int ret = W(rr.SP);
+                    long c0; prof.TryGetValue(ret, out c0); prof[ret] = c0 + 1; profN++;
+                    if ((profN & 63) == 0)
+                    {
+                        var top = new List<KeyValuePair<int, long>>(prof);
+                        top.Sort((x, y) => y.Value.CompareTo(x.Value));
+                        using (var pw = new StreamWriter(logPath + ".prof"))
+                        {
+                            pw.WriteLine("# samples " + profN);
+                            foreach (var kv in top) pw.WriteLine(string.Format("{0:X4} {1}", kv.Key, kv.Value));
+                        }
+                    }
+                }
+                return 0;
+            }
             if (_p == 0x8731) { if (!armed) log.WriteLine("# armed at clear_code"); armed = true; return 0; }
             if (_p == 0x876E) { log.WriteLine("# load_code rst $08 reached"); return 0; }
             if (!armed || _p >= WIN_TOP || trapped >= 24) return 0;

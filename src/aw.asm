@@ -785,6 +785,14 @@ aw_load_res:
         ld      (ld_page), a
         di                              ; esxDOS wants the interrupt off: see load_code
         call    load_code
+        ; FORGET THE MAPPED BAND. load_code leaves MMU7 on page 1, and page 1 is TEXT_PAGE - the
+        ; font, the string dictionary and the palettes. The rasteriser only maps DWIN when cur_band
+        ; changes, so a draw after a load, in the band the last draw used, would write straight into
+        ; the text page. This closes that. It did NOT fix the missing "IDENTIFICATION" at intro blit
+        ; 1,123 (224 pixels of background under ZEsarUX, where check-text draws the same string at
+        ; boot pixel-identically), which was being looked for when this turned up and is still open.
+        ld      a, 255
+        ld      (cur_band), a
         ei
         ld      a, CODE_PAGE
         ld      (ld_page), a
@@ -1426,11 +1434,8 @@ aw_draw_poly:
         ; Reading a NextReg back needs the register selected on $243B and the value read
         ; from $253B; the project already learned that port $123B is write-only here, so
         ; nothing is assumed to be readable without checking it is.
-        ld      bc, $243B
         ld      a, NR_MMU0
-        out     (c), a
-        ld      b, $25
-        in      a, (c)
+        call    nr_read                 ; the select and the read, safe from the interrupt: see nr_read
         ld      (saved_mmu0), a
         ; AND FORGET WHICH BAND IS MAPPED. The rasteriser writes NR_SWIN_MMU only when the
         ; band number changes, so its cache is a claim about what MMU0 holds - and .restore
@@ -1849,6 +1854,13 @@ mus_pattern:
         jr      nz, .not_fd
         ld      hl, (mp_note2)          ; the mark: variable 0xF4
         ld      (mus_mark), hl
+        ; AND INTO THE VARIABLE ITSELF. The reference writes vmVariables[0xF4] right here
+        ; (`*_markVar = pat.note_2`, sfxplayer.cpp:184) and the intro's scripts wait on it to keep
+        ; the pictures in step with the tune. This stored the mark in mus_mark and nothing ever took
+        ; it further, so from the first scene that waits on the music the machine's script ran a path
+        ; the engine's never did: pages off by hundreds of bytes at blit 1,200, and now and then a
+        ; `ret` on an empty call stack at 0x2003 - which run it happened on depending on timing.
+        ld      (_aw_vars + $F4 * 2), hl
         ret
 .not_fd:
         cp      $FE
@@ -1985,11 +1997,8 @@ voice_setup:
         ; BORROW MMU7 to read the sample's header. MMU7 is the Layer 2 draw band, and this runs
         ; at the frame boundary where no draw is in progress - but the interrupt mixes through
         ; the same slot, so it is saved and restored rather than assumed.
-        ld      bc, $243B
         ld      a, NR_SAMP_MMU
-        out     (c), a
-        ld      b, $25
-        in      a, (c)
+        call    nr_read                 ; the select and the read, safe from the interrupt: see nr_read
         ld      (mv_saved), a
         ld      a, (mv_page)
         nextreg NR_SAMP_MMU, a
@@ -3323,11 +3332,8 @@ sv_mmu7:    db 0
 ; means this is safe to call from anywhere.
 ;-----------------------------------------------------------------------------
 aw_saveload:
-        ld      bc, $243B
         ld      a, NR_PAGED_MMU
-        out     (c), a
-        ld      b, $25
-        in      a, (c)
+        call    nr_read                 ; the select and the read, safe from the interrupt: see nr_read
         ld      (paged_saved), a
         ld      a, PAGED_PAGE
         nextreg NR_PAGED_MMU, a
@@ -3459,11 +3465,8 @@ part_load:
 ; because the mixer reads a sample through the same slot from inside the interrupt.
 copy_palette:
         nextreg NR_PAL_SRC_MMU, a
-        ld      bc, $243B
         ld      a, NR_TEXT_MMU_HI
-        out     (c), a
-        ld      b, $25
-        in      a, (c)
+        call    nr_read                 ; the select and the read, safe from the interrupt: see nr_read
         push    af
         ld      a, TEXT_PAGE
         nextreg NR_TEXT_MMU_HI, a
@@ -4181,6 +4184,37 @@ mb_silence:
         ret
 
 mb_stored:      db 0
+
+;-----------------------------------------------------------------------------
+; nr_read - A = a Next register, out as its value. Clobbers BC and E.
+;
+; READING ONE BACK IS TWO PORT OPERATIONS - select it on $243B, read it on $253B - AND THE INTERRUPT
+; SELECTS REGISTERS OF ITS OWN. It reads the sample slot back, and since the copper took the DAC it
+; also leaves $243B naming the copper's data register for the DMA's upload. An interrupt between a
+; main-code select and its read therefore hands back some other register's value, and the code that
+; asked "restores" a slot to it: MMU7 set to a nonsense page, the next draw written through it into
+; whatever that page held. That is the shape of the intro stopping, on some runs and not others,
+; with a `ret` on an empty call stack at 0x2003 - the runs differ only in where interrupts land.
+;
+; So the pair runs with the interrupt held off - about a microsecond, well inside the line
+; interrupt's pulse, which is still there to be taken when it is let back in - and the interrupt
+; state is put back as it was found.
+;-----------------------------------------------------------------------------
+nr_read:
+        ld      e, a
+        ld      a, i                    ; P/V = IFF2
+        push    af
+        di
+        ld      bc, $243B
+        ld      a, e
+        out     (c), a
+        inc     b                       ; $253B
+        in      e, (c)
+        pop     af
+        ld      a, e                    ; LD leaves P/V alone
+        ret     po                      ; the interrupt was off: leave it off
+        ei
+        ret
 
 
 ;-----------------------------------------------------------------------------

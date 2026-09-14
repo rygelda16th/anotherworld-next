@@ -282,6 +282,30 @@ poly_draw:
 
 .rows:
         ld      (row_count), hl
+        ; THE ACCUMULATORS IN REGISTERS for the walk. Loading and storing both 32-bit edge positions
+        ; through memory on every row, with the steps re-read each time, cost about 260 T a row, and a
+        ; profile of the intro's heaviest stretch put this routine at 31% of the time outside the
+        ; interrupt. So for the length of a trapezoid: the low words in the shadow BC' and DE', the
+        ; high words - the integer x - in IX and IY, and the four step words patched into the
+        ; immediates below. About 148 T a row. Nothing the walk calls touches the shadow set or IX and
+        ; IY (the span routines, band_set, dirty_band), the interrupt saves IX and the shadow set and
+        ; never touches IY, and the caller's IX and IY are put back on every way out.
+        push    ix
+        push    iy
+        ld      hl, (step1)
+        ld      (.s1lo + 1), hl
+        ld      hl, (step1 + 2)
+        ld      (.s1hi + 1), hl
+        ld      hl, (step2)
+        ld      (.s2lo + 1), hl
+        ld      hl, (step2 + 2)
+        ld      (.s2hi + 1), hl
+        exx
+        ld      bc, (cpt1)
+        ld      de, (cpt2)
+        exx
+        ld      ix, (cpt1 + 2)
+        ld      iy, (cpt2 + 2)
 
 ;-----------------------------------------------------------------------------
 ; One scanline, FUSED. This was three routines and four calls to cmp_signed,
@@ -303,27 +327,29 @@ poly_draw:
         jp      nz, .step               ; above the top edge: step, do not draw
         ld      e, l                    ; E = y, 0..191, for band and address
 
-        ; sx1 = the integer half of cpt1, clipped to 0
-        ld      hl, (cpt1 + 2)
-        ld      a, h
+        ; sx1 = the integer half of cpt1 (IX), clipped to 0
+        ld      a, ixh
         or      a
+        ld      a, ixl                  ; LD leaves the flags alone
         jr      z, .x1_in
-        bit     7, h
+        ld      a, ixh
+        bit     7, a
         jp      z, .step                ; positive and > 255: nothing visible
-        ld      l, 0                    ; negative: clamp left
+        xor     a                       ; negative: clamp left
 .x1_in:
-        ld      c, l                    ; C = sx1
+        ld      c, a                    ; C = sx1
 
-        ; sx2 = the integer half of cpt2, clipped to 255
-        ld      hl, (cpt2 + 2)
-        ld      a, h
+        ; sx2 = the integer half of cpt2 (IY), clipped to 255
+        ld      a, iyh
         or      a
+        ld      a, iyl
         jr      z, .x2_in
-        bit     7, h
+        ld      a, iyh
+        bit     7, a
         jp      nz, .step               ; negative: nothing visible
-        ld      l, SCR_W - 1            ; positive and > 255: clamp right
+        ld      a, SCR_W - 1            ; positive and > 255: clamp right
 .x2_in:
-        ld      b, l                    ; B = sx2
+        ld      b, a                    ; B = sx2
 
         ; The two edges can CROSS, and then sx1 > sx2. The original's drawLine
         ; routines take MIN and MAX of their arguments; without that the length
@@ -370,24 +396,29 @@ poly_draw:
         call    0000                    ; patched per polygon by .setfn
 
 .step:
-        ; Both accumulators, inline. The call/ret this replaces was 34 T of the
-        ; 1,570.
-        ld      hl, (cpt1)
-        ld      de, (step1)
-        add     hl, de
-        ld      (cpt1), hl
-        ld      hl, (cpt1 + 2)
-        ld      de, (step1 + 2)
-        adc     hl, de                  ; carry survives the two LDs
-        ld      (cpt1 + 2), hl
-        ld      hl, (cpt2)
-        ld      de, (step2)
-        add     hl, de
-        ld      (cpt2), hl
-        ld      hl, (cpt2 + 2)
-        ld      de, (step2 + 2)
-        adc     hl, de
-        ld      (cpt2 + 2), hl
+        ; Both accumulators, in their registers. There is no ADC for IX or IY, so each low word's
+        ; carry goes into its high step with an INC before the ADD - the same sixteen bits, since only
+        ; sixteen are kept. LD and EXX leave the carry alone between the two.
+        exx
+.s1lo:  ld      hl, 0                   ; step1, low word (patched)
+        add     hl, bc                  ; cpt1 low, in BC'
+        ld      b, h
+        ld      c, l
+.s2lo:  ld      hl, 0                   ; step2, low word (patched), for below
+        exx
+.s1hi:  ld      de, 0                   ; step1, high word (patched)
+        jr      nc, .c1
+        inc     de
+.c1:    add     ix, de                  ; cpt1 high
+        exx
+        add     hl, de                  ; cpt2 low, in DE'
+        ld      d, h
+        ld      e, l
+        exx
+.s2hi:  ld      de, 0                   ; step2, high word (patched)
+        jr      nc, .c2
+        inc     de
+.c2:    add     iy, de                  ; cpt2 high
 
         ; ++hliney, and stop once it passes the bottom edge
         ld      hl, (hliney)
@@ -397,12 +428,12 @@ poly_draw:
         or      a
         jr      z, .y_low
         bit     7, h
-        jp      z, .ret                 ; positive and > 255: off the bottom
+        jp      z, .rows_off            ; positive and > 255: off the bottom
         jr      .y_ok                   ; still negative: keep walking
 .y_low:
         ld      a, l
         cp      SCR_H
-        jp      nc, .ret                ; y > 191
+        jp      nc, .rows_off           ; y > 191
 .y_ok:
         ld      hl, (row_count)
         dec     hl
@@ -410,7 +441,19 @@ poly_draw:
         ld      a, h
         or      l
         jp      nz, .row
+        ; this trapezoid's rows are done: the accumulators back where the next one reads them
+        exx
+        ld      (cpt1), bc
+        ld      (cpt2), de
+        exx
+        ld      (cpt1 + 2), ix
+        ld      (cpt2 + 2), iy
+        pop     iy
+        pop     ix
         jp      .trapezoid
+.rows_off:
+        pop     iy
+        pop     ix
 .ret:
         ret
 

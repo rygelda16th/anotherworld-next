@@ -164,6 +164,14 @@ def main():
     if read(z, sym["ready"], 1)[0] != 0x5A:
         raise SystemExit("FAIL: the game never reached its wait loop")
 
+    # AW_TEXTPAGE=1: read TEXT_PAGE (page 1: the font, the strings, the palettes) before the VM runs
+    # and again when it stops, and say which ranges changed. Palettes at $EE00 are loaded as parts
+    # change; nothing else in that page is ever meant to.
+    text_before = None
+    if os.environ.get("AW_TEXTPAGE"):
+        z.cmd(f"tbblue-set-register {NR_MMU7} 1")
+        text_before = read(z, DWIN, 8192)
+
     hdr = (seed.to_bytes(2, "little") + (2000).to_bytes(2, "little")
            + (60000).to_bytes(2, "little"))
     z.cmd(f"write-memory-raw {CTL} {hdr.hex()}")
@@ -221,6 +229,26 @@ def main():
         eng[kind] += 1
     print("  the engine to the same blit: "
           + ", ".join(f"{k}={v}" for k, v in sorted(eng.items())))
+    if text_before is not None:
+        z.cmd(f"tbblue-set-register {NR_MMU7} 1")
+        text_after = read(z, DWIN, 8192)
+        diff = [i for i in range(8192) if text_before[i] != text_after[i]]
+        runs, start = [], None
+        for i in range(8193):
+            inside = i < 8192 and text_before[i] != text_after[i]
+            if inside and start is None:
+                start = i
+            if not inside and start is not None:
+                runs.append((start, i)); start = None
+        print(f"  TEXT_PAGE: {len(diff)} bytes changed since boot, in {len(runs)} runs: "
+              + ", ".join(f"${0xE000 + a:04X}-${0xE000 + b - 1:04X}" for a, b in runs[:12]))
+        if runs:
+            a = runs[0][0]
+            print(f"    before ${0xE000 + a:04X}: {text_before[a:a + 32].hex(' ')}")
+            print(f"    after  ${0xE000 + a:04X}: {text_after[a:a + 32].hex(' ')}")
+            import collections
+            vals = collections.Counter(text_after[i] for i in diff if i < 0xE00)
+            print(f"    commonest new values below $EE00: {vals.most_common(8)}")
     if n_blit != BLITS:
         # SAY WHY. A machine that stops early has left its reason in the control block, and
         # "stopped after 217" alone sent a run hunting in the wrong place.

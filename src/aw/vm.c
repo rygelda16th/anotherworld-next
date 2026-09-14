@@ -162,7 +162,8 @@ extern void aw_setup_part(uint8_t index) __z88dk_fastcall;
 #define EXP_OPS         ((const uint8_t *)AW_EXP)
 
 #define FAULT_PAST_END  1       /* the pc left the segment that was loaded */
-#define FAULT_BAD_PART  4       /* a part id outside 0x3E80..0x3E89 */
+#define FAULT_BAD_PART  7       /* a part id outside 0x3E80..0x3E89. It was 4, which is also
+                                 * FAULT_RET's, so a fault 4 could not say which it was. */
 #define FAULT_RESET     2       /* resetThread over a range outside the table */
 #define FAULT_BAD_OP    3       /* an opcode the reference calls error() on */
 #define FAULT_RET       4       /* ret with nothing on the call stack */

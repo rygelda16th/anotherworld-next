@@ -376,7 +376,7 @@ bisect-draw: cc-game
 check-draw: cc-game
 	$(MAKE) asm
 	@$(DC) run --rm -e PYTHONUNBUFFERED=1 -e AW_PART=$(AW_PART) \
-		-e AW_BLITS=$(AW_BLITS) -e AW_PROBE_DIR=$(AW_PROBE_DIR) -e AW_AUTOPLAY=$(AW_AUTOPLAY) tools \
+		-e AW_BLITS=$(AW_BLITS) -e AW_PROBE_DIR=$(AW_PROBE_DIR) -e AW_AUTOPLAY=$(AW_AUTOPLAY) -e AW_TEXTPAGE=$(AW_TEXTPAGE) tools \
 		sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkdraw.py'
 
