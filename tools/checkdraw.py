@@ -26,7 +26,9 @@ from refvideo import RefVideo8, replay   # noqa: E402
 
 NEX = "build/aw.nex"
 EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
-PROBE = "preflight/hostprobe/probe"
+# AW_PROBE_DIR points the gate at a different probe run - a longer trace, say - without
+# touching the committed one. The default is the committed run.
+PROBE = os.environ.get("AW_PROBE_DIR") or "preflight/hostprobe/probe"
 CODE_FILE = "RES18.BIN"
 
 # WHICH PART. I9a asks for this gate to be re-run against gameplay, and part 2 draws 1,947
@@ -184,7 +186,7 @@ def main():
 
     fin = CTL + 10
     waited = 0.0
-    while waited < 120.0:
+    while waited < max(120.0, BLITS * 1.0):   # a long intro run takes longer than 45 blits
         if read(z, fin, 1)[0] == 0x5A:
             break
         time.sleep(0.1)

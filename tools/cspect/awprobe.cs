@@ -39,6 +39,7 @@ namespace AWProbe
         const int WIN_TOP = 0x4000;
         bool off = false;
         int goAddr = 0;
+        int blitAddr = 0, blitAt = 0; bool blitDumped = false;
         bool armed = false;
         int trapped = 0;
 
@@ -55,6 +56,11 @@ namespace AWProbe
             log.AutoFlush = true;
             string g = Environment.GetEnvironmentVariable("AWPROBE_GO");
             if (!string.IsNullOrEmpty(g)) goAddr = Convert.ToInt32(g, 16);
+            // AWPROBE_BLIT=<hex addr of n_blit>:<decimal count> dumps the screen once, the
+            // first frame the game's own blit counter reaches that count - so a named scene
+            // is captured, rather than whatever happened to be up at a round number of seconds.
+            string bl = Environment.GetEnvironmentVariable("AWPROBE_BLIT");
+            if (!string.IsNullOrEmpty(bl)) { var parts = bl.Split(':'); blitAddr = Convert.ToInt32(parts[0], 16); blitAt = int.Parse(parts[1]); }
             string m = Environment.GetEnvironmentVariable("AWPROBE_MAX");
             if (!string.IsNullOrEmpty(m)) int.TryParse(m, out maxReports);
             log.WriteLine("# AWProbe up");
@@ -151,6 +157,7 @@ namespace AWProbe
             if (off) return;
             ticks++;
             if (goAddr != 0 && ticks == 150) { CSpect.Poke((ushort)goAddr, 1); log.WriteLine("# released the ENTER wait"); }
+            if (blitAddr != 0 && !blitDumped && W(blitAddr) >= blitAt) { blitDumped = true; DumpScreen(100000 + W(blitAddr)); }
             Sample();
         }
         public void OSTick() { osticks++; }

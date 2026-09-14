@@ -1490,6 +1490,14 @@ aw_draw_poly:
         ld      b, $25
         in      a, (c)
         ld      (saved_mmu0), a
+        ; AND FORGET WHICH BAND IS MAPPED. The rasteriser writes NR_SWIN_MMU only when the
+        ; band number changes, so its cache is a claim about what MMU0 holds - and .restore
+        ; below makes that claim false by putting the bytecode page back. The next draw that
+        ; starts in the band the last one ended in then skips the write and copies from
+        ; BYTECODE instead of page 0: the multicoloured speckle under the lift at intro
+        ; blit 218, 807 bytes in rows 165-191 while page 0 itself was identical.
+        ld      a, 255
+        ld      (cur_band), a
 
         ld      hl, (DRAW_BLOCK + 0)
         ld      (rd_off), hl

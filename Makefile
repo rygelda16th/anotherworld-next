@@ -376,9 +376,26 @@ bisect-draw: cc-game
 check-draw: cc-game
 	$(MAKE) asm
 	@$(DC) run --rm -e PYTHONUNBUFFERED=1 -e AW_PART=$(AW_PART) \
-		-e AW_BLITS=$(AW_BLITS) tools \
+		-e AW_BLITS=$(AW_BLITS) -e AW_PROBE_DIR=$(AW_PROBE_DIR) tools \
 		sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkdraw.py'
+
+# THE INTRO, LONG. check-draw's committed trace stops at blit 45, and the first polygon that
+# copies from page 0 (colour 0x11, the patch of floor under the lift) is not drawn until blit
+# 218 - so the copy fill's source band was never compared against the engine, and a stale
+# band cache sent it to the BYTECODE window instead: rainbow speckle on the machine, 807
+# bytes in rows 165-191, page 0 itself identical. This regenerates a 700-blit reference from
+# the host probe (gitignored, like the rest of the probe's output, because it is derived from
+# the game data) and compares all four pages at 226, the last copy-mode frame, and at 699.
+INTRO_REF := $(BUILD)/ref700
+$(INTRO_REF)/trace.bin:
+	mkdir -p $(INTRO_REF)
+	cd $(INTRO_REF) && $(CURDIR)/$(PROBE)/probe $(CURDIR)/$(DATA_DIR) 4000 700 0 >probe.out
+	cp $(PROBE)/font.bin $(INTRO_REF)/
+
+check-intro: $(INTRO_REF)/trace.bin
+	$(MAKE) check-draw AW_BLITS=226 AW_PROBE_DIR=$(INTRO_REF)
+	$(MAKE) check-draw AW_BLITS=699 AW_PROBE_DIR=$(INTRO_REF)
 
 # I1a: the game reads a real keyboard and a Kempston joystick, and the reference's
 # mapping survives the trip. Driven by the emulator's own keys, not by a poke.
