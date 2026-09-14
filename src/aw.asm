@@ -1290,8 +1290,20 @@ aw_blit:
         ld      a, h
         cp      d
         jr      nz, .no_stop
+        ; CTL_FAULT, NOT CTL_OUT_OF_BUDGET, and the difference is one blit's worth of drawing.
+        ;
+        ; aw_host_frame tests CTL_OUT_OF_BUDGET BETWEEN THREADS, so setting it leaves the thread
+        ; that is running to carry on to its own pauseThread - and everything it draws after the
+        ; blit lands on the page. The reference stops exactly AT the blit, so the two were being
+        ; compared a variable amount of work apart. The intro never showed it because its blit is
+        ; the last thing that thread does; part 2 selects another page straight afterwards and
+        ; draws into it, which presented as page 2 differing in 100% of its bytes while the other
+        ; three agreed - the extra polygons, on a page the engine had not touched since.
+        ;
+        ; execute_thread tests CTL_FAULT after EVERY opcode, so a fault set here ends the thread
+        ; on the blit itself. Same two instructions; one byte of address.
         ld      a, 1
-        ld      (CTL + $0B), a          ; CTL_OUT_OF_BUDGET: the loop breaks on it
+        ld      (CTL + $0D), a          ; CTL_FAULT: execute_thread breaks on the next check
 .no_stop:
         ld      a, (jt_arg)
         cp      $FE
