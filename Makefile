@@ -448,6 +448,13 @@ check-boot: | $(BUILD)
 		sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkboot.py'
 
+# COPPER SOUND: the copper driving the DAC once a scanline, fed twice a frame, measured in
+# ZEsarUX's own audio output. See src/coptest.asm and tools/checkcop.py.
+check-cop: asm
+	@rm -f $(BUILD)/cop.raw
+	@$(RUN) sh -c '$(ZESARUX) --aofile /work/$(BUILD)/cop.raw >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkcop.py'
+
 # The esxDOS window invariant: is the ROM back over the bottom 16K during a DOS call?
 # See tools/checkesx.py for why this gates the REGISTERS and not the load - ZEsarUX
 # answers RST $08 whatever the paging says, which is how the fault survived twelve gates.

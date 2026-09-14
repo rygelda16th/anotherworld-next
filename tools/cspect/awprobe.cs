@@ -53,6 +53,10 @@ namespace AWProbe
         // interrupt the address it interrupted is the word at SP, so that is sampled instead of PC
         // (which is always the IM2 trampoline at that instant). Needs AWPROBE_PACE for the blit count.
         int profLo = -1, profHi = -1; Dictionary<int, long> prof = new Dictionary<int, long>(); long profN = 0;
+        // AWPROBE_NRLOG=<hex reg> traps every write to that Next register - from the CPU or, if the
+        // emulator routes them the same way, from the copper - and checks each value steps by +-8
+        // from the last, which is coptest's triangle.
+        int nrReg = -1; long nrWrites = 0, nrGood = 0, nrBad = 0; int nrLast = -1;
         int voicesAddr = 0; long[] voiceHist = new long[5]; long voiceFrames = 0, voiceSum = 0;
         bool armed = false;
         int trapped = 0;
@@ -96,6 +100,8 @@ namespace AWProbe
                 }
             string st = Environment.GetEnvironmentVariable("AWPROBE_STACK");
             if (!string.IsNullOrEmpty(st)) { var q = st.Split(':'); stackLo = Convert.ToInt32(q[0], 16); stackHi = Convert.ToInt32(q[1], 16); }
+            string nr = Environment.GetEnvironmentVariable("AWPROBE_NRLOG");
+            if (!string.IsNullOrEmpty(nr)) nrReg = Convert.ToInt32(nr, 16);
             string pf = Environment.GetEnvironmentVariable("AWPROBE_PROF");
             if (!string.IsNullOrEmpty(pf)) { var q = pf.Split(':'); profLo = int.Parse(q[0]); profHi = int.Parse(q[1]); }
             string va = Environment.GetEnvironmentVariable("AWPROBE_VOICES");
@@ -109,6 +115,7 @@ namespace AWProbe
             for (int a = 0; a < WIN_TOP; a++) io.Add(new sIO(a, eAccess.Memory_EXE, 0, 0));
             // Arm only once our own code is running: the NEX loader and the ROM execute the
             // low window legitimately before that, and those hits are not the fault.
+            if (nrReg >= 0) io.Add(new sIO(nrReg, eAccess.NextReg_Write, 2, 0));
             for (int a = stackLo; stackHi != 0 && a < stackHi; a++) io.Add(new sIO(a, eAccess.Memory_Write, 1, 0));
             io.Add(new sIO(0x8731, eAccess.Memory_EXE, 0, 0));   // clear_code
             io.Add(new sIO(0x876E, eAccess.Memory_EXE, 0, 0));   // load_code's rst $08
@@ -147,6 +154,7 @@ namespace AWProbe
             log.WriteLine(sb.ToString());
             hist.Clear();
             samples = 0;
+            if (nrReg >= 0) log.WriteLine(string.Format("# nextreg ${0:X2}: {1} writes, {2} steps of 8, {3} others, osticks {4}", nrReg, nrWrites, nrGood, nrBad, osticks));
             if (stackHi != 0) log.WriteLine(string.Format("# stack low-water: ${0:X4}", stackMin));
             if (voiceFrames > 0)
                 log.WriteLine(string.Format("# voices so far: mean {0:0.00} over {1} frames; 0:{2} 1:{3} 2:{4} 3:{5} 4:{6}",
@@ -239,6 +247,13 @@ namespace AWProbe
         public void OSTick() { osticks++; }
         public bool Write(eAccess _t, int _p, int _id, byte _v)
         {
+            if (_t == eAccess.NextReg_Write && _id == 2)
+            {
+                nrWrites++;
+                if (nrLast >= 0) { int d = _v - nrLast; if (d == 8 || d == -8) nrGood++; else nrBad++; }
+                nrLast = _v;
+                return false;
+            }
             if (_t == eAccess.Memory_Write && _id == 1 && ticks > 150 && _p < stackMin) stackMin = _p;
             return false;                       // never swallow the write
         }
