@@ -3575,10 +3575,42 @@ was an error: a playthrough that reaches the ending while nothing samples the ma
 gate exactly as open as before. `tools/record.py` never writes to the machine; a recorder that
 perturbs what it records is worse than none.
 
-**The first real budget figure, from the recorder's own self-test: part 2's average frame costs
-54 ms against the 80 ms its script asks for.** It fits, with headroom, and the machine's 75
-polygons a frame sits just under the reference's 87. That is the budget claim measured on the
-machine rather than modelled from the host, which is what I10 asks for.
+##### The budget claim, measured on the machine for all ten parts
+
+`make diag D=_budget`. The table half of "re-measured against the per-part table" is
+`parts_polys.txt`; this is the machine half.
+
+| part | polys/frame | ref mean | ref p95 | rasteriser setup | |
+|---|---|---|---|---|---|
+| 0 protection | 80 | 0 | 0 | 8.5 ms | fits |
+| 1 introduction | 75 | 10 | 14 | 8.0 ms | fits |
+| 2 gameplay | 79 | 87 | 138 | 8.4 ms | fits |
+| 3 gameplay | 32 | 54 | 72 | 3.4 ms | fits |
+| 4 gameplay | 23 | 18 | 25 | 2.4 ms | fits |
+| **5 battlechar** | **504** | 201 | 123 | **53.5 ms** | fits on average |
+| 6 gameplay | 48 | 50 | 84 | 5.1 ms | fits |
+| 7 gameplay | 20 | 22 | 33 | 2.1 ms | fits |
+| 8, 9 password | 4 | 4 | 4 | 0.4 ms | fits |
+
+**Every part's average frame fits its 80 ms budget**, most by an order of magnitude, and the
+machine's polygons a frame track the reference's means closely - 79 against 87 in part 2, 48
+against 50 in part 6, 20 against 22 in part 7, 4 against 4 in the password screens. Part 5
+averages 53.5 ms and still fits; its **worst** frame is the 27,531-polygon one, which is 2.9
+seconds of setup alone. The average passing while the outlier fails is the shape the per-part
+table predicted, and it is why that table has a p95 column.
+
+**THE FIRST VERSION OF THIS MEASUREMENT WAS MEANINGLESS**, and it ran before I noticed. It
+computed `1000 × (polygons a frame) ÷ (polygons a second)` - and the polygon terms **cancel**,
+leaving milliseconds of WALL CLOCK a frame, which measures how fast the emulator runs rather
+than whether the drawing fits. It reported eight of ten parts over budget including the intro,
+which `check-draw` proves renders byte-exact and which this document measures at a quarter of
+its available time. **A comparison whose two sides are not the same quantity still produces a
+number, and the number is still wrong.**
+
+The budget is a **T-state** claim. `check-polycost` measured **2,974 T a polygon**; at 28 MHz
+that is 106 µs, so a frame of *n* polygons costs *n* × 106 µs of rasteriser setup before span
+fill - a property of the Z80N rather than of the host running the emulator, which is exactly why
+the gate says "against the per-part table" and not "with a stopwatch".
 
 ##### Why it needs a person, checked rather than assumed
 
