@@ -3667,6 +3667,39 @@ zero frames**. `CTL_FRAMES` makes the window exact instead of hopeful.
 `check-save`'s freeze, which poked an opcode budget of zero until zero came to mean "no bound".
 A gate written against a program that did not run has to be re-read once it does.
 
+##### So all twelve were re-read, and check-aw could have passed on a dead rasteriser
+
+Twice bitten is a pattern, so every gate that drives the live machine was audited for that one
+hazard - a fixed sleep that assumes the VM is idle, zero used as a stopper, a read of state the
+VM mutates, or a comment asserting a margin whose premise was that nothing ran. Each finding was
+then given to a second reader told to refute it. **Two survived, and both are `check-aw`.**
+
+**MMU7 is not the checker's to hold.** It is the Layer 2 draw band, the loader's staging window
+and - since I5 - the mixer's sample window. `check-aw` maps a page into it and then reads in a
+SEPARATE ZRCP command, six times for the bands and once for the palette, and **the file contained
+no `snd_off` at all**. The interrupt borrows MMU7 fifty times a second: it reads `$57` on entry,
+`SND_MAP_PAGES` repoints it at each active voice's `V_PAGE`, and the restore is the ISR's own,
+once, around both blocks. A poke landing mid-ISR is silently reverted; a read landing mid-ISR
+sees a sample page.
+
+This gate is the worst possible place for it, because its whole claim is that the DMA is
+streaming and the interrupt is refilling the ring while the VM runs - and it **fails itself if the
+ring is silent**, so voices are provably active while it reads. The three sibling gates that hit
+this same race all fixed it the same way and say so in their own comments: `check-res` had "three
+resources differing from the card at byte 2,048 exactly", `check-draw` had "bands 0, 1, 4 and 5
+differing while 2 and 3 were perfect", `check-bmp` likewise.
+
+**And the failure mode is a FALSE PASS**, which is why it outranks flakiness. The band test is
+`len(seen) < 2` - it exists to fail a run where the rasteriser drew nothing. If a read lands on a
+sample page instead, `seen` fills with varied audio bytes, the test passes, and the gate reports
+"page N holds N distinct values" about audio rather than pixels. **A gate that can pass on a dead
+rasteriser is not a gate.** The mixer is now quiesced across those reads only, and restored
+before the soak, which is the part of the claim that needs everything live.
+
+The other ten came back clean, with reasons rather than silence - `check-map` drives a separate
+probe image that never touches the control block; `check-res`, `check-draw` and `check-bmp`
+already poke `snd_off`; the probe-path gates wait on a `done` byte the VM cannot race.
+
 ### Decisions and measurements still owed
 
 None of these is integration work, and that is exactly why they had no place in the
