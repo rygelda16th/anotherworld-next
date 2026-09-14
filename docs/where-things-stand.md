@@ -3502,6 +3502,29 @@ sends the next session hunting a bug that is not there.
 **Still owed here:** real input driving a part rather than a tapped fire button, and the
 playthrough itself.
 
+##### Two ways this fails silently, and both cost a session before they were understood
+
+Neither is a bug today. Both are the reason two bugs took as long as they did, and both are
+cheap to close.
+
+**The polygon reader has no bound in the shipped build.** `rd_plimit` is `$FFFF`, which means
+"no limit" - it exists so a failing draw can be bisected. A malformed record therefore makes the
+machine draw forever instead of faulting, which is exactly what part 2 did, and a hang carries
+no information at all. The machinery to stop is already there (`rd_stop`, and the counter that
+feeds it); what is missing is a bound for the game to use. It cannot simply be a small number -
+part 5 legitimately draws 27,531 polygons in one FRAME - so it wants the reference's widest
+single top-level draw, measured, rather than a guess.
+
+**The heap refuses a load silently.** `aw_load_res` sets `res_full` and returns, and nothing
+reads it. The reference does the same thing (`warning()`, then `MEMENTRY_STATE_NOT_NEEDED`) but
+the reference has a console. Ours ran on for forty frames with a segment full of holes before
+anything went visibly wrong, and the thing that went wrong was in a different subsystem. A
+fault here would have named it immediately.
+
+The general shape: **the VM has a program-counter guard and an opcode budget, and the two
+subsystems underneath it have neither.** Every fault code in the control block exists because a
+wrong run used to look like every other wrong run.
+
 #### H1. Real hardware
 
 Card boot, the joystick's physical wiring, and timing on metal without the three
