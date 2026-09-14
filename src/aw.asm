@@ -146,7 +146,8 @@ VOICES          EQU $DD00
 ; this put the table at $CD00 because the assembled blocks left it empty - but VEC_TABLE is
 ; $CD00, built by install_im2 at boot, and the machine came up with no interrupt at all. A
 ; list of what the assembler places is not a map of memory.
-PART_TABLE_AT   EQU $DD80               ; ten four-byte rows; VOICES uses $DD00..$DD48
+PART_TABLE_AT   EQU $DD48               ; ten four-byte rows, directly after VOICES'
+                                        ; four 18-byte records, which end at $DD48
 ; THE C AND THE ASSEMBLY MUST AGREE ON THESE, and they are set in two files: AW_IN and
 ; AW_DRAW in the Makefile, IN_BLOCK and DRAW_BLOCK here. Moving one without the other made
 ; the C write its polygon parameters to $D310 while this read $C390 - all zeros, so the
@@ -1054,6 +1055,11 @@ isr:
         ; hook stops the moment the last frame runs. Five port reads and the reference's
         ; own mapping, fifty times a second.
         call    read_keys
+        ; AND THE SYNTHETIC PLAYER, when one is asked for. auto_input returns at once unless
+        ; autoplay is set, so this costs three resident bytes - which is what is left. The
+        ; routine itself lives in MMU6 beside the part table. See auto_input for why the
+        ; machine needs the probe's own input function and not merely some input.
+        call    auto_input
         call    do_input
         call    publish_input
 
@@ -3672,6 +3678,112 @@ nm_tail:    db ".BIN", 0
         ORG PART_TABLE_AT
         INCLUDE "build/parts.inc"
         DISPLAY "> the part table at ", /H, PART_TABLE_AT, " ending ", /H, $
+        ASSERT $ <= PART_CODE
+
+;-----------------------------------------------------------------------------
+; auto_input - THE PROBE'S OWN SYNTHETIC PLAYER, on the machine.
+;
+; Every gameplay measurement this project has is the host probe's, and the probe only reaches
+; gameplay because headless.cpp drives the engine with a fixed function of the frame number
+; (its processEvents): walk right, jump, walk left, and fire on a short cycle. Without it the
+; run stops at the intro's "press fire" prompt, which is how 57,386 of 60,000 frames once came
+; to draw nothing.
+;
+; The machine needs THE SAME FUNCTION and not merely some input. I9a asks for the narrow gates
+; to be re-run against a gameplay part, and a gate that compares the machine's stream against
+; the reference's can only mean something if both were given identical input - so this
+; reproduces the probe's arithmetic exactly:
+;
+;     f % 400 < 260   right        (else) < 300   up      (else) < 330   left
+;     button = (f % 47) < 6
+;
+; f IS THE FRAME, NOT THE TICK. The reference reads input once a frame; this runs in the
+; interrupt, fifty times a second, and frames are slower than that. So the two modular counters
+; advance only when CTL_FRAMES_DONE changes, which keeps them in step with the reference's
+; gFrameNo rather than with the refresh. Counting instead of dividing also keeps the whole
+; thing to a compare and two increments in an interrupt that has a mixer to run.
+;-----------------------------------------------------------------------------
+auto_input:
+        ld      a, (autoplay)
+        or      a
+        ret     z
+
+        ; has the frame moved on since the last time?
+        ld      hl, (CTL + $08)         ; CTL_FRAMES_DONE
+        ld      de, (auto_seen)
+        or      a
+        sbc     hl, de
+        jr      z, .settled
+        ld      hl, (CTL + $08)
+        ld      (auto_seen), hl
+
+        ld      hl, (auto_400)
+        inc     hl
+        ld      de, 400
+        or      a
+        sbc     hl, de
+        jr      nz, .keep400
+        ld      hl, -400                ; it reached 400: wrap to zero
+.keep400:
+        add     hl, de
+        ld      (auto_400), hl
+
+        ld      hl, auto_47
+        inc     (hl)
+        ld      a, (hl)
+        cp      47
+        jr      c, .settled
+        ld      (hl), 0
+
+.settled:
+        ; The direction, as three ordered thresholds. ALL THREE ARE ABOVE 255 and the counter
+        ; never reaches 400, so the high byte is 0 or 1 and only the low byte ever needs
+        ; comparing - which turns three 16-bit subtractions into three `cp`. `ld a,n` does not
+        ; touch the flags, so the value being loaded between the compare and the branch is
+        ; free.
+        ld      hl, (auto_400)
+        ld      a, h
+        or      a
+        ld      a, M_RIGHT
+        jr      z, .have_dir            ; under 256, so under 260
+        ld      a, l
+        cp      260 - 256
+        ld      a, M_RIGHT
+        jr      c, .have_dir
+        ld      a, l
+        cp      300 - 256
+        ld      a, M_UP
+        jr      c, .have_dir
+        ld      a, l
+        cp      330 - 256
+        ld      a, M_LEFT
+        jr      c, .have_dir
+        xor     a
+.have_dir:
+        ld      (in_mask), a
+
+        ld      a, (auto_47)
+        cp      6
+        ld      a, 0
+        jr      nc, .no_fire
+        inc     a
+.no_fire:
+        ld      (in_button), a
+        ret
+
+        EXPORT autoplay
+autoplay:   db 0            ; non-zero runs the probe's synthetic player
+        EXPORT auto_seen
+auto_seen:  dw 0            ; the frame number the counters were last advanced on
+        ; EXPORTED so a gate can check the ARITHMETIC rather than the outcome. Waiting for the
+        ; synthetic player to walk into something and die is a poor test: the probe's cycle is
+        ; 400 frames and the machine reaches about 370 in a minute, so the signature that would
+        ; prove it works never appears inside a reasonable run.
+        EXPORT auto_400
+auto_400:   dw 0
+        EXPORT auto_47
+auto_47:    db 0
+        DISPLAY "> the synthetic player at ", /H, auto_input, " ending ", /H, $
         ASSERT $ <= PART_CODE
 
         ; THREE WRAP TESTS IN mix_block COMPARE ONLY THE HIGH BYTE, so the ring's end must be
