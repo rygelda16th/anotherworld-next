@@ -199,6 +199,14 @@ void instrHeap(unsigned used, int type, int size) {
     if (gSnd) fprintf(gSnd, "load %u %u %d %d %u\n", gNow, gFrameNo, type, size, used);
 }
 
+/* Every load the engine performs, in the order it performs them, by resource id.
+ * The frame number goes with it so a checker can bound the comparison the same way the
+ * machine's run is bounded. */
+static FILE *gLoads = NULL;
+void instrLoadId(int id, int type, int size) {
+    if (gLoads) fprintf(gLoads, "load %u %d %d %d\n", gFrameNo, id, type, size);
+}
+
 void instrSound(int resNum, int freqIndex, int vol, int chan,
                 int len, int loopLen) {
     if (gSnd) fprintf(gSnd, "sfx %u %u %d %d %d %d %d %d\n", gNow, gFrameNo,
@@ -427,6 +435,7 @@ int main(int argc, char **argv) {
         if (ff) { fwrite(Video::_font, 1, 768, ff); fclose(ff); }
     }
     gSnd = fopen("sound.txt", "w");
+    gLoads = fopen("loads.txt", "w");
     /* The opcode stream, for the first few frames only: it is about 40 bytes an
      * opcode and the engine dispatches thousands a frame in gameplay. */
     if (gTraceFrames) {
@@ -445,6 +454,7 @@ int main(int argc, char **argv) {
     e->init();
     e->run();
     if (gSnd) { fclose(gSnd); gSnd = NULL; }
+    if (gLoads) { fclose(gLoads); gLoads = NULL; }
     if (gOps) { fclose(gOps); gOps = NULL;
                 printf("ops.txt written for the first %u frames\n", gOpFrames); }
     if (gTrace) {

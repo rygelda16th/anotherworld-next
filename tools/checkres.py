@@ -5,11 +5,15 @@ The VM dispatches op_updateMemList and the machine now loads. Three claims:
 
  1. EVERY RESOURCE IT ASKED FOR IS THERE, byte for byte. Not "the loader returned" -
     the pages are read back off the machine and compared against the file on the card.
- 2. IT ASKED FOR THE SAME ONES THE ENGINE DID. **NOT YET CHECKED** - the probe logs loads
-    by time and type, not by resource id, so there is nothing to compare against. A port
-    that silently skipped a load would still pass claims 1 and 3. See the note in main.
- 3. THE HEAP STAYS INSIDE ITS RESERVATION. 40 pages against the reference's measured
-    high-water of 38, and running past it sets a flag rather than wrapping onto Layer 2.
+ 2. IT ASKED FOR THE SAME ONES THE ENGINE DID. **CHECKED** against loads.txt, which the
+    probe writes from instrLoadId where readBank succeeds. It used to log loads by time and
+    type but not by id, so there was nothing to compare against - and a port that silently
+    SKIPPED a load passes claims 1 and 3 without difficulty, because everything it did load
+    is byte-correct and the heap it did not fill is well under its limit.
+ 3. THE HEAP STAYS INSIDE ITS RESERVATION. 96 pages, and running past it sets a flag rather
+    than wrapping onto Layer 2. It was 40 until part 2 was run and lost 22 of its 45 loads:
+    40 came from the reference's 305,919-byte peak, which is 38 pages of a BYTE heap, and
+    ours rounds every resource up to a whole 8K page. The measured high-water is 55.
 """
 import os
 import sys
@@ -24,7 +28,11 @@ EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
 PROBE = "preflight/hostprobe/probe"
 ASSETS = "build/assets"
 CTL = 0xC000
-RES_FIRST_PAGE, RES_MAX_PAGES = 72, 40
+# The EQUs in src/aw.asm. They are duplicated here because the gate must be able to say
+# the reservation was exceeded without trusting the machine's own flag - and RES_MAX_PAGES
+# went 40 -> 96 the day part 2 was first run, so a stale copy would have reported a pass
+# against the wrong ceiling.
+RES_FIRST_PAGE, RES_MAX_PAGES = 72, 96
 NR_MMU7, DWIN = 0x57, 0xE000
 FRAMES = int(os.environ.get("AW_FRAMES", "45"))
 
@@ -50,12 +58,27 @@ def main():
     seed = next(int(l.split()[1]) & 0xFFFF
                 for l in open(os.path.join(PROBE, "ops.txt")) if l.startswith("seed"))
 
-    # CLAIM 2 IS NOT IMPLEMENTED AND THIS SAYS SO. Comparing the machine's load list
-    # against the engine's needs the probe to log resource IDS, and its sound log is keyed
-    # by time and type rather than by id - so there is nothing here to compare against yet.
-    # It matters: a port that quietly skipped a load would pass claims 1 and 3. The probe
-    # needs an instrOp in loadPartsOrMemoryEntry before this can be checked, and until then
-    # the count is reported rather than verified.
+    # CLAIM 2, AND IT IS CHECKED NOW. The probe logs every load by resource id into
+    # loads.txt - instrLoadId, called where readBank succeeds - so "the port asked for the
+    # same resources the engine did" finally has an oracle. It matters because a port that
+    # quietly SKIPPED a load passes claims 1 and 3 without difficulty: everything it did
+    # load is byte-correct, and the heap it did not fill is comfortably under its limit.
+    #
+    # THE FIRST THREE ARE THE PART'S OWN and the machine does not load them this way. This
+    # gate drives the FIXED path - fname poked to RES18.BIN - so the palette, bytecode and
+    # cinematic arrive by name into fixed pages, not onto the heap. The engine loads them at
+    # frame 0 and everything else at frame 3; the runtime set is what op_updateMemList is
+    # responsible for, and it is 23 on both sides.
+    #
+    # SETS, NOT SEQUENCES. loadMarkedAsNeeded picks the highest rankNum still marked and
+    # loops, which is the engine's own scheduling; our loader takes each id as the script
+    # asks for it. Comparing the order would be comparing a decision neither side promised
+    # the other. The set is the claim, and the set is what a skipped load breaks.
+    want_loads = []
+    for ln in open(os.path.join(PROBE, "loads.txt")):
+        f = ln.split()
+        if len(f) == 5 and f[0] == "load" and int(f[1]) > 0:
+            want_loads.append(int(f[2]))
 
     z = Zrcp()
     print(f"emulator: {z.cmd('get-version')}")
@@ -102,6 +125,20 @@ def main():
           + (" ..." if len(loaded) > 12 else ""))
 
     bad = []
+    got_ids = {i for i, _ in loaded}
+    want_ids = set(want_loads)
+    missing = sorted(want_ids - got_ids)
+    extra = sorted(got_ids - want_ids)
+    print(f"  the engine loads {len(want_ids)} at run time; the machine has "
+          f"{len(got_ids)} resident")
+    if missing:
+        bad.append("the engine loaded " + " ".join(f"{i:#04x}" for i in missing)
+                   + " and the machine did not")
+    if extra:
+        bad.append("the machine loaded " + " ".join(f"{i:#04x}" for i in extra)
+                   + " and the engine did not")
+    if not missing and not extra:
+        print("  CLAIM 2 HOLDS: the same resource ids, every one of them")
     if res_err:
         bad.append(f"a load failed with esxDOS error {res_err:#04x}")
     if res_full:

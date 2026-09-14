@@ -79,6 +79,14 @@ extern unsigned instrFrameNow(void);
  */
 extern void instrBitmapId(int id);
 extern void instrBitmapDump(const unsigned char *page0);
+/* ---- seventh round: WHICH resources, by id -------------------------------
+ * I3's second claim - "the port asked for the same resources the engine did" - had no
+ * oracle. instrHeap already logs every load, but keyed by time, type and size, so a port
+ * that silently SKIPPED a load passed the other two claims and this one could not be
+ * written at all. This logs the id, on its own file, so nothing that already parses
+ * sound.txt changes.
+ */
+extern void instrLoadId(int id, int type, int size);
 extern void instrPace(int slices);   /* vmVariables[0xFF] at each blit */
 extern void instrTick(unsigned ms);   /* the virtual clock, for sound.txt */
 #endif
