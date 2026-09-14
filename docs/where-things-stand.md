@@ -59,6 +59,14 @@ Two other things had to be true for that sentence to mean anything, and neither 
 - **`go` was a byte only a debugger writes.** On hardware nothing would ever have written it, so
   the .nex would have waited forever at a black screen.
 
+With those closed the image was left to run, and it went **part 1 into part 2 on its own** - a
+transition the bytecode asked for - and then stopped dead at frame 40. Two more real faults were
+behind that, and both are written up under I10: the resource heap was sized against the
+reference's *byte* high-water with no allowance for our page rounding, so it silently refused 22
+of part 2's 45 loads; and one line of the shared polygon reader restored a memory slot it does
+not own, which is only correct in the harness it was written in. Part 2 now plays continuously
+at 4.8 frames a second. **Nobody has driven it to the ending**, which is what I10 asks for.
+
 See **What "done" means** for the definition and **Chain 2** for the rest.
 
 **All nine gates of Chain 1 pass**, and that is a statement about risk rather than
@@ -2087,12 +2095,12 @@ Same discipline, different question. Chain 1 asked *can this be done*. This asks
 | I8 | the code screen and its bypass | **done** |
 | I9 | save and load | **done**, both halves gated; the round trip holds field for field |
 | I9a | the whole suite, on the game | **in progress** - the twelve gates re-run against this image |
-| I10 | playable to the end | **unblocked**: the image runs. Nothing driven end to end yet |
+| I10 | playable to the end | **in progress**: part 1 to part 2 unaided, part 2 playing at 4.8 fps. Not driven to the end |
 | H1 | real hardware | unrunnable until the KS3 arrives |
 
 **25 gates.** `check-part`, `check-bmp` and `check-save` are new.
 
-### Six things this chain has taught that are not about any one step
+### Seven things this chain has taught that are not about any one step
 
 **1. The C's BSS lives above the image sjasmplus measures, and an assertion that checks the
 image checks nothing.** `ASSERT $ <= MUSIC_CODE` compared the C's *image* end against the music
@@ -2144,6 +2152,23 @@ stopped before its first instruction while every gate - which pokes values in - 
 zero as *no bound* instead costs four bytes across both. The general form: any field a harness
 always writes has a default nobody is testing, and the shipped default is the one the player
 gets.
+
+**7. A shared file that reaches past its own contract is correct only where it was written.**
+`src/inc/raster.inc` is included by both `polytest` and the game, and its header says the
+includer supplies the segment window's slots as `NR_SEG_MMU_LO`/`NR_SEG_MMU_HI`. One line in the
+hierarchy recursion restored `NR_MMU0`/`NR_MMU1` instead. polytest puts the segment on MMU0 and
+MMU1 because it has them spare, so there the two are the same register and the line is right -
+and that is where the reader was written. **The game cannot**: MMU0 and MMU1 are the bytecode
+window and the VM is mid-opcode while the reader runs, so the segment is at `$4000` on MMU2 and
+MMU3. In the game that line wrote segment pages into the bytecode window and left the segment
+window holding whatever the child had mapped, which is what stalled part 2 for good.
+
+No gate could see it, because the harness is the single configuration where the bug is not a
+bug. That is now the third instance of the same shape: the reader's leaf log assumed a
+thirty-two-record buffer that `aw.asm` reserved eight of, and `CC_TOP` measured an image whose
+variables lived above it. **When a file takes its addresses from its includer, every address it
+touches has to come from there** - and the way to test it is to run the same code in the other
+configuration, which `tools/_readbug.py` now does in a single run.
 
 **And one about method.** Guessing from a symptom has cost a gate run every time, and gate runs
 here are ten to fifteen minutes. I5's voice setup, the C's BSS, and I9's load each went the same
