@@ -3152,7 +3152,35 @@ the fault is in `sv_load`. The values are telling: `aw_pc[0]` holds `0x0708`, a 
 counter, where the file holds `0xFFFF` for an inactive thread. That is not corruption - **it is
 the running game's own value, untouched.** The arrays were not written at all.
 
-**That hypothesis was tested and it was WRONG.** `sv_rblock` bails silently on a non-zero `err`,
+**WHAT THE INSTRUMENTATION PROVED, which is the useful part.** `sv_rblock` now records its first
+read - the count, the esxDOS error, and the first byte that landed - into page 10 where a checker
+can read it. Pointed at the `aw_vars` read:
+
+```
+a read was recorded: yes
+it returned BC = 512 bytes, first byte 0x00, esxDOS error 0x00
+the file's aw_vars[0..1] = 0000; on the machine afterwards = 0001
+```
+
+**So the read happens, succeeds, and lands in the right place.** Byte 0 is written correctly and
+is still correct at the end. **Exactly one byte differs**, at offset 1 - which rules out a
+misplaced read, a short read, and a failed read all at once. Something writes `aw_vars[0]` to
+`0x0100` between the load finishing and the comparison.
+
+**Three different freeze mechanisms have failed to stop it** - zeroing `CTL_BUDGET` (only opcodes
+spend budget, so it does not stop the frame the load is in), poking `CTL_FAULT` before the request
+(races the boundary, and the load is then never read at all), and poking `CTL_FAULT` 300ms after
+the request so it lands mid-load (still eight fields wrong). That last one should have worked: the
+C breaks on a fault at the check right after `aw_frame_sync` and before any thread work.
+
+**I have stopped here rather than try a fifth time.** Four attempts have each cost a gate run of
+roughly fifteen minutes and none converged. What is left to establish is simply **what runs**
+between the load and the reading - read `CTL_FRAMES_DONE` either side of the load and see whether
+the loop iterated at all. If it did not, the writer is not the VM and the search moves elsewhere
+entirely; if it did, the freeze is still the problem and the C's loop order needs re-reading rather
+than re-guessing.
+
+**An earlier hypothesis, recorded because it was tested and wrong.** `sv_rblock` bails silently on a non-zero `err`,
 and `load_code` writes `err` during the part setup between the two passes - so clearing `err`
 before pass two looked certain. It changed nothing: the same eight fields, the same values. The
 change is kept because a read pass that silently does nothing on a flag somebody else set is the

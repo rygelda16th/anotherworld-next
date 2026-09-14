@@ -2707,6 +2707,11 @@ sv_entry:
 sv_load:
         xor     a
         ld      (err), a
+        ld      (sv_first), a           ; a fresh run records a fresh first read
+        ld      (sv_got), a
+        ld      (sv_got + 1), a
+        ld      (sv_byte), a
+        ld      (sv_ferr), a
         ld      (sv_done), a            ; cleared here, stamped at the end: a checker has no other
                                         ; way to know a 198,272-byte read has finished
         ld      hl, sv_name
@@ -2781,6 +2786,10 @@ sv_load:
         ld      hl, SV_HDR
         ld      bc, 256
         call    sv_rblock               ; the header again, thrown away: esxDOS has no seek
+        ; RE-ARM THE RECORDER HERE. It fired on the first read of the run, which is pass one's
+        ; header - and that one always worked, so it told me nothing about the reads that matter.
+        xor     a
+        ld      (sv_first), a
         ld      hl, _aw_vars
         ld      bc, 512
         call    sv_rblock
@@ -2924,6 +2933,26 @@ sv_rblock:
         ld      hl, (sv_src)
         rst     $08
         db      F_READ
+        ; EVIDENCE, not another hypothesis. Two guesses from the symptom have cost a gate run
+        ; each; these four bytes say whether a read happened at all, what it returned, and where
+        ; it went. sv_first is set once, by the first read of the run.
+        push    af
+        ld      a, (sv_first)
+        or      a
+        jr      nz, .not_first
+        ld      a, $5A
+        ld      (sv_first), a
+        pop     af
+        push    af
+        jr      c, .first_failed
+        ld      (sv_got), bc            ; what it says it read
+        ld      a, (ix + 0)
+        ld      (sv_byte), a            ; and the first byte that landed
+        jr      .not_first
+.first_failed:
+        ld      (sv_ferr), a
+.not_first:
+        pop     af
         jr      nc, .read
         ld      (err), a
         ret
@@ -3226,6 +3255,14 @@ sv_src:     dw 0
 sv_left:    dw 0
 sv_band:    db 0
 sv_n:       db 0            ; sv_order's count, which a register could not survive
+        EXPORT sv_first
+sv_first:   db 0            ; $5A once the first read of a run has been recorded
+        EXPORT sv_got
+sv_got:     dw 0            ; what that read returned in BC
+        EXPORT sv_byte
+sv_byte:    db 0            ; and the first byte it put down
+        EXPORT sv_ferr
+sv_ferr:    db 0            ; or the esxDOS error, if it failed
         EXPORT sv_done
 sv_done:    db 0            ; $5A once a load has finished; page 10, read by mapping it
 sv_mmu7:    db 0
