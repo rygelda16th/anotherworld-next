@@ -222,6 +222,15 @@ def main():
     print("  the engine to the same blit: "
           + ", ".join(f"{k}={v}" for k, v in sorted(eng.items())))
     if n_blit != BLITS:
+        # SAY WHY. A machine that stops early has left its reason in the control block, and
+        # "stopped after 217" alone sent a run hunting in the wrong place.
+        ctl = read(z, CTL, 0x18)
+        w = lambda o: int.from_bytes(ctl[o:o + 2], "little")
+        print(f"  control block: frames {w(2)}, budget {w(4)}, records {w(6)}, frames done {w(8)}, "
+              f"finished {ctl[0x0A]:#04x}, out of budget {ctl[0x0B]}, bad op {ctl[0x0C]}, "
+              f"fault {ctl[0x0D]}, fault pc {w(0x0E):#06x}, code len {w(0x10)}, fault a {w(0x12):#06x}, "
+              f"div at {w(0x16)}")
+        print(f"  waited {waited:.1f}s; ticks {int.from_bytes(read(z, sym['ticks'], 2), 'little')}")
         raise SystemExit(f"FAIL: it stopped after {n_blit} blits, not {BLITS} - the "
                          f"comparison would not be aligned")
 

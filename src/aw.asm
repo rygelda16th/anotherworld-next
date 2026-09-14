@@ -116,7 +116,10 @@ STACK_TOP       EQU $D400               ; grows down to $D0A0: 864 bytes
 ; runs reached. Do not take more without measuring again.
 STACK_FLOOR     EQU $D0A0
 STACK_CODE      EQU $CF00               ; up to STACK_FLOOR: load_flat, the music clock, dirty bands
-DIRTY_BANDS     EQU 1                   ; raster.inc's band_set reports every band it draws into
+; A DEFINE, NOT AN EQU. sjasmplus's IFDEF tests defines, and an EQU of the same name leaves the
+; IFDEF false without a word - which is how band_set's hook went unassembled for a whole commit
+; while every gate passed. The listing marks skipped lines with `~`; grep it for the call.
+        DEFINE DIRTY_BANDS              ; raster.inc's band_set reports every band it draws into
 ; Code ABOVE the C's image, in the tail the stack vacated when it moved into MMU6. The C is
 ; 7.8K from $9C00 and ends near $BB50, so this is the 1,100-odd bytes between that and $BF00 -
 ; which used to be stack and is now the only resident space left. Asserted at both ends.
@@ -2468,6 +2471,8 @@ draw_char6:
 
         INCLUDE "src/inc/vmhost.inc"
         INCLUDE "src/inc/input.inc"
+        DEFINE RASTER_NO_FILL_PAGE      ; the game fills through aw_fill_page
+        DEFINE RASTER_NO_LEAF_LOG       ; nothing in the game reads rd_log; polytest does
         INCLUDE "src/inc/raster.inc"
 
 ; The ring is resident in MMU6's page, so nothing needs mapping for it - but from I5 each

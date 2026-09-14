@@ -393,9 +393,18 @@ $(INTRO_REF)/trace.bin:
 	cd $(INTRO_REF) && $(CURDIR)/$(PROBE)/probe $(CURDIR)/$(DATA_DIR) 4000 700 0 >probe.out
 	cp $(PROBE)/font.bin $(INTRO_REF)/
 
+#
+# AT A DOZEN BLITS, NOT TWO. With 226 and 699 alone this gate passed a build whose dirty-band hook
+# had not been assembled at all - every copy onto a page that still mirrored its source moved
+# nothing, and the previous frame's shapes stayed - because both of those blits land just after a
+# scene cut, where a page fill resets everything. Spread across the intro, the stale shapes show.
+INTRO_BLITS ?= 30 60 100 140 180 226 260 330 420 520 600 699
 check-intro: $(INTRO_REF)/trace.bin
-	$(MAKE) check-draw AW_BLITS=226 AW_PROBE_DIR=$(INTRO_REF)
-	$(MAKE) check-draw AW_BLITS=699 AW_PROBE_DIR=$(INTRO_REF)
+	@bad=0; for b in $(INTRO_BLITS); do \
+		if $(MAKE) --no-print-directory check-draw AW_BLITS=$$b AW_PROBE_DIR=$(INTRO_REF) \
+				>$(BUILD)/intro-$$b.log 2>&1; then echo "  blit $$b: PASS"; \
+		else echo "  blit $$b: FAIL"; grep -E "page [0-3]: [0-9]|first at" $(BUILD)/intro-$$b.log; bad=1; fi; \
+	done; test $$bad -eq 0
 
 # I1a: the game reads a real keyboard and a Kempston joystick, and the reference's
 # mapping survives the trip. Driven by the emulator's own keys, not by a poke.

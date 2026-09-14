@@ -45,6 +45,8 @@
 ;-----------------------------------------------------------------------------
 ; fill_page - A = first 8K page of a Layer 2 page, C = the byte. All six bands.
 ;-----------------------------------------------------------------------------
+    IFNDEF RASTER_NO_FILL_PAGE
+; The harness's own page fill. The game fills through aw_fill_page and leaves this out.
 fill_page:
         ld      b, BANDS
 .band:
@@ -72,6 +74,8 @@ fill_page:
 ;-----------------------------------------------------------------------------
 ; poly_draw - HL = a polygon record. Mirrors Video::fillPolygon.
 ;-----------------------------------------------------------------------------
+    ENDIF
+
 poly_draw:
         ; ---- parse the record ----
         ld      a, (hl)
@@ -490,12 +494,15 @@ zoom_byte:
         ld      a, b
         adc     a, d
         ld      b, a                    ; B:HL = byte * zoom
-        ld      c, 6
-zb_shr: srl     b
-        rr      h
-        rr      l
-        dec     c
-        jr      nz, zb_shr
+        ; >> 6 IS << 2 THEN >> 8. The six-pass shift loop cost 240 T of the reader's every
+        ; coordinate. Bits 22 and 23 fall off the top on the way, and the result only ever used
+        ; bits 6 to 21 of the product, so it is the same sixteen bits.
+        add     hl, hl
+        rl      b
+        add     hl, hl
+        rl      b
+        ld      l, h
+        ld      h, b
         ret
 
 ; mul_hl_a - HL unsigned times A, >> 8. The >> 8 is a byte shuffle, not a shift.
@@ -589,6 +596,7 @@ poly_read:
         ; computed from them. Comparing the built record says a field is wrong;
         ; comparing the inputs says whether the reader reached the right record in
         ; the first place, which is a different fault with a different cause.
+    IFNDEF RASTER_NO_LEAF_LOG
         push    af
         ld      hl, (rd_log_at)
         ld      de, (rd_off)
@@ -624,6 +632,7 @@ poly_read:
 .log_ok:
         ld      (rd_log_at), hl
         pop     af
+    ENDIF
 
         ; ---- a leaf ----------------------------------------------------------
         ld      d, a
@@ -659,6 +668,48 @@ poly_read:
         ld      (rd_n), a
         ld      hl, rd_record + 10
         ld      (rd_dst), hl
+        ; ZOOM 0x40 IS THE IDENTITY, and 97.4% of the intro's polygons use it. zoom_byte then
+        ; returns the byte it was given, and all that is left is the Next's own scale - one MUL
+        ; per coordinate, whose high byte IS mul_hl_a's `>> 8` for a value under 256. The general
+        ; walk below cost about 2,200 T a vertex in calls, shifts and stores; this costs about 160.
+        ; A profile of the intro's late frames put 62% of the time outside the interrupt in
+        ; poly_read, zoom_byte and mul_hl_a, and 1% in filling spans.
+        ld      hl, (rd_zoom)
+        ld      a, h
+        or      a
+        jr      nz, .each_pt
+        ld      a, l
+        cp      $40
+        jr      nz, .each_pt
+        ld      hl, (rd_src)
+        ld      bc, rd_record + 10
+.fast_pt:
+        ld      d, (hl)
+        inc     hl
+        ld      e, X_MUL
+        mul     d, e                    ; D = (x * 205) >> 8, which is what scale_ux returns
+        ld      a, d
+        ld      (bc), a
+        inc     bc
+        xor     a                       ; and the high byte, always 0 here
+        ld      (bc), a
+        inc     bc
+        ld      d, (hl)
+        inc     hl
+        ld      e, Y_MUL
+        mul     d, e
+        ld      a, d
+        ld      (bc), a
+        inc     bc
+        xor     a
+        ld      (bc), a
+        inc     bc
+        ld      a, (rd_n)
+        dec     a
+        ld      (rd_n), a
+        jr      nz, .fast_pt
+        ld      (rd_src), hl
+        jp      .draw
 .each_pt:
         call    .next_byte
         call    zoom_byte
