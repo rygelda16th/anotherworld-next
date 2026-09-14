@@ -131,14 +131,13 @@ def main():
     # frame's threads then moved pg_ptr1, aw_vars, the call stack and the voices before anything
     # could be read. A fault breaks on the very next check, so the load's frame does no thread
     # work at all and the machine stands still on exactly what the file put there.
-    # THE REQUEST FIRST, THE FAULT SECOND - the same ordering the save half needs, and I got it
-    # backwards here. A fault ends the loop at the very next break check, so poking it first
-    # stops the machine in the gap between two ZRCP commands and nothing is left to read the
-    # request. Asking first means the next frame boundary takes the load, which runs for seconds
-    # with interrupts off; the fault lands during it and breaks the loop the moment it returns,
-    # before that frame's threads run.
+    # NOTHING BUT THE REQUEST. Poking anything that stops the VM alongside it is a race with the
+    # frame boundary - a fault breaks the loop at the check right after aw_frame_sync, so
+    # depending on where the two pokes fall the load either runs or never gets read at all, and
+    # this gate saw both. It is also unnecessary: measured directly, with nothing poked after the
+    # request, the restored fields were identical twelve frames later. A state whose threads the
+    # save caught inactive leaves the VM quiescent, which is the state a load lands in.
     z.cmd(f"write-memory {sym['save_req']} 2")                              # 2 = load
-    z.cmd(f"write-memory {0xC00D} 1")                                       # CTL_FAULT
 
     # sv_done lives in page 10, so reading it means mapping page 10 where it was assembled
     done = False

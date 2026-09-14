@@ -3152,12 +3152,24 @@ the fault is in `sv_load`. The values are telling: `aw_pc[0]` holds `0x0708`, a 
 counter, where the file holds `0xFFFF` for an inactive thread. That is not corruption - **it is
 the running game's own value, untouched.** The arrays were not written at all.
 
-**The likeliest cause, to test first:** `sv_rblock` opens with `ld a,(err) / or a / ret nz`, so a
-non-zero `err` makes every subsequent read silently do nothing while the routine still runs to its
-end and stamps `sv_done`. `sv_load` clears `err` at entry, but between that and the second pass it
-calls `aw_setup_part`, which loads four resources through `load_code` - and `load_code` writes
-`err` itself. The next step is to read `err` at the top of pass two, and to make a failed read
-loud rather than silent.
+**That hypothesis was tested and it was WRONG.** `sv_rblock` bails silently on a non-zero `err`,
+and `load_code` writes `err` during the part setup between the two passes - so clearing `err`
+before pass two looked certain. It changed nothing: the same eight fields, the same values. The
+change is kept because a read pass that silently does nothing on a flag somebody else set is the
+wrong shape regardless, but it was not the fault.
+
+**So the arrays are still never written, and I do not know why.** What is ruled out: the gate's
+freeze (measured), `err` (tested), and the file's layout (the save writes header, `aw_vars`,
+`aw_call_stack`, `aw_pc`, `aw_state`, pages; the load reads them in that order, and the save half
+of the same gate passes against the same offsets).
+
+**The next step is instrumentation, not another hypothesis.** `sv_load` should record what it
+actually did into spare page-10 bytes the checker can read: `err` after pass two's open, the byte
+count the first `F_READ` returned, and the first byte it landed. Three bytes of evidence will say
+whether the reads happened at all, happened and returned nothing, or happened and went somewhere
+else. **Two guesses from the symptom have now cost a gate run each**, which is the same pattern as
+I5's voice setup - where what finally worked was reading the machine rather than reasoning about
+it.
 
 **Two real bugs were found getting this far, both the same shape.** `copy_palette` mapped the
 palette resource into **MMU2** for its source, and `apply_palette` maps the text page into MMU2
