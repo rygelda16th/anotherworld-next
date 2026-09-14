@@ -48,6 +48,7 @@ def main():
         z.cmd(f"write-memory {sym['go']} 1")
 
         t0, marks = time.time(), []
+        pcount_before = w(sym["rd_pcount"])
         for _ in range(SECONDS):
             z.cmd("send-keys-event 128 1 nomenu")
             time.sleep(0.08)
@@ -57,9 +58,17 @@ def main():
 
         frames = marks[-1][1]
         fps = frames / marks[-1][0]
-        # stalled = no frame in the last third of the window
+        # SLOW IS NOT STUCK, and the first version of this reported one as the other. Part 5
+        # draws a frame of 27,531 polygons - the reference's own count, twenty-nine times the
+        # worst frame of any other part - and the machine takes about twenty seconds over it at
+        # the 1,385 polygons a second it sustains. No frame advanced in the window, so this
+        # called it STALLED; run for two minutes instead and it reaches 384 frames.
+        #
+        # A frame that is still drawing is a frame in progress, and rd_pcount says so. Only a
+        # machine that is neither advancing frames NOR drawing polygons is stuck.
         third = marks[len(marks) * 2 // 3][1]
-        stalled = frames == third
+        drawing = w(sym["rd_pcount"]) != pcount_before
+        stalled = frames == third and not drawing
         flt, oob = read(FAULT, 1)[0], read(OUT_OF_BUDGET, 1)[0]
         full, err = read(sym["res_full"], 1)[0], read(sym["res_err"], 1)[0]
         pages = read(sym["next_page"], 1)[0] - RES_FIRST_PAGE
@@ -74,11 +83,13 @@ def main():
         if err:
             why.append(f"load error {err:#04x}")
         if stalled:
-            why.append(f"STALLED at {frames}")
+            why.append(f"STUCK at {frames}: no frame and no polygon")
+        elif frames == third:
+            why.append(f"SLOW: still drawing frame {frames + 1}")
         if not frames:
             why.append("never ran a frame")
         verdict = "; ".join(why) if why else "runs"
-        if why:
+        if why and "SLOW" not in verdict:
             bad.append((part, verdict))
 
         print(f"  {part:<5} {NAMES[part]:<13} {fps:5.1f} {frames:7,} "

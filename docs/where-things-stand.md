@@ -3423,7 +3423,7 @@ a run that never saved. The stream comparison is the real test; a state dump tha
 resume wrongly.
 
 
-#### I10. Playable to the end
+#### I10. Playable to the end - IN PROGRESS. Ten parts run; the budget is measured; nobody has played it to the end.
 
 Every part, real input, sound, from the first screen to the ending.
 
@@ -3431,6 +3431,76 @@ Every part, real input, sound, from the first screen to the ending.
 budget re-measured against the per-part table in *Phase F*. The playthrough is the
 gate. Nothing smaller is a substitute for it, which is the whole reason this chain
 exists.
+
+**All ten parts boot, load, draw and keep running** (`make diag D=_allparts`). `start_part`
+made that measurable: `BYPASS_PROTECTION` picks a starting part at BUILD time, and the only
+run-time route to another was `probe_part`, which sets a part up and stops before the VM runs -
+so "every part" could be checked for setup and never for play. It is the index plus one, zero
+meaning the build's own choice, so no gate that does not poke it sees any change. Eight bytes.
+
+| part | what | fps | heap pages | |
+|---|---|---|---|---|
+| 0 | protection | 4.1 | 46 | |
+| 1 | introduction | 3.9 | 46 | |
+| 2 | gameplay | 4.0 | 46 | |
+| 3 | gameplay | 4.6 | **55** | the heap high-water |
+| 4 | gameplay | 4.0 | 54 | |
+| 5 | battlechar | 3.5 | 26 | with 20-second outlier frames - see below |
+| 6 | gameplay | 3.7 | 51 | |
+| 7 | gameplay | 6.4 | 24 | |
+| 8, 9 | password | **12.5** | 3 | 80 ms a frame, exactly what the scripts ask |
+
+**The password screens run at exactly the rate their script requests**, which is the first
+confirmation ON THE MACHINE that the pacing is right rather than modelled. The three-to-six a
+second the drawing-heavy parts sustain is therefore the rasteriser's cost, not a pacing fault.
+
+**And the heap high-water is 55 pages, against the 40 that were reserved until today.** Forty
+came from the reference's 305,919-byte peak, which is 38 pages of a BYTE heap; ours rounds every
+resource to a whole 8K page. Part 2 hit the ceiling and silently lost 22 of its 45 loads.
+
+##### The per-part polygon table, which is what the gate asks to measure against
+
+Taken from the reference itself, by running the host probe into each part with `instrJumpPart`
+(argv[5]) in a scratch directory so the gates' own fixtures are untouched. 400 frames each:
+
+| part | mean polys/frame | p95 | worst |
+|---|---|---|---|
+| 0 protection | 0 | 0 | 1 |
+| 1 introduction | 10 | 14 | 270 |
+| 2 gameplay | 87 | 138 | 956 |
+| 3 gameplay | 54 | 72 | 607 |
+| 4 gameplay | 18 | 25 | 994 |
+| **5 battlechar** | **201** | 123 | **27,531** |
+| 6 gameplay | 50 | 84 | 243 |
+| 7 gameplay | 22 | 33 | 1,407 |
+| 8, 9 password | 4 | 4 | 141 |
+
+**Every part sits at 138 polygons or fewer for 95% of its frames**, so the typical frame is
+comfortable everywhere. The whole exposure is a handful of outliers, and they are concentrated
+in one part: **part 5's worst frame needs 27,531 polygons, twenty-nine times the worst of any
+other part.**
+
+**The machine sustains about 1,385 polygons a second**, measured over a dozen consecutive
+four-second samples while it drew exactly that frame - a far better figure than anything
+modelled, and it includes span fill, the interrupt and the mixer. So part 5's outlier frames
+take **about twenty seconds each**, and `make diag D=_part5long` shows exactly that: one frame
+for the first 25 seconds, then 27 to 31 frames per four seconds, then another 20-second frame,
+reaching 384 frames in 123 seconds.
+
+**That is not a fault and the machine is not wrong.** `rd_bad` and `rd_deep` are both zero
+throughout: it draws every one of those 27,531 records correctly. It is a PERFORMANCE finding,
+and it is the first that contradicts the headline in *What has been measured* - which says the
+rasteriser uses a quarter of the time available and 0.73% of frames overrun. **That was measured
+on the intro**, whose worst frame is 270 polygons. Part 5's is a hundred times larger.
+
+**SLOW IS NOT STUCK, and the checker said the wrong one first.** `_allparts` reported part 5 as
+STALLED because no frame advanced inside its fourteen-second window. A frame still drawing is a
+frame in progress, and `rd_pcount` says so; only a machine advancing neither frames nor polygons
+is stuck. The checker now tests both, because a gate that mislabels a slow part as a broken one
+sends the next session hunting a bug that is not there.
+
+**Still owed here:** real input driving a part rather than a tapped fire button, and the
+playthrough itself.
 
 #### H1. Real hardware
 
