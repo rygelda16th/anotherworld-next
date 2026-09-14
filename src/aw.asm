@@ -106,7 +106,7 @@ STACK_FLOOR     EQU $CF00
 ; polices it, so a C that grows past here fails the build loudly rather than quietly overwriting
 ; the music code - and the 136 bytes reclaimed from the old $BB58 are what let I7's present_bitmap
 ; and voice_locate move up here when the resident block had nothing left.
-MUSIC_CODE      EQU $BAD0
+MUSIC_CODE      EQU $BAE0
 INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
 ; I3's tables, in MMU6's page rather than the resident region, which the rasteriser and
 ; the C had already filled: 584 bytes of resource table and 146 of load state is 730, and
@@ -567,44 +567,6 @@ start:
         ld      (done), a
 .hold:  di
         jr      .hold
-
-;-----------------------------------------------------------------------------
-; aw_frame_sync - the frame boundary, called once a frame by the C.
-;
-; The harness returns from this immediately; the game waits here for the frame
-; interrupt. THAT IS ALL IT DOES - the sound is refilled by the interrupt itself, not
-; from here, for two reasons. It is where E1 says the frame loop ends up anyway. And
-; it means the sound survives the C's frame loop finishing: vm.c's main never returns,
-; so a mixer called only from this hook would go silent the moment the last frame ran
-; and there would be nothing left to soak-test.
-;
-; The pacing is one refresh a frame, NOT the script's requested pause. The script asks
-; for four or five slices and E1 proved the arithmetic for honouring it; wiring that in
-; is I2's business, because until the VM draws there is nothing whose deadline could be
-; missed.
-;-----------------------------------------------------------------------------
-aw_frame_sync:
-        call    music_tick
-        ; EI, EVERY FRAME, AND IT IS NOT BELT-AND-BRACES. z88dk's CRT does `di` as its
-        ; FIRST instruction - $8C00 is F3 - so the `ei` before `call CC_ORG` is undone
-        ; before the C runs a line. The machine then spun here forever waiting for a
-        ; tick that could not arrive: PC at $8066, ticks frozen at 165, IFF--.
-        ;
-        ; The CRT owns the interrupt state at BOTH ends. It disables on entry and, as
-        ; Gate D found the hard way, enables on exit with `im 1 / ei / ret`. Anything
-        ; that needs interrupts while C is running has to assert that for itself, and
-        ; the frame boundary is the place to do it.
-        ei
-        push    hl
-        push    de
-        ld      hl, (ticks)
-.spin:  ld      de, (ticks)
-        ld      a, e
-        cp      l
-        jr      z, .spin                ; one frame interrupt
-        pop     de
-        pop     hl
-        ret
 
 ;-----------------------------------------------------------------------------
 ; mix_block - A = how many samples, into the ring at (ring_wr), which wraps.
@@ -1619,6 +1581,56 @@ resident_end:                           ; where the ordinary resident block reac
         ORG     MUSIC_CODE
 
 ;-----------------------------------------------------------------------------
+; aw_frame_sync - the frame boundary, called once a frame by the C.
+;
+; The harness returns from this immediately; the game waits here for the frame
+; interrupt. THAT IS ALL IT DOES - the sound is refilled by the interrupt itself, not
+; from here, for two reasons. It is where E1 says the frame loop ends up anyway. And
+; it means the sound survives the C's frame loop finishing: vm.c's main never returns,
+; so a mixer called only from this hook would go silent the moment the last frame ran
+; and there would be nothing left to soak-test.
+;
+; The pacing is one refresh a frame, NOT the script's requested pause. The script asks
+; for four or five slices and E1 proved the arithmetic for honouring it; wiring that in
+; is I2's business, because until the VM draws there is nothing whose deadline could be
+; missed.
+;-----------------------------------------------------------------------------
+aw_frame_sync:
+        ; I9. A SAVE HAPPENS AT THE FRAME BOUNDARY, which is where the reference does it - the
+        ; engine tests sys->input.save between frames (engine.cpp:98-104), never mid-opcode, and
+        ; for the same reason: half the state is the VM's and it is only consistent here.
+        ; save_req is a byte so that a key, a checker or a menu can all set it the same way.
+        ld      a, (save_req)
+        or      a
+        jr      z, .no_save
+        xor     a
+        ld      (save_req), a
+        call    aw_save
+.no_save:
+        call    music_tick
+        ; EI, EVERY FRAME, AND IT IS NOT BELT-AND-BRACES. z88dk's CRT does `di` as its
+        ; FIRST instruction - $8C00 is F3 - so the `ei` before `call CC_ORG` is undone
+        ; before the C runs a line. The machine then spun here forever waiting for a
+        ; tick that could not arrive: PC at $8066, ticks frozen at 165, IFF--.
+        ;
+        ; The CRT owns the interrupt state at BOTH ends. It disables on entry and, as
+        ; Gate D found the hard way, enables on exit with `im 1 / ei / ret`. Anything
+        ; that needs interrupts while C is running has to assert that for itself, and
+        ; the frame boundary is the place to do it.
+        ei
+        push    hl
+        push    de
+        ld      hl, (ticks)
+.spin:  ld      de, (ticks)
+        ld      a, e
+        cp      l
+        jr      z, .spin                ; one frame interrupt
+        pop     de
+        pop     hl
+        ret
+
+
+;-----------------------------------------------------------------------------
 ; voice_locate - A = a resource id and (mp_chan) = the channel. On exit mv_page holds the
 ; resource's first page and IX points at that channel's voice. Carry set means the resource is
 ; not resident, and nothing was written.
@@ -2571,6 +2583,8 @@ n_str:      dw 0
         EXPORT n_str_miss
 n_str_miss: dw 0
 res_type:   db 0
+        EXPORT save_req
+save_req:   db 0            ; nonzero at a frame boundary: write the save and clear this
 paged_saved: db 0           ; what MMU2 held before the paged code was called in
 bmp_src:    db 0            ; present_bitmap's walking source and destination bands
 bmp_dst:    db 0
@@ -2630,72 +2644,332 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
 ;-----------------------------------------------------------------------------
 ; PAGE 10, at $4000. See PAGED_PAGE for why anything is here at all.
 ;-----------------------------------------------------------------------------
+        ; THE C'S OWN SYMBOL TABLE. tools/mkexp.py turns the C's link map into EQUs, which is
+        ; how the paged save reads aw_vars and the rest without a byte of C code - and the C
+        ; could not have grown by a byte to help. It is included here rather than at the top
+        ; because only this region needs it.
+        INCLUDE "build/aw_vm_c.exp"
+
         ORG PAGED_WIN
-write_file_body:
-        ld      (wf_src), hl
-        ld      (wf_left), bc
+;-----------------------------------------------------------------------------
+; I9. THE SAVE, all of it, in page 10. See PAGED_PAGE for why it is up here: the resident block
+; has four bytes left and the C cannot grow by one, and this is the only region with room.
+;
+; It needs NO new resident state, which is the point worth recording. Both things a save has to
+; know that nothing keeps are DERIVED here instead:
+;
+;   which part is running   part_table's rows name a bytecode resource each, and code_add + 1
+;                           holds the page that resource landed at - so matching one against the
+;                           other identifies the part, and no cur_part byte has to exist
+;   the heap's load order   res_page maps id to first page, so walking pages upward from
+;                           RES_FIRST_PAGE and asking which id owns each recovers the order
+;                           saveOrLoad writes (resource.cpp:358 derives it the same way, by
+;                           walking _memPtrStart)
+;
+; Five objects serialise in the reference, in this order (engine.cpp:136-138): the VM, the
+; resources, the video, the player and the mixer. Ours is not their layout - nothing reads our
+; saves but us - so what matters is that every one of the five is here.
+;
+; INTERRUPTS ARE OFF throughout. esxDOS wants them off across a call, and a band is written out
+; of MMU7 which the mixer borrows fifty times a second - so a save is silent for its duration,
+; as the reference's is.
+;-----------------------------------------------------------------------------
+SV_HDR          EQU PAGED_WIN + $1000   ; 256 bytes of header, built here before it is written
+SV_BANDS        EQU 24                  ; four Layer 2 pages of six 8K bands
+
+sv_save:
+        di
         xor     a
         ld      (err), a
+        ; ITS OWN NAME. fname is what the BOOT path reads to decide between the fixed load every
+        ; gate uses and starting a part, so a save cannot borrow it without meaning something
+        ; else the next time the machine comes up. It is only read at boot, so overwriting it
+        ; here is free.
+        ld      hl, sv_name
+        ld      de, fname
+        ld      bc, 11
+        ldir
+        call    sv_header
+        call    sv_open
+        ld      a, (err)
+        or      a
+        jr      nz, .done
+        ; the header, then the VM's four arrays, then every band
+        ld      hl, SV_HDR
+        ld      bc, 256
+        call    sv_block
+        ld      hl, _aw_vars
+        ld      bc, 512
+        call    sv_block
+        ld      hl, _aw_call_stack
+        ld      bc, 512
+        call    sv_block
+        ld      hl, _aw_pc
+        ld      bc, 256                 ; aw_pc and aw_pc_req are adjacent and both 128
+        call    sv_block
+        ld      hl, _aw_state
+        ld      bc, 128                 ; aw_state and aw_state_req likewise
+        call    sv_block
+        call    sv_pages
+.done:
+        call    sv_close
+        ei
+        ret
 
+; The header: everything scattered, gathered once.
+sv_header:
+        ld      hl, sv_magic
+        ld      de, SV_HDR
+        ld      bc, 4
+        ldir
+        call    sv_which_part
+        ld      (SV_HDR + 4), a
+        ld      a, (pal_now)
+        ld      (SV_HDR + 5), a
+        ld      a, (pal_req)
+        ld      (SV_HDR + 6), a
+        ld      a, (pg_ptr1)
+        ld      (SV_HDR + 7), a
+        ld      a, (pg_ptr2)
+        ld      (SV_HDR + 8), a
+        ld      a, (pg_ptr3)
+        ld      (SV_HDR + 9), a
+        ld      a, (_aw_sp)
+        ld      (SV_HDR + 10), a
+        ld      a, (_aw_goto_next)
+        ld      (SV_HDR + 11), a
+        ld      hl, (_aw_part_req)
+        ld      (SV_HDR + 12), hl
+        ; the player - every byte of it, because a save mid-note has to restore the note
+        ld      a, (mus_res)
+        ld      (SV_HDR + 16), a
+        ld      a, (mus_playing)
+        ld      (SV_HDR + 17), a
+        ld      a, (mus_page)
+        ld      (SV_HDR + 18), a
+        ld      a, (mus_cur_order)
+        ld      (SV_HDR + 19), a
+        ld      hl, (mus_cur_pos)
+        ld      (SV_HDR + 20), hl
+        ld      a, (mus_count)
+        ld      (SV_HDR + 22), a
+        ld      a, (mus_frames)
+        ld      (SV_HDR + 23), a
+        ld      hl, (mus_delay_raw)
+        ld      (SV_HDR + 24), hl
+        ld      hl, (mus_mark)
+        ld      (SV_HDR + 26), hl
+        ld      a, (mus_num_order)
+        ld      (SV_HDR + 28), a
+        ; the mixer: four voice records, verbatim
+        ld      hl, VOICES
+        ld      de, SV_HDR + 32
+        ld      bc, V_SIZE * 4
+        ldir
+        ; and the heap's load order
+        jp      sv_order
+
+; A = the part index, derived. code_add + 1 is the page the current bytecode landed at, and each
+; row of part_table names a bytecode resource in its second byte.
+sv_which_part:
+        ld      a, (code_add + 1)
+        ld      c, a
+        ld      hl, part_table + 1
+        ld      b, 0                    ; B = the row
+.row:
+        ld      a, (hl)                 ; this part's bytecode resource
+        push    hl
+        ld      h, 0
+        ld      l, a
+        ld      de, res_page
+        add     hl, de
+        ld      a, (hl)
+        pop     hl
+        cp      c
+        jr      z, .found
+        inc     b
+        ld      a, b
+        cp      10
+        jr      nc, .unknown
+        ld      de, 4
+        add     hl, de
+        jr      .row
+.found:
+        ld      a, b
+        ret
+.unknown:
+        ld      a, $FF                  ; no row matches: recorded rather than guessed
+        ret
+
+; The resident ids in heap order, into SV_HDR + 128, and the count at SV_HDR + 15.
+;
+; res_page maps id to first page, so walking pages upward from RES_FIRST_PAGE and asking which id
+; owns each recovers the order saveOrLoad writes - resource.cpp:358 derives it the same way, by
+; walking _memPtrStart. Stepping past a resource's whole page count matters: without it the
+; SECOND page of a six-page bitmap would look like another resource starting.
+;
+; THE COUNT LIVES IN MEMORY, not in D. It was in D, and `ld de, res_table` three instructions
+; later destroyed it - which the gate caught as a list of zeros.
+sv_order:
+        xor     a
+        ld      (sv_n), a
+        ld      hl, SV_HDR + 128
+        ld      a, RES_FIRST_PAGE
+        ld      c, a                    ; C = the page being asked about
+.page:
+        ld      a, (next_page)
+        cp      c
+        jr      z, .done_order          ; the cursor: nothing at or past it is resident
+        jr      c, .done_order
+        push    hl
+        ld      b, 0                    ; B = the id being tried
+        ld      hl, res_page
+.try:
+        ld      a, (hl)
+        cp      c
+        jr      z, .owner
+        inc     hl
+        inc     b
+        ld      a, b
+        or      a
+        jr      nz, .try
+        pop     hl
+        inc     c                       ; nothing owns this page: step over the gap
+        jr      .page
+.owner:
+        pop     hl
+        ld      (hl), b                 ; this id starts here
+        inc     hl
+        ld      a, (sv_n)
+        inc     a
+        ld      (sv_n), a
+        cp      64
+        jr      nc, .done_order         ; the header holds 64, as the reference's list does
+        ; step past the whole resource, so its later pages are not read as another one
+        push    hl
+        ld      h, 0
+        ld      l, b
+        add     hl, hl
+        add     hl, hl
+        ld      de, res_table
+        add     hl, de
+        inc     hl
+        inc     hl
+        inc     hl
+        ld      a, (hl)                 ; its page count
+        pop     hl
+        or      a
+        jr      nz, .step
+        inc     a                       ; a zero-page resource would not advance C at all
+.step:
+        add     a, c
+        ld      c, a
+        jr      .page
+.done_order:
+        ld      a, (sv_n)
+        ld      (SV_HDR + 15), a
+        ret
+
+; The four Layer 2 pages, band by band, out of MMU7 - which is borrowed and put back because the
+; mixer reads a sample through the same slot.
+sv_pages:
+        ld      bc, $243B
+        ld      a, NR_DWIN_MMU
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        ld      (sv_mmu7), a
+        ld      a, L2_BASE_BANK * 2
+        ld      (sv_band), a
+        ld      b, SV_BANDS
+.band:
+        push    bc
+        ld      a, (sv_band)
+        nextreg NR_DWIN_MMU, a
+        ld      hl, DWIN
+        ld      bc, $2000
+        call    sv_block
+        ld      hl, sv_band
+        inc     (hl)
+        pop     bc
+        djnz    .band
+        ld      a, (sv_mmu7)
+        nextreg NR_DWIN_MMU, a
+        ret
+
+sv_open:
         ld      a, ESX_DRIVE
         ld      ix, fname
         ld      hl, fname
         ld      b, FA_WRITE
         rst     $08
         db      F_OPEN
-        jr      nc, .opened
+        ret     nc
         ld      (err), a
         ret
-.opened:
-        ld      (handle), a
+
+; HL = source, BC = length. Written in 2K pieces, because one promise about how much esxDOS takes
+; at a time is one promise too many.
+sv_block:
+        ld      a, (err)
+        or      a
+        ret     nz
+        ld      (sv_src), hl
+        ld      (sv_left), bc
 .next:
-        ld      hl, (wf_left)
+        ld      hl, (sv_left)
         ld      a, h
         or      l
-        jr      z, .close
-        ; at most 2K a call, so a long write is a loop rather than a promise about esxDOS
-        ld      bc, $0800
+        ret     z
         ld      de, $0800
         or      a
         sbc     hl, de
         jr      nc, .full
-        ld      bc, (wf_left)
+        ld      bc, (sv_left)
+        jr      .go
 .full:
+        ld      bc, $0800
+.go:
         ld      a, (handle)
-        ld      ix, (wf_src)
-        ld      hl, (wf_src)
+        ld      ix, (sv_src)
+        ld      hl, (sv_src)
         rst     $08
         db      F_WRITE
         jr      nc, .wrote
         ld      (err), a
-        jr      .close
+        ret
 .wrote:
         ld      a, b
         or      c
-        jr      z, .close               ; it wrote nothing: stop rather than spin
-        ld      hl, (wf_src)
+        ret     z                       ; it took nothing: stop rather than spin
+        ld      hl, (sv_src)
         add     hl, bc
-        ld      (wf_src), hl
-        ld      hl, (wf_left)
+        ld      (sv_src), hl
+        ld      hl, (sv_left)
         or      a
         sbc     hl, bc
-        ld      (wf_left), hl
+        ld      (sv_left), hl
         jr      .next
-.close:
+
+sv_close:
         ld      a, (handle)
         rst     $08
         db      F_CLOSE
         ret
 
-wf_src:     dw 0
-wf_left:    dw 0
+sv_magic:   db "AWS1"
+sv_name:    db "AWSAVE.BIN", 0
+sv_src:     dw 0
+sv_left:    dw 0
+sv_band:    db 0
+sv_n:       db 0            ; sv_order's count, which a register could not survive
+sv_mmu7:    db 0
         DISPLAY "> paged code at ", /H, PAGED_WIN, " ending ", /H, $
-        ASSERT $ <= PAGED_WIN + $2000
+        ASSERT $ <= SV_HDR
 
         ORG PART_CODE
 ;-----------------------------------------------------------------------------
-; aw_write_file - HL = source address, BC = length, (fname) = the name. Writes a file through
-; esxDOS and returns with (err) set or zero.
+; aw_save - writes the whole save to (fname). All of it lives in page 10; this is the borrow.
 ;
 ; The BODY of this lives in page 10, at $4000, because the resident 16K had four bytes left in
 ; it. All that is down here is the borrow: map page 10 at MMU2, call in, put back what was
@@ -2703,9 +2977,7 @@ wf_left:    dw 0
 ; reads, so what is put back hardly matters - but reading it first costs three instructions and
 ; means this is safe to call from anywhere.
 ;-----------------------------------------------------------------------------
-aw_write_file:
-        push    hl
-        push    bc
+aw_save:
         ld      bc, $243B
         ld      a, NR_PAGED_MMU
         out     (c), a
@@ -2714,9 +2986,7 @@ aw_write_file:
         ld      (paged_saved), a
         ld      a, PAGED_PAGE
         nextreg NR_PAGED_MMU, a
-        pop     bc
-        pop     hl
-        call    write_file_body
+        call    sv_save
         ld      a, (paged_saved)
         nextreg NR_PAGED_MMU, a
         ret

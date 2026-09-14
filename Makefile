@@ -25,7 +25,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
-        check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-bitmap \
+        check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-save check-bitmap \
         toolchain-diff
 
 help:
@@ -275,6 +275,13 @@ check-aw: cc-game
 	$(MAKE) asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkaw.py'
+
+# I9, first half: the save, against the machine's own state.
+check-save: cc-game
+	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
+	$(MAKE) asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checksave.py'
 
 # I7: a full-screen bitmap on the machine, against mkassets.py's deplaner.
 check-bmp: cc-game

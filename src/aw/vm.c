@@ -766,7 +766,7 @@ uint8_t aw_host_frame(void) __z88dk_fastcall
 
 int main(void)
 {
-    uint16_t f;
+    uint16_t f, frames;
 
     /* EVERYTHING initialised explicitly, and nothing trusted to start at zero.
      *
@@ -798,7 +798,13 @@ int main(void)
     CTL_FAULT_PC = 0;
     CTL_FAULT_A = 0;
     CTL_DIV_AT = 0;
-    for (f = 0; f < CTL_FRAMES; ++f) {
+    /* THE GAME RUNS UNBOUNDED; ONLY A HARNESS HAS A FRAME COUNT. CTL_FRAMES is zero-filled in
+     * the image and every checker pokes it, so zero means nobody asked for a limit - and the
+     * game as shipped was running EXACTLY that many frames. I8 set up part 0 correctly and then
+     * did nothing, which check-part could not see because it proves the part is set up and
+     * stops there. That limit was written down under I6 and this is it biting. */
+    frames = CTL_FRAMES ? CTL_FRAMES : 0xFFFFu;
+    for (f = 0; f < frames; ++f) {
         aw_frame_sync();
 
         /* THE PART REQUEST, at the top of the frame and before any thread runs - which is

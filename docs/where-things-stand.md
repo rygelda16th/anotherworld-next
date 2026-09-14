@@ -3064,7 +3064,44 @@ a code and the player types it. That is `op_drawString` and the keyboard, both o
 driven by part 0's own bytecode - so it should need no new code, but nothing has watched it run.
 That is I10's business, and `BYPASS_PROTECTION` is what makes I10 reachable without it.
 
-#### I9. Save and load - NOT DONE. The space to write it in exists now; the save itself does not.
+#### I9. Save and load - THE SAVE IS DONE AND GATED, `make check-save`. The load is not.
+
+**A 198,272-byte save, written from page 10 through esxDOS, every field matching the machine it
+was taken from** - the VM's variables, call stack, thread pcs and channel flags byte for byte; the
+palette and page state; the player down to its pattern position; all four voice records; the
+heap's load order; and all 24 bands of the four Layer 2 pages. The load order for part 0 comes out
+`0x14 0x15 0x16` - its palette, bytecode and cinematic, in heap order.
+
+**It cost ZERO resident bytes**, which is the only reason it could be written at all. Both things
+a save has to know that nothing keeps are **derived** in page 10 instead:
+
+| | |
+|---|---|
+| which part is running | `part_table`'s rows each name a bytecode resource, and `code_add + 1` holds the page that resource landed at - so matching one against the other identifies the part, and no `cur_part` byte has to exist |
+| the heap's load order | `res_page` maps id to first page, so walking pages upward from `RES_FIRST_PAGE` and asking which id owns each recovers it - which is how `resource.cpp:358` derives it too, by walking `_memPtrStart`. Stepping past a resource's whole page count matters: without it the second page of a six-page bitmap reads as another resource starting |
+
+The C's own symbol table does the rest: `tools/mkexp.py` turns its link map into EQUs, so the paged
+save reads `aw_vars` and the rest directly. **No C code was written for I9 at all**, which was
+forced - the C could not grow by a byte - and turned out better than the alternative.
+
+**A save happens at the frame boundary**, where the reference tests `sys->input.save`
+(`engine.cpp:98-104`), never mid-opcode, and for the same reason: half the state is the VM's and
+it is only consistent there. Interrupts are off throughout - esxDOS wants them off, and a band is
+written out of MMU7 which the mixer borrows fifty times a second - so a save is silent for its
+duration, as the reference's is.
+
+**AND IT FOUND THAT I8 HAD SHIPPED A GAME THAT RAN ZERO FRAMES.** The C's frame loop was bounded
+by `CTL_FRAMES`, which is zero-filled in the image and poked by every checker - so booting normally
+set part 0 up correctly and then did nothing at all. `check-part` could not see it, because it
+proves the part is *set up* and stops there; that limit is written down under I6 in as many words,
+and this is it biting. The loop now treats zero as unbounded. **A gate that stops one step short
+of the thing you care about will let exactly that thing through.**
+
+**What is left of I9:** the load. Reading the file back is the mirror of writing it, with one
+piece of real work - the resident resources have to be reloaded **in the saved order** so the heap
+reconstructs identically - and then the gate the plan asks for: save mid-part, reload, and compare
+the opcode stream from that point against a run that never saved. The stream comparison is the
+real test; a state dump that matches can still resume wrongly.
 
 **The program ran out of the 48K it can address at once, and I9 is the step that hit the wall.**
 The resident block ends at `$9C04` against a `$9C08` ceiling - **four bytes** - and the C's image
