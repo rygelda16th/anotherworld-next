@@ -3622,44 +3622,50 @@ the probe logs that as `thread <frame> 0 0`; the first is the boot, the next is 
 `tools/mkpartops.py` cuts there and renumbers, and the result then opens record for record with
 what the machine had already produced.
 
-**I2's obstacle was real and was measured away.** `check-draw` aligns machine and reference on
-a blit, and for a gameplay part the two do not start from the same picture: the probe reaches
-part 2 by JUMPING into it, so its pages carry part 1's leftovers, while a machine booting through
-`start_part` begins with whatever boot left. Rather than assume part 2 overwrites them, the same
-trace was replayed from two different starting pictures: pages 0 and 3 differ in **all 49,152
-bytes** at one, two and three blits, and **all four are identical at five**. The part change is
-at blit 3 - read out of the trace, not assumed - so the machine's blit K aligns with trace blit
-K+3 and anything from K=2 is past it.
+**I2 IS CLOSED AGAINST A GAMEPLAY PART**, `make check-draw AW_PART=2`: all four pages
+byte-identical at blits 5, 6 and 8. It took four attempts, and **the first three were faults in
+the CHECKER, not in the port** - which is the part worth reading.
 
-**And then it renders part 2 byte-exact, and then it does not.**
+| what I believed | what the measurement said |
+|---|---|
+| the replay must start at the part change, not the trace's start | true, and it changed nothing - part 2 clears every page within one blit |
+| the page pointers were inverted, the engine arriving "warm" and the machine "cold" | refuted: `pg_ptr2` and `pg_ptr3` agree at every blit, and the engine's at the part change are 2/2/1, the machine's own defaults |
+| `pg_ptr1` could be compared against the reference's `cur1` | it could not, and asking why found the real gap below |
+| the rasteriser was wrong on part 2's geometry | it was not. The gate was stopping a FRAME late |
 
-| machine blit | trace blit | result |
-|---|---|---|
-| 3, 4, 5 | 6, 7, 8 | **all four pages identical**, 196,608 bytes |
-| 6 | 9 | page 2 differs in **100%** of its bytes |
-| 8 | 11 | page 2 differs in **0.97%**, and every draw had the engine's operands |
+**The actual fault was the stop.** `aw_blit` ended the run by setting `CTL_OUT_OF_BUDGET`, which
+`aw_host_frame` tests BETWEEN THREADS - so the thread that was running carried on to its own
+`pauseThread`, and everything it drew after the blit landed on a page. The reference stops
+exactly AT the blit. The two were compared a variable amount of work apart. `execute_thread`
+tests `CTL_FAULT` after every opcode, so a fault set in `aw_blit` ends the thread on the blit
+itself: same two instructions, one byte of address.
 
-Identical, then wholly different, then almost identical again is not a persistent fault - it is
-a **transient**, and 100% of a page changing at once is a fill or a copy, not a polygon.
+It presented as page 2 differing in **100%** of its bytes while the other three agreed - the
+extra polygons, on a page the engine had not touched since - and page 0 agreed *because* the
+engine fills page 0 after drawing there, erasing its own work while nothing erased ours. **Three
+pages agreeing was the signature of the fault, not evidence against it.**
 
-**What part 2 does that the intro never does is now known exactly.** The two traces use
-different page IDENTIFIERS, and the intro exercises only some of them:
+##### And no trace in this project had ever recorded a page select
 
-| | intro | part 2 |
-|---|---|---|
-| `copy 3 -> 255` | never | **21 times** |
-| `fill page 255` | never | **2** |
-| `fill page 3` | never | **3** |
-| `copy 64 -> 255` | 37 | 2 |
-| `fill page 0/1/2` | one each | several |
+Chasing the third wrong belief found a real gap in the oracle. `instrOp` is called with kind 2
+for a fill, 3 for a copy and 5 for a blit. **Kind 4 is the select, `tools/refvideo.py` has always
+decoded it, and nothing ever wrote it** - `changePagePtr1` was uninstrumented. So every trace
+records which page each polygon LANDED on and never which page the engine CHOSE, and
+`check-draw` cannot distinguish a wrong picture from a right picture drawn onto the wrong page.
+Part 2's trace now carries 29 selects where it carried none; only that fixture was regenerated,
+so the committed intro oracles every other gate rests on are untouched.
 
-255 and 64 are not physical pages. `getPagePtr` resolves `$FF` to the current front buffer and
-`$FE` to the back one; `copyPage` masks its source with `$BF` first, so 64 means page 0. Both
-`resolve_page` and `aw_copy_page` were read against `video.cpp` line by line - the `>= $FE` test,
-the `& $BF` mask, the bit-7 scroll branch, the src==dst early return - and **they agree**. So the
-fault is not in resolving an id; it is in the ORDER or TIMING of a fill or copy that only part 2
-performs, and the three rows above are where to look. Bisecting to the exact record needs
-`tools/bisectdraw.py` pointed at the part-2 trace with the same +3 offset.
+##### check-part went flaky the moment the game started running
+
+It failed once in a sweep and passed on the next run, which is worse than failing: it teaches
+you to re-run until green. Its boot case slept two seconds and read the heap, on its own stated
+reasoning that two seconds is "far short of the VM getting around to requesting a part of its
+own, which would change the very thing being checked". That was safe **only while the image ran
+zero frames**. `CTL_FRAMES` makes the window exact instead of hopeful.
+
+**That is the second gate this session whose premise was "the VM does nothing"**, after
+`check-save`'s freeze, which poked an opcode budget of zero until zero came to mean "no bound".
+A gate written against a program that did not run has to be re-read once it does.
 
 ### Decisions and measurements still owed
 
