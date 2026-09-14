@@ -107,12 +107,66 @@ stage_stop:     db 0
 ; different pages behind different windows. The harness only ever loads bytecode, so
 ; ld_page starts at CODE_PAGE and it never notices.
 ;-----------------------------------------------------------------------------
+;-----------------------------------------------------------------------------
+; THE ESXDOS ENTRY POINT AND THE BYTECODE WINDOW WANT THE SAME 16K.
+;
+; RST $08 is a jump to $0008, and esxDOS only answers there because the divMMC pages
+; itself in when the processor FETCHES from that address - which it can only do while
+; the bottom 16K is ROM. vmhost.inc's code_add maps the bytecode segment over exactly
+; that range (CODE_WIN is $0000) on every bytecode fetch, so the first load after the
+; VM has fetched an opcode does not reach esxDOS at all: the RST lands in bytecode and
+; the machine runs off into data, unwinding the stack as it goes.
+;
+; Measured, not reasoned. A CSpect plugin (tools/cspect/awprobe.cs) trapping execution of the
+; low window caught it on the first instruction: PC $0008, MMU0=73, MMU1=74, and $876F
+; on the stack - load_code's own RST, returning to a file that had never been opened.
+; Nothing was wrong with the name, the handle or the card. The same fault is why the
+; RST $18 trace only ever printed one character: DebugOut also wants MMU0 to be ROM.
+;
+; They live in vmhost.inc, next to the loader, so that every program that includes it
+; gets them. Putting them in aw.asm alone assembled `call $0000` into the harnesses
+; without a word of complaint - sjasmplus resolved the missing label to zero.
+;-----------------------------------------------------------------------------
+esx_rom:
+        ; Reading a NextReg back needs it selected on $243B and read from $253B; the
+        ; project already learned that $123B is write-only here, so nothing is assumed
+        ; readable without checking it is. Both halves are saved: aw_blit's copy-mode
+        ; fill borrows MMU0 alone, so MMU1 is not always MMU0 + 1.
+        ld      bc, $243B
+        ld      a, NR_MMU0
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        ld      (esx_mmu0), a
+        ld      b, $24
+        ld      a, NR_MMU1
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        ld      (esx_mmu1), a
+        nextreg NR_MMU0, $FF            ; $FF is "whatever this slot maps by default",
+        nextreg NR_MMU1, $FF            ; which for the bottom 16K is the ROM
+        ret
+
+esx_back:
+        ld      a, (esx_mmu0)
+        nextreg NR_MMU0, a
+        ld      a, (esx_mmu1)
+        nextreg NR_MMU1, a
+        ret
+
+esx_mmu0:   db 0
+esx_mmu1:   db 0
+
+
 load_code:
         xor     a
         ld      (err), a
         ld      hl, 0
         ld      (got), hl
         call    clear_code
+        ; THE ROM HAS TO BE BACK OVER THE BOTTOM 16K FOR THE WHOLE CALL. See esx_rom.
+        call    esx_rom
 
         ld      a, ESX_DRIVE
         ld      ix, fname
@@ -122,7 +176,7 @@ load_code:
         db      F_OPEN
         jr      nc, .opened
         ld      (err), a
-        ret
+        jr      .undo
 .opened:
         ld      (handle), a
         ld      a, (ld_page)
@@ -161,7 +215,8 @@ load_code:
         db      F_CLOSE
         ; Put $E000 back, so nothing downstream reads a bytecode page there.
         nextreg NR_MMU7, 1
-        ret
+.undo:
+        jp      esx_back                ; and the bytecode window back over the ROM
 
 
 ; The loader's own state. EXPORTed by whichever program's checker reads it.

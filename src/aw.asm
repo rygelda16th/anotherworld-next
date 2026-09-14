@@ -251,7 +251,7 @@ NR_CPWIN_MMU    EQU $52
 NR_L2_BANK      EQU $12
 NR_L2_CFG       EQU $70
 L2_PORT         EQU $123B
-L2_VISIBLE      EQU %00000010
+L2_VISIBLE      EQU %00000010           ; $123B bit 1: show Layer 2 at all
 SCR_W           EQU 256
 SCR_H           EQU 192
 ; The engine keeps FOUR pages and selects among them, so DST_P0 is only a starting value -
@@ -373,7 +373,7 @@ start:
         ; at bank 0 is what broke the load when this was tried at $FF00. The switch happens
         ; here, once the loader is done.
         ld      sp, STACK_TOP
-        nextreg NR_TURBO, 3
+        call    l2_display              ; 28 MHz, and Layer 2 actually on the screen
 
         ; MMU6 is deliberately NOT touched: bank 0's first half is where the ring
         ; and the tables already are, loaded by the .nex.
@@ -388,9 +388,37 @@ start:
         ; read it. The buffer stays where it is - init_voices still parks V_POS and V_END in it,
         ; which costs nothing for a voice that is off and voice_setup overwrites both - but
         ; filling it was dead work in the boot path, and the resident block wanted the bytes.
+        ; TURN THE LAYER 2 DISPLAY ON. Everything this program draws goes into Layer 2, and
+        ; until 2026-09-14 nothing ever made Layer 2 VISIBLE - so the machine showed the ULA,
+        ; which holds whatever was in bank 5 at boot: an attribute lattice, flashing.
+        ;
+        ; Every harness did it. ctest.asm, span.asm and polytest.asm all set NR_L2_CFG and
+        ; polytest writes $123B as well, because those programs were written TO BE LOOKED AT.
+        ; The game was only ever read from: every gate reads Layer 2's memory over ZRCP and the
+        ; emulator runs headless, so sixteen gates proved the pixels correct - check-draw has
+        ; them byte-exact against the engine - without one of them ever asking whether they
+        ; reach a screen. It took playing it to find.
         call    init_voices
         call    install_im2
+    IFNDEF NO_SOUND
         call    start_dma
+    ELSE
+        ; NO_SOUND: a DIAGNOSTIC BUILD, to find out whether a fault is in the sound path.
+        ;
+        ; Every number in this project was taken against ZEsarUX carrying three local patches -
+        ; prescalar, readback, autorestart - that exist nowhere else. Without them the prescalar
+        ; reads as a boolean, a read of the DMA port returns zero and a block stops at its end
+        ; whatever WR5 says. So in ANY other emulator the DAC rate is wrong and the mixer, which
+        ; asks the DMA where it is and mixes ahead of it, is reasoning from a number that is not
+        ; the truth.
+        ;
+        ; This leaves the frame interrupt running - the VM is paced by it - and starts no DMA,
+        ; mixes nothing. If the game then behaves, the fault is confined to the sound path and
+        ; is the H1 risk arriving early. If it behaves the same, the sound path is innocent and
+        ; the search moves elsewhere. Either answer is worth one build.
+        ld      a, 1
+        ld      (snd_off), a
+    ENDIF
         ei
 
         ld      a, $5A
@@ -498,7 +526,8 @@ start:
         ei
         ld      a, (err)
         or      a
-        jp      nz, .stop               ; jp, not jr: probe_snd pushed .stop out of reach
+        jp      nz, show_err            ; a RED BORDER, then .stop - see show_err. Same three
+                                        ; bytes as the `jp nz, .stop` this replaces.
 
         ; A PROBE PATH: one draw from a poked DRAW_BLOCK, with the C never entered.
         ; It exists to settle one question - whether the reader gets a particular record
@@ -618,6 +647,7 @@ start:
         call    CC_ORG                  ; and the C runs the frame loop
         di                              ; the CRT's exit does `im 1 / ei / ret`
 .stop:
+boot_stop:                              ; a global alias so MMU6 code can jump here; 0 bytes
         ld      a, $5A
         ld      (done), a
 .hold:  di
@@ -1365,6 +1395,12 @@ aw_set_palette:
 ; with no offset to add, so a part's sixteen live colours have to BE entries 0-15. The
 ; second palette is for a double-buffered palette change, not for holding palette 17.
 apply_palette:
+    IFDEF DIAG_BORDER
+        ; THE DIAGNOSTIC PALETTE HAS TO SURVIVE. The first version of this test wrote sixteen
+        ; known colours at boot and then let the game upload its own on the first blit, which
+        ; overwrote them - so a black screen proved nothing at all. One byte fixes it.
+        ret
+    ENDIF
         ld      (pal_now), a
         ld      l, a
         ld      h, 0
@@ -1386,46 +1422,6 @@ apply_palette:
         djnz    .one
         ret
 
-;-----------------------------------------------------------------------------
-; load_flat - (fname) straight into memory at DE, BC bytes, no paging.
-;
-; The banked loader stages through a window and walks eight pages; a palette is 1,024
-; bytes and belongs at a fixed address, so it gets its own three calls rather than a
-; special case inside the other one.
-;-----------------------------------------------------------------------------
-load_flat:
-        ld      (lf_dst), de
-        ld      (lf_len), bc
-        ld      a, ESX_DRIVE
-        ld      ix, fname
-        ld      hl, fname
-        ld      b, FA_READ
-        rst     $08
-        db      F_OPEN
-        jr      nc, .opened
-        ld      (err), a
-        ret
-.opened:
-        ld      (handle), a
-        ; esxDOS takes the buffer in IX for a machine-code caller and HL for a BASIC
-        ; one, so both are set - the trap wolf3d-next paid for when CSpect wrote a
-        ; filename over the code that followed it.
-        ld      ix, (lf_dst)
-        ld      hl, (lf_dst)
-        ld      bc, (lf_len)
-        ld      a, (handle)
-        rst     $08
-        db      F_READ
-        jr      nc, .read
-        ld      (err), a
-.read:
-        ld      a, (handle)
-        rst     $08
-        db      F_CLOSE
-        ret
-
-lf_dst:     dw 0
-lf_len:     dw 0
 
 ; readAndDrawPolygon / readAndDrawPolygonHierarchy, video.cpp:85 and :222. The C has
 ; already computed the six parameters the two opcode forms produce and left them in
@@ -1677,7 +1673,17 @@ aw_frame_sync:
         jr      z, .no_save
         call    aw_saveload             ; 1 saves, 2 loads; it reads the byte and clears it
 .no_save:
+    IFNDEF NO_MUSIC
         call    music_tick
+    ELSE
+        ; NO_MUSIC: does the module player return?
+        ;
+        ; music_tick runs HERE - inside aw_frame_sync, before the `ei` below - so it runs with
+        ; interrupts OFF. If it ever fails to return, the interrupt never comes back on, `ticks`
+        ; stops, the spin below can never end, and the zxnDMA keeps streaming because it is
+        ; autonomous. The machine is then dead with a steady tone and a frozen picture, and no
+        ; fault is ever recorded, because nothing is left running to record one.
+    ENDIF
         ; EI, EVERY FRAME, AND IT IS NOT BELT-AND-BRACES. z88dk's CRT does `di` as its
         ; FIRST instruction - $8C00 is F3 - so the `ei` before `call CC_ORG` is undone
         ; before the C runs a line. The machine then spun here forever waiting for a
@@ -1691,10 +1697,29 @@ aw_frame_sync:
         push    hl
         push    de
         ld      hl, (ticks)
+    IFDEF SPIN_BOUND
+        ; A BOUNDED WAIT, to separate "the interrupt is missing" from "something else is wrong".
+        ;
+        ; The trace says frame_sync is entered once and never returns, and that no interrupt
+        ; fires after the C is entered - so this loop is waiting for a tick that will never
+        ; come. Giving up after a while turns a hang into a slow game: if the picture then
+        ; appears, the MISSING INTERRUPT is the whole fault and everything else is sound.
+        ld      bc, 0
+.spin:  ld      de, (ticks)
+        ld      a, e
+        cp      l
+        jr      nz, .ticked
+        dec     bc
+        ld      a, b
+        or      c
+        jr      nz, .spin
+.ticked:
+    ELSE
 .spin:  ld      de, (ticks)
         ld      a, e
         cp      l
         jr      z, .spin                ; one frame interrupt
+    ENDIF
         pop     de
         pop     hl
         ret
@@ -2483,7 +2508,11 @@ draw_char6:
         EXPORT ready
 ready:      db 0
         EXPORT go
+    IFDEF AUTOSTART
+go:         db 1                        ; an unattended run has nobody at the keyboard to press ENTER
+    ELSE
 go:         db 0
+    ENDIF
         EXPORT done
 done:       db 0
         EXPORT ticks
@@ -3643,6 +3672,57 @@ note_to_inc:
         DISPLAY "> note_to_inc at ", /H, NOTE_CODE, " ending ", /H, $
         ASSERT $ <= MUS_ORDER_AT
 
+        ORG     $C3DE
+;-----------------------------------------------------------------------------
+; MMU6, $C3DE. load_flat lives up here, out of the resident block, because that block
+; had four bytes left in it and this slot is always paged - the stack is in it.
+;-----------------------------------------------------------------------------
+;-----------------------------------------------------------------------------
+; load_flat - (fname) straight into memory at DE, BC bytes, no paging.
+;
+; The banked loader stages through a window and walks eight pages; a palette is 1,024
+; bytes and belongs at a fixed address, so it gets its own three calls rather than a
+; special case inside the other one.
+;-----------------------------------------------------------------------------
+load_flat:
+        ld      (lf_dst), de
+        ld      (lf_len), bc
+        call    esx_rom
+        ld      a, ESX_DRIVE
+        ld      ix, fname
+        ld      hl, fname
+        ld      b, FA_READ
+        rst     $08
+        db      F_OPEN
+        jr      nc, .opened
+        ld      (err), a
+        jr      .done
+.opened:
+        ld      (handle), a
+        ; esxDOS takes the buffer in IX for a machine-code caller and HL for a BASIC
+        ; one, so both are set - the trap wolf3d-next paid for when CSpect wrote a
+        ; filename over the code that followed it.
+        ld      ix, (lf_dst)
+        ld      hl, (lf_dst)
+        ld      bc, (lf_len)
+        ld      a, (handle)
+        rst     $08
+        db      F_READ
+        jr      nc, .read
+        ld      (err), a
+.read:
+        ld      a, (handle)
+        rst     $08
+        db      F_CLOSE
+.done:
+        jp      esx_back
+
+lf_dst:     dw 0
+lf_len:     dw 0
+
+        ASSERT $ <= $C500               ; the reciprocal table starts here
+        DISPLAY "> load_flat at $C3DE ending ", /H, $
+
         ORG SND_FREQ
         INCLUDE "build/sndfreq.inc"
         ASSERT $ <= RD_LOG_AT
@@ -3716,6 +3796,35 @@ nm_tail:    db ".BIN", 0
 ; thing to a compare and two increments in an interrupt that has a mixer to run.
 ;-----------------------------------------------------------------------------
 auto_input:
+    IFDEF DIAG_BORDER
+        ; A CYCLING BORDER, from inside the interrupt. auto_input is called by the ISR every
+        ; frame, so this answers one question and no other: IS THE FRAME INTERRUPT FIRING?
+        ;
+        ;   border cycling   the ISR runs, and a hang is somewhere the ISR is not
+        ;   border frozen    the ISR is not running, and aw_frame_sync's spin on `ticks`
+        ;                    can never end - which is a hang with no fault and no output
+        ;
+        ; It costs nothing resident and is diagnostic only: build with -DDIAG_BORDER.
+        ; THE BORDER IS CTL_FAULT. The first version cycled from `ticks` to answer "is the
+        ; interrupt alive", and it is - so the question moves on. The VM's fault code is a
+        ; small number and the border takes a small number, so the border can simply BE it:
+        ;
+        ;   black    no fault; the VM is running or has finished cleanly
+        ;   blue  1  FAULT_PAST_END   the pc left the segment that was loaded
+        ;   red   2  FAULT_RESET      resetThread over a range outside the table
+        ;   magenta 3 FAULT_BAD_OP    an opcode the reference calls error() on
+        ;   green 4  FAULT_BAD_PART / FAULT_RET
+        ;   cyan  5  FAULT_DIVERGE    a record the engine did not produce
+        ;   yellow 6 FAULT_OVERRUN    more records than the engine produced
+        ;
+        ; Five bytes, which is what the block has left.
+        ; BACK TO `ticks`, because frames_done could not tell two very different things apart:
+        ; a frozen black border fits "the interrupt runs and the VM's loop is at frame 0" just
+        ; as well as "the interrupt is dead". ticks is bumped by the ISR itself, so a cycling
+        ; border means the interrupt lives and a frozen one means it does not.
+        ld      a, (ticks)
+        out     ($FE), a
+    ENDIF
         ld      a, (autoplay)
         or      a
         ret     z
@@ -3783,6 +3892,94 @@ auto_input:
         ld      (in_button), a
         ret
 
+;-----------------------------------------------------------------------------
+; l2_display - make Layer 2 visible, once, at boot.
+;
+; In MMU6 rather than resident because the resident block has three bytes left and this needs
+; twelve; MMU6 is never remapped, so a call into it is always valid.
+;
+; NR_L2_CFG = 0 is 256x192 at 8bpp, which is what decision 1 chose and what every harness sets.
+; $123B is WRITE-ONLY on this machine - the project learned that when it tried to read it back -
+; so bit 1 is written blind and cannot be verified from the port. `make check-screen` asks the
+; emulator instead.
+;
+; NR_L2_BANK is also set here for the page pg_ptr2 starts on, so the first frame has somewhere
+; real to show before aw_blit gets round to setting it.
+;-----------------------------------------------------------------------------
+;-----------------------------------------------------------------------------
+; show_err - say out loud that a resource failed to load, instead of halting in the dark.
+;
+; `.ready` tests err and, if the fixed load or the part setup failed, jumps straight to .stop -
+; which sets `done`, disables interrupts and spins. On a checker that is fine, because the
+; checker reads err over ZRCP. TO A PERSON IT IS INDISTINGUISHABLE FROM A CRASH: a black screen,
+; no input, and the zxnDMA still streaming whatever was last in the ring, because it is
+; autonomous and the `di` only stops the interrupt that was refilling it.
+;
+; The BORDER is the one thing that shows regardless of Layer 2, its palette, or whether anything
+; was ever drawn - so it is what a first failure should speak through.
+;
+;     BLUE   the boot got as far as setting the display up
+;     RED    a resource did not load; err is non-zero
+;-----------------------------------------------------------------------------
+show_err:
+        ld      a, 2                    ; red
+        out     ($FE), a
+        jp      boot_stop
+
+    IFDEF DIAG_BORDER
+;-----------------------------------------------------------------------------
+; The diagnostic block, and it has to dodge VEC_TRAMP.
+;
+; The gap between the leaf log ($CEB9) and the stack floor ($CF00) is 71 bytes - but the IM2
+; TRAMPOLINE sits in the middle of it at $CECE, where install_im2 writes `JP isr`. The first
+; version of this put diag_palette at $CEBC and ran straight through it. It worked only because
+; the palette is written before install_im2 rewrites those three bytes: luck, not design. The
+; two halves now sit either side of the trampoline, with assertions that say so.
+;-----------------------------------------------------------------------------
+        ORG     $CEBC                   ; 18 bytes, up to the trampoline
+diag_enter_c:
+        ld      a, 7                    ; white, the instant before the C is entered
+        out     ($FE), a
+        jp      CC_ORG                  ; a tail call: CC_ORG's ret returns to the boot path
+        ASSERT $ <= VEC_TRAMP
+
+        ORG     VEC_TRAMP + 3           ; 47 bytes, past it
+diag_palette:
+        nextreg NR_PAL_CTRL, PAL_SEL_L2
+        nextreg NR_PAL_INDEX, 0
+        ld      b, 16
+        ld      c, 17                   ; entry 0 is NOT black either, so even a cleared page
+                                        ; shows as a colour rather than as nothing
+.one:
+        ld      a, c
+        nextreg NR_PAL_VALUE, a
+        xor     a
+        nextreg NR_PAL_VALUE, a
+        ld      a, c
+        add     a, 17
+        ld      c, a
+        djnz    .one
+        ret
+        ASSERT $ <= STACK_FLOOR
+        DISPLAY "> the diagnostic block at ", /H, diag_enter_c, ", palette at ", /H, diag_palette
+    ENDIF
+
+l2_display:
+        ld      a, 1                    ; blue: we got this far
+        out     ($FE), a
+        nextreg NR_TURBO, 3                         ; 28 MHz - folded in from the boot path,
+                                                    ; which had three resident bytes left and
+                                                    ; needed three for the call. Same order.
+        nextreg NR_L2_CFG, 0                        ; 256x192, 8bpp
+        nextreg NR_L2_BANK, L2_BASE_BANK + 2 * 3    ; pg_ptr2 starts at 2
+        ld      bc, L2_PORT
+        ld      a, L2_VISIBLE
+        out     (c), a
+    IFDEF DIAG_BORDER
+        call    diag_palette
+    ENDIF
+        ret
+
         EXPORT autoplay
 autoplay:   db 0            ; non-zero runs the probe's synthetic player
         EXPORT auto_seen
@@ -3795,6 +3992,7 @@ auto_seen:  dw 0            ; the frame number the counters were last advanced o
 auto_400:   dw 0
         EXPORT auto_47
 auto_47:    db 0
+
         DISPLAY "> the synthetic player at ", /H, auto_input, " ending ", /H, $
         ASSERT $ <= PART_CODE
 

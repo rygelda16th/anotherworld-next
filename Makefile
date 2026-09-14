@@ -422,6 +422,13 @@ check-boot: | $(BUILD)
 		sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkboot.py'
 
+# The esxDOS window invariant: is the ROM back over the bottom 16K during a DOS call?
+# See tools/checkesx.py for why this gates the REGISTERS and not the load - ZEsarUX
+# answers RST $08 whatever the paging says, which is how the fault survived twelve gates.
+check-esx: asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkesx.py'
+
 # Step 5: how fast does esxDOS read? Needs `make assets` first.
 check-load: asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
