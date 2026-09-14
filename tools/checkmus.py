@@ -228,7 +228,7 @@ def main():
     # engine's numbers and not only against a model of them. The last case is the exception
     # and says so: no call in that log has a volume above 0x3F, so the clamp at vm.cpp:715
     # has to be provoked.
-    RATE = 875000 // 40
+    from sfxmod import RATE, NOTE_NUM
     from mksndfreq import table as freq_table
     INCS = [(f << 8) // RATE for f in freq_table(open(f"{PROBE}/staticres.cpp").read())]
 
@@ -323,7 +323,9 @@ def main():
     # is a function of the voice and the count alone. The first case crosses TWO page
     # boundaries; the second stays inside one, as a control that the crossing fix did not
     # change the case that already worked.
-    RING, BLK_A, RING_LEN = 0xD400, 221, 2048
+    # THE COPPER LIST, not the DMA's ring: 312 lines, a sample in the fourth byte of each, mixed
+    # 156 lines a block. The model is the same flat walk, over a 312-slot "ring".
+    COP_BUF, BLK_A, RING_LEN = 0xD400, 156, 312
     VOLUME, VOLUME_QUIET = 48, 24
     for res, fq, vol, chan, nb, why in (
             (0x54, 39, 50, 0, 60, "two page boundaries, loud"),
@@ -341,7 +343,7 @@ def main():
             if read(sym["done"], 1)[0] == 0x5A:
                 break
             time.sleep(0.05)
-        got = read(RING, RING_LEN)
+        got = read(COP_BUF, RING_LEN * 4)[3::4]
         data = open(f"build/assets/RES{res:02X}.BIN", "rb").read()
         want = mix_ring(data, INCS[fq], VOLUME if vol > 32 else VOLUME_QUIET,
                         nb, BLK_A, RING_LEN)
@@ -376,10 +378,10 @@ def main():
                 break
             time.sleep(0.02)
         got = int.from_bytes(read(MUS_BLOCK + 6, 2), "little")
-        want = 41891 // n
+        want = NOTE_NUM // n
         exact = (7159092 // (n * 2)) * 256 / RATE
         if got != want:
-            bad.append(f"period {n}: the machine divided to {got}, 41891/{n} is {want}")
+            bad.append(f"period {n}: the machine divided to {got}, {NOTE_NUM}/{n} is {want}")
         worst = max(worst, abs(got - exact))
         shown.append(f"{n}->{got}")
         z.cmd("smartload /work/{}".format(NEX))

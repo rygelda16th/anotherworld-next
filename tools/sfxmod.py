@@ -23,6 +23,11 @@ handlePattern tests first, while the instrument is the top nibble of note_2.
 """
 import sys
 
+# 7159092 * 256 / (2 * rate), at the copper's 312 lines * 50 Hz = 15,600 Hz. It was 41891, at the
+# DMA's 21,875 Hz, until the copper took the DAC over. = NOTE_NUM in src/aw.asm.
+NOTE_NUM = 58741
+RATE = 312 * 50
+
 
 def be16(b, o):
     return (b[o] << 8) | b[o + 1]
@@ -146,7 +151,7 @@ def voices(blob, sample_of, pos=0, ticks=1, split=32):
             chans[ch]["total"] = 8 + slen + llen
             chans[ch]["loop"] = (8 + slen) if llen and (8 + slen) < 0x2000 else 0
             chans[ch]["vol"] = vol
-            chans[ch]["inc"] = 41891 // n1
+            chans[ch]["inc"] = NOTE_NUM // n1
             chans[ch]["active"] = 1
         cur_pos += 16
         if cur_pos >= 1024:

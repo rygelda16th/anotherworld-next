@@ -78,6 +78,7 @@ V_SIZE          EQU 18
 ; against a recording: port A the ring in memory and incrementing, port B the DAC
 ; as a FIXED I/O address with a prescalar, WR5 auto-restart so it loops, and WR6's
 ; read mask so the tick can ask where it is.
+    IFNDEF SND_NO_DMA                   ; the game drives the DAC from the copper instead
 dma_prog:
         db      $C3                     ; RESET
         db      $7D                     ; WR0: A -> B, address and length follow
@@ -92,6 +93,7 @@ dma_prog:
         db      $CF                     ; LOAD
         db      $87                     ; ENABLE
 dma_prog_end:
+    ENDIF
 
 ;-----------------------------------------------------------------------------
 ; The mixer. check-mix priced this loop and proved its arithmetic against the
@@ -153,7 +155,11 @@ mva_neg:
         xor     a
 mva_st:
         ld      (hl), a
+    IFDEF SND_STRIDE4
+        add     hl, bc                  ; the copper list: a line's sample is every fourth byte
+    ELSE
         inc     hl                      ; hl, NOT l: the destination has to CARRY. `inc l` meant
+    ENDIF
         exx                             ; a block could not cross a 256-byte boundary in the
                                         ; ring, and with BLK_A of 221 into 2,048 bytes it does -
                                         ; the write wrapped back into the same page instead. Two
@@ -185,6 +191,9 @@ voice_regs:
         exx
         ld      hl, (mix_dst)
         ld      d, a
+    IFDEF SND_STRIDE4
+        ld      bc, 4                   ; the shadow BC is free, and add hl,bc costs 5 T over inc hl
+    ENDIF
         exx
         ret
 

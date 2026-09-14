@@ -3,7 +3,8 @@
 snd_playSound hands the mixer `frequenceTable[freq]` (vm.cpp:716) and the mixer turns that
 into a step with `chunkInc = (freq << 8) / sys->getOutputSampleRate()` (mixer.cpp:62) - 8.8
 fixed point, source samples per output sample, which is exactly what our voices step in. Our
-rate is the DAC's: prescalar 40 gives 875,000 / 40 = 21,875 Hz.
+rate is the DAC's, and the DAC is written by the copper once a raster line: 312 lines at 50 Hz is
+15,600 Hz. (It was the zxnDMA's prescalar 40, 21,875 Hz, until the copper took the DAC over.)
 
 So the whole of op_playSound's pitch work is a forty-entry lookup, and no divide at runtime.
 The forty frequencies come from the reference's own table at staticres.cpp:61-67 rather than
@@ -15,7 +16,7 @@ The truncation matches the reference's: C integer division, so floor.
 import re
 import sys
 
-RATE = 875000 // 40                     # 21,875 Hz, prescalar 40
+RATE = 312 * 50                         # 15,600 Hz: one copper MOVE a raster line
 
 
 def table(src):

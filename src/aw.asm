@@ -146,8 +146,26 @@ NR_PAL_VALUE    EQU $44
 ; "Layer 2, first palette", with auto-increment left ON - which is what makes two
 ; writes per entry work, and it is the layout mkassets.py already emits.
 PAL_SEL_L2      EQU %00010000
-RING_ADDR       EQU $D400               ; permanently mapped; see the header
-RING_END        EQU RING_ADDR + RING_LEN  ; page-aligned, which every wrap test relies on
+; THE COPPER LIST, where the DMA's ring used to be. The DAC is written by the copper once a raster
+; line - see cop_init and src/coptest.asm, which proved it in both emulators first - so the mix goes
+; into the value byte of each line's MOVE, and the DMA uploads the half the beam has just played.
+COP_BUF         EQU $D400               ; 312 lines x 4 bytes: WAIT hi, WAIT lo, MOVE reg, value
+COP_LINES       EQU 312
+COP_HALF        EQU 156                 ; samples per interrupt, two interrupts a frame
+COP_CODE        EQU COP_BUF + COP_LINES * 4     ; the copper's own code, in what the ring freed
+LINE_A          EQU 248                 ; fed at this line: lines 0..155, and the frame's tick
+LINE_B          EQU 92                  ; fed at this line: lines 156..311
+NR_PERIPH3      EQU $08                 ; bit 3 enables the 8-bit DACs
+NR_LINEINT_CTL  EQU $22                 ; bit 2 ULA interrupt off, bit 1 line interrupt on, bit 0 MSB
+NR_LINEINT_LSB  EQU $23
+NR_COP_DATA     EQU $60
+NR_COP_LO       EQU $61
+NR_COP_HI       EQU $62                 ; %cc000iii
+NR_DAC_AD       EQU $2D
+COP_LOOP        EQU %10000000
+LINEINT_ON      EQU %00000110           ; line interrupt on, ULA interrupt off
+        DEFINE SND_STRIDE4              ; sound.inc: mix into every fourth byte
+        DEFINE SND_NO_DMA               ; sound.inc: no DMA stream programme
 VOLTAB          EQU $DC00
 VOICES          EQU $DD00
 ; part_table, in the half of VOICES' slot that four 18-byte records do not use. It had been
@@ -306,10 +324,6 @@ VOLTAB_QUIET    EQU $DF00
 VOLUME_QUIET    EQU 24
 VOL_SPLIT       EQU 32                  ; at or below this, quiet
 
-; 22,050 output samples a second at 50 frames is 441 a frame. blocklen is a byte, so
-; it goes in two: 221 and 220.
-BLK_A           EQU 221
-BLK_B           EQU 220
 
 ; IM 2, above the C's data and below the stack. The table must be 257 bytes - the Z80
 ; reads the vector from I<<8|databus AND the byte after it - and every entry is
@@ -394,7 +408,7 @@ start:
         call    page_to_p0
         ld      (dst_p0), a
         call    build_voltab
-        call    silence_ring
+        call    cop_init                ; the list, silent, and the copper running it
         ; ramp_sample went with I1's scaffolding. It filled SAMPLE with a ramp for the four
         ; voices init_voices used to start ACTIVE; the game starts silent now, so nothing ever
         ; read it. The buffer stays where it is - init_voices still parks V_POS and V_END in it,
@@ -413,7 +427,7 @@ start:
         call    init_voices
         call    install_im2
     IFNDEF NO_SOUND
-        call    start_dma
+        call    cop_start               ; line interrupts at LINE_A and LINE_B, the ULA's off
     ELSE
         ; NO_SOUND: a DIAGNOSTIC BUILD, to find out whether a fault is in the sound path.
         ;
@@ -597,7 +611,7 @@ start:
         ld      b, a
 .mixb:
         push    bc
-        ld      a, BLK_A                ; one block length throughout, so the model is the
+        ld      a, COP_HALF             ; one block length throughout, so the model is the
         call    mix_block               ; mixer's arithmetic and not the pacing's
         pop     bc
         djnz    .mixb
@@ -689,19 +703,21 @@ boot_stop:                              ; a global alias so MMU6 code can jump h
 ;-----------------------------------------------------------------------------
 mix_block:
         ld      (blk_total), a
+        ; THE COPPER LIST'S LINES, not a ring. (ring_wr) is the first line, the block never runs past
+        ; line 311 - LINE_A's half is 0..155 and LINE_B's 156..311 - and a line's sample is the fourth
+        ; byte of its WAIT/MOVE pair, so the destination steps by four (SND_STRIDE4 in sound.inc).
         ld      hl, (ring_wr)
+        add     hl, hl
+        add     hl, hl
+        ld      de, COP_BUF + 3
+        add     hl, de
         ld      (blk_dst), hl
 
-        ; silence first: every voice accumulates onto it. The ring's end is page-aligned, so
-        ; the wrap test is one high-byte compare.
+        ; silence first: every voice accumulates onto it
         ld      b, a
+        ld      de, 4
 .fill:  ld      (hl), 128
-        inc     hl
-        ld      a, h
-        cp      RING_END >> 8
-        jr      nz, .fill_on
-        ld      hl, RING_ADDR
-.fill_on:
+        add     hl, de
         djnz    .fill
 
         ld      ix, VOICES
@@ -715,26 +731,7 @@ mix_block:
         ld      hl, (blk_dst)
         ld      (mix_pc), hl
 .piece:
-        ; the piece is the lesser of what is left of the block and what fits before the RING's
-        ; end. The 256-byte boundary is no longer a cut: mix_voice_* advances its destination
-        ; with `inc hl` now, which carries.
-        ; only the ring's LAST page can hold less than 256 bytes of room, the end being
-        ; page-aligned, so the room is 256 - L there and more than a cap's worth anywhere else.
-        ld      hl, (mix_pc)
-        ld      a, h
-        cp      (RING_END >> 8) - 1
-        jr      nz, .room_full
-        ld      a, l
-        neg
-        jr      nz, .have_room
-.room_full:
-        ld      a, 255
-.have_room:
-        ld      hl, mix_left
-        cp      (hl)
-        jr      c, .capped
-        ld      a, (hl)
-.capped:
+        ld      a, (mix_left)
         ld      (blocklen), a           ; voice_run caps against this, voice_regs counts by it
         push    bc                      ; B IS THE VOICE COUNTER and voice_run's divide uses B
         call    voice_run               ; as its own sixteen-step counter
@@ -760,12 +757,10 @@ mix_block:
         pop     bc
         ld      d, 0
         ld      hl, (mix_pc)
-        add     hl, de                  ; a piece can land ON the end but never past it
-        ld      a, h
-        cp      RING_END >> 8
-        jr      nz, .pc_in
-        ld      hl, RING_ADDR
-.pc_in:
+        add     hl, de
+        add     hl, de
+        add     hl, de
+        add     hl, de                  ; four bytes a line
         ld      (mix_pc), hl
         ld      a, (mix_left)
         sub     e
@@ -777,26 +772,18 @@ mix_block:
         dec     b
         jp      nz, .each
 
-        ; THE WRITE POINTER WRAPS MODULO, not by jumping back to the start. It used to test
-        ; `ring_wr + blocklen` against the end AFTER the block had been written and reset to
-        ; RING_ADDR if it passed - so the block that took it over the edge wrote up to 158
-        ; bytes PAST the ring, over VOLTAB, and the bytes near the end were never written at
-        ; all. Nine blocks of 221 reach 1,985 of 2,048, and the tenth did both.
+        ; the cursor moves on by the block, and wraps at the list's end
         ld      hl, (ring_wr)
         ld      a, (blk_total)
         ld      e, a
         ld      d, 0
         add     hl, de
-        ld      de, RING_END
+        ld      de, COP_LINES
         or      a
         sbc     hl, de
-        jr      c, .store
-        ld      de, RING_ADDR           ; HL is how far past the end it went
+        jr      nc, .wrapped
         add     hl, de
-        ld      (ring_wr), hl
-        ret
-.store:
-        add     hl, de
+.wrapped:
         ld      (ring_wr), hl
         ret
 
@@ -1009,13 +996,18 @@ build_one:
         jr      nz, .vt
         ret
 
+; silence_ring - every line's sample back to 128, and the mix cursor back to line 0.
 silence_ring:
-        ld      hl, RING_ADDR
-        ld      de, RING_ADDR + 1
-        ld      bc, RING_LEN - 1
-        ld      (hl), 128
-        ldir
-        ld      hl, RING_ADDR
+        ld      hl, COP_BUF + 3
+        ld      de, 4
+        ld      bc, COP_LINES           ; a sixteen-bit count
+.one:   ld      (hl), 128
+        add     hl, de
+        dec     bc
+        ld      a, b
+        or      c
+        jr      nz, .one
+        ld      hl, 0
         ld      (ring_wr), hl
         ret
 
@@ -1065,11 +1057,6 @@ install_im2:
         im      2
         ret
 
-start_dma:
-        ld      hl, dma_prog
-        ld      bc, ((dma_prog_end - dma_prog) << 8) | DMA_PORT
-        otir
-        ret
 
 ; The frame interrupt: the tick the pacing counts, and 441 samples into the ring -
 ; 22,050 a second at 50 frames, which is the rate the DMA drains it. The mixer uses
@@ -1088,6 +1075,26 @@ isr:
         push    de
         push    hl
 
+    IFNDEF NO_SOUND
+        ; TWO INTERRUPTS A FRAME NOW, at LINE_A and LINE_B, each feeding the copper the half of the
+        ; list the beam has just played. Which half is the line this one was armed for, and only
+        ; LINE_A's is the frame: the tick and the input stay at 50 Hz. A missed interrupt leaves the
+        ; same line armed, so the next one feeds the same half - late, never out of step.
+        ld      a, (cop_half)
+        or      a
+        jr      z, .half_a
+        nextreg NR_LINEINT_LSB, LINE_A & $FF
+        nextreg NR_LINEINT_CTL, LINEINT_ON | (LINE_A >> 8)
+        xor     a
+        ld      (cop_half), a
+        ld      hl, COP_HALF
+        jp      .feed
+.half_a:
+        nextreg NR_LINEINT_LSB, LINE_B & $FF
+        nextreg NR_LINEINT_CTL, LINEINT_ON | (LINE_B >> 8)
+        ld      a, 1
+        ld      (cop_half), a
+    ENDIF
         ld      hl, (ticks)
         inc     hl
         ld      (ticks), hl
@@ -1109,6 +1116,9 @@ isr:
         ; disturb a draw in progress? The rasteriser and the mixer both patch immediate
         ; operands in their own code, and both use the shadow registers, so the question
         ; is a fair one and no gate has ever asked it.
+        ld      hl, 0                   ; LINE_A feeds lines 0..155
+.feed:
+        ld      (ring_wr), hl
         ld      a, (snd_off)
         or      a
         jr      nz, .no_mix
@@ -1123,12 +1133,14 @@ isr:
         ld      b, $25
         in      a, (c)
         push    af
-        ld      a, BLK_A
+        ld      hl, (ring_wr)
+        push    hl
+        ld      a, COP_HALF
         call    mix_block
-        ld      a, BLK_B
-        call    mix_block
+        pop     hl
         pop     af
         nextreg NR_SAMP_MMU, a
+        call    cop_upload              ; those 156 lines, by the DMA
         ld      hl, (n_mix)
         inc     hl
         ld      (n_mix), hl
@@ -2507,7 +2519,7 @@ go:         db 0
 done:       db 0
         EXPORT ticks
 ticks:      dw 0
-ring_wr:    dw RING_ADDR
+ring_wr:    dw 0                        ; the next line to mix, 0..311
 blocklen:   db 0
 mix_dst:    dw 0
         EXPORT n_poly
@@ -2547,6 +2559,7 @@ fill_col:   db 0
 stop_blit:  dw 0            ; stop the frame loop after this many blits; 0 = never
         EXPORT snd_off
 snd_off:    db 0            ; 1 = the interrupt ticks but does not mix: a discriminator
+cop_half:   db 0            ; which line is armed: 0 = LINE_A, 1 = LINE_B
         EXPORT cur_band_x
 cur_band_x: db 0
         EXPORT probe_ticks
@@ -3606,9 +3619,10 @@ probe_walk:
 ;
 ; The reference turns a period into a frequency with `7159092 / (note_1 * 2)`
 ; (sfxplayer.cpp) and our mixer steps its pointer in 8.8 fixed point at the DAC's rate,
-; which prescalar 40 makes 875,000 / 40 = 21,875 Hz. So the increment wanted is
+;  which is the copper's 312 lines at 50 Hz, 15,600 Hz (it was the DMA's 21,875 until the copper
+; took the DAC over). So the increment wanted is
 ;
-;     freq * 256 / 21875  =  (7159092 / (2 * note)) * 256 / 21875  =  41891 / note
+;     freq * 256 / 15600  =  (7159092 / (2 * note)) * 256 / 15600  =  58741 / note
 ;
 ; ONE 16-BY-16 DIVIDE instead of a 24-bit divide followed by a multiply and another divide.
 ; Checked against the reference's own arithmetic over every valid period, 0x37 to 0xFFF: the
@@ -3617,7 +3631,7 @@ probe_walk:
 ; A period of zero cannot happen - handlePattern tests note_1 against 0, 0xFFFD and 0xFFFE
 ; before ever reaching here - but it returns the maximum rather than dividing by it.
 ;-----------------------------------------------------------------------------
-NOTE_NUM        EQU 41891               ; 7159092 * 256 / (2 * 21875)
+NOTE_NUM        EQU 58741               ; 7159092 * 256 / (2 * 15600)
 
 note_to_inc:
         ld      a, h
@@ -3999,6 +4013,129 @@ pace_due:       dw 0
         ASSERT $ <= STACK_FLOOR
         DISPLAY "> stack code at ", /H, STACK_CODE, " ending ", /H, $
 
+
+        ORG     COP_CODE
+;-----------------------------------------------------------------------------
+; THE COPPER DRIVES THE DAC. COP_CODE, in the 800 bytes the DMA's ring gave back.
+;
+; Mixing to a ring the zxnDMA streamed at 21,875 Hz cost a quarter of the machine with the intro's
+; music playing - 25.5 s of the intro's 53.4 over blits 5-700, against 27.9 s with no sound at all.
+; David chose to drive the DAC from the copper instead: one MOVE to NextReg $2D on every raster line,
+; 15,600 samples a second, 29% fewer to mix, and the DMA left free. src/coptest.asm proved it first -
+; ZEsarUX's own audio output clean over 92,159 samples, and CSpect's copper writing $2D exactly
+; 15,600 times a second.
+;
+; The list is 312 WAIT L / MOVE $2D pairs and 400 NOOPs, in LOOP mode, so it wraps once a frame
+; wherever the vertical blank falls. The interrupt fires at LINE_A and LINE_B, mixes 156 lines into
+; the half of the list the beam has just played and has the DMA upload them - at least 64 lines
+; ahead of the beam, so nothing is overwritten before it plays.
+;-----------------------------------------------------------------------------
+cop_init:
+        ; THE DACS ON. NextReg $08 bit 3, which nothing in this program had set: the emulators play
+        ; without it, and on real hardware that is not a thing to take on trust.
+        ld      bc, $243B
+        ld      a, NR_PERIPH3
+        out     (c), a
+        ld      b, $25
+        in      a, (c)
+        or      %00001000
+        nextreg NR_PERIPH3, a
+
+        ld      hl, COP_BUF
+        ld      de, 0                   ; DE = the line
+.build:
+        ld      a, d
+        or      $80                     ; WAIT: %1hhhhhhv, h = 0, the line's MSB in bit 0
+        ld      (hl), a
+        inc     hl
+        ld      (hl), e
+        inc     hl
+        ld      (hl), NR_DAC_AD         ; MOVE $2D
+        inc     hl
+        ld      (hl), 128               ; silence
+        inc     hl
+        inc     de
+        ld      a, e
+        cp      COP_LINES & $FF
+        jr      nz, .build
+        ld      a, d
+        cp      COP_LINES >> 8
+        jr      nz, .build
+
+        nextreg NR_COP_HI, 0            ; stop the copper; write index 0
+        nextreg NR_COP_LO, 0
+        ld      bc, $243B
+        ld      a, NR_COP_DATA
+        out     (c), a
+        ld      b, $25
+        ld      hl, COP_BUF
+        ld      de, COP_LINES * 4
+.up:    ld      a, (hl)
+        out     (c), a
+        inc     hl
+        dec     de
+        ld      a, d
+        or      e
+        jr      nz, .up
+        ld      de, 2048 - COP_LINES * 4
+.pad:   xor     a                       ; NOOP
+        out     (c), a
+        dec     de
+        ld      a, d
+        or      e
+        jr      nz, .pad
+        nextreg NR_COP_LO, 0
+        nextreg NR_COP_HI, COP_LOOP     ; run it, looping
+        ld      hl, 0
+        ld      (ring_wr), hl
+        ret
+
+; cop_start - the first line interrupt, and the ULA's off. After install_im2.
+cop_start:
+        xor     a
+        ld      (cop_half), a
+        nextreg NR_LINEINT_LSB, LINE_A & $FF
+        nextreg NR_LINEINT_CTL, LINEINT_ON | (LINE_A >> 8)
+        ret
+
+; cop_upload - HL = the first of COP_HALF lines just mixed. The DMA copies their 624 bytes over the
+; copper's own copy, from the same index. Continuous mode: done before the next instruction.
+cop_upload:
+        add     hl, hl
+        add     hl, hl                  ; the byte index
+        ld      a, l
+        nextreg NR_COP_LO, a
+        ld      a, h
+        or      COP_LOOP                ; the same control bits, so only the index moves
+        nextreg NR_COP_HI, a
+        ld      de, COP_BUF
+        add     hl, de
+        ld      (cop_dma_addr), hl
+        ld      bc, $243B
+        ld      a, NR_COP_DATA          ; the DMA writes $253B; $243B has to name the copper data
+        out     (c), a
+        ld      hl, cop_dma
+        ld      bc, ((cop_dma_end - cop_dma) << 8) | DMA_PORT
+        otir
+        ret
+
+cop_dma:
+        db      $83                     ; DISABLE
+        db      $7D                     ; WR0: A -> B, address and length follow
+cop_dma_addr:
+        dw      COP_BUF
+        dw      COP_HALF * 4
+        db      $54, $02                ; WR1: port A memory, incrementing, cycle length 2
+        db      $68, $22, 0             ; WR2: port B I/O, fixed, cycle length 2, prescalar 0
+        db      $AD                     ; WR4: continuous, port B address follows
+        dw      $253B
+        db      $82                     ; WR5: stop at end of block
+        db      $CF                     ; LOAD
+        db      $87                     ; ENABLE
+cop_dma_end:
+        ASSERT $ <= VOLTAB
+        DISPLAY "> copper code at ", /H, COP_CODE, " ending ", /H, $
+
         ORG SND_FREQ
         INCLUDE "build/sndfreq.inc"
         ASSERT $ <= RD_LOG_AT
@@ -4025,7 +4162,7 @@ nm_tail:    db ".BIN", 0
         ALIGN 2
         INCLUDE "build/interp.inc"
         DISPLAY "> reciprocals at ", /H, INTERP_AT, " ending ", /H, $
-        ASSERT $ <= RING_ADDR
+        ASSERT $ <= COP_BUF
 
         ; part_table, WITH AN ORG AND A BOUND OF ITS OWN, which is the whole point of moving it.
         ;
@@ -4272,10 +4409,8 @@ auto_47:    db 0
         DISPLAY "> the synthetic player at ", /H, auto_input, " ending ", /H, $
         ASSERT $ <= PART_CODE
 
-        ; THREE WRAP TESTS IN mix_block COMPARE ONLY THE HIGH BYTE, so the ring's end must be
-        ; page-aligned. It is, and now it has to stay so.
-        ASSERT (RING_END & $FF) == 0
-        ASSERT RING_ADDR + RING_LEN <= VOLTAB
+        ; The copper list and its code, then the volume table: nothing may overlap.
+        ASSERT COP_CODE >= COP_BUF + COP_LINES * 4
         ASSERT VOLTAB + 256 <= VOICES
         ASSERT VOICES + V_SIZE * 4 <= PART_CODE
         ASSERT VOLTAB_QUIET + 256 <= $E000
@@ -4296,7 +4431,7 @@ auto_47:    db 0
         ASSERT VEC_TABLE   >= MUS_INSTR_AT + 30
         ASSERT VEC_TRAMP   >= VEC_TABLE + 257
         ASSERT STACK_CODE >= VEC_TRAMP + 3
-        ASSERT STACK_TOP   <= RING_ADDR
+        ASSERT STACK_TOP   <= COP_BUF
         ASSERT DRAW_LOG    >= MUS_INSTR_AT + 30
         ASSERT DRAW_LOG + DRAW_LOG_MAX * 10 <= INTERP_AT
 

@@ -33,7 +33,8 @@ EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
 PROBE = "preflight/hostprobe/probe"
 CODE_FILE = "RES18.BIN"
 CTL = 0xC000
-RING, RING_LEN = 0xD400, 2048
+# the copper list's value bytes, where the ring was: a line's sample is the fourth byte of four
+COP_BUF, COP_LINES = 0xD400, 312
 BUDGET = int(os.environ.get("AW_BUDGET", "20000"))
 SOAK_S = float(os.environ.get("AW_SOAK_S", "5"))
 
@@ -87,7 +88,7 @@ def main():
     t0 = int.from_bytes(read(z, sym["ticks"], 2), "little")
     time.sleep(0.5)
     t1 = int.from_bytes(read(z, sym["ticks"], 2), "little")
-    ring_boot = read(z, RING, 64)
+    ring_boot = read(z, COP_BUF, 64 * 4)[3::4]
     mix_boot = int.from_bytes(read(z, sym["n_mix"], 2), "little")
 
     hdr = (seed.to_bytes(2, "little") + frames.to_bytes(2, "little")
@@ -118,7 +119,7 @@ def main():
     exp_n, div_at = w(20), w(22)
     got_rec, want_rec = b[24:28], b[28:32]
     ticks_end = int.from_bytes(read(z, sym["ticks"], 2), "little")
-    ring_run = read(z, RING, 64)
+    ring_run = read(z, COP_BUF, COP_LINES * 4)[3::4]
     mix_run = int.from_bytes(read(z, sym["n_mix"], 2), "little")
     counts = {n: int.from_bytes(read(z, sym[n], 2), "little")
               for n in ("n_poly", "n_select", "n_fill", "n_copy", "n_blit", "n_pal")}
