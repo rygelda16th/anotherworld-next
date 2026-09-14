@@ -2764,6 +2764,15 @@ sv_load:
 .no_order:
 
         ; pass two: everything that is a straight copy back
+        ;
+        ; CLEAR err FIRST. sv_rblock bails silently on a non-zero err, and between pass one and
+        ; here the load calls aw_setup_part, which loads four resources through load_code - and
+        ; load_code writes err itself. So a perfectly good read pass did nothing at all while
+        ; still running to the end and stamping sv_done, and the arrays kept the running game's
+        ; values. aw_pc[0] holding a LIVE program counter where the file held $FFFF is what said
+        ; so: not corruption, but data that was never written over.
+        xor     a
+        ld      (err), a
         di
         call    sv_ropen
         ld      a, (err)
