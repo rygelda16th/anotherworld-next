@@ -21,7 +21,7 @@ from sfxmod import parse, walk, voices, sound, mix_ring, be16    # noqa: E402
 NEX = "build/aw.nex"
 EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
 MUS_BLOCK, MUS_ORDER_AT, MUS_INSTR_AT = 0xC3B0, 0xC400, 0xC480
-VOICES_AT, V_SIZE = 0xDD00, 15
+VOICES_AT, V_SIZE = 0xDD00, 18      # V_PAGE0 and V_TOTAL joined the record; see sound.inc
 SND_BLOCK = 0xC3B4                  # = AW_SND in the Makefile, SND_BLOCK in src/aw.asm
 PROBE = os.environ.get("PROBE", "preflight/hostprobe/probe")
 CTL = 0xC000
@@ -399,17 +399,17 @@ def main():
     if outstanding:
         print("\n  " + "\n  ".join(outstanding))
         raise SystemExit(
-            "OUTSTANDING, not a regression: the game's mix_block does not use voice_run or\n"
-            "      voice_advance at all. It has a crude guard - rewind if the next block would\n"
-            "      not fit - whose own comment says proper end-of-sample and loop-point\n"
-            "      handling is I5's and 'more unwritten code than the plan credited'. With a\n"
-            "      FULL window V_END is $0000, that guard reads 'would overrun', and V_POS goes\n"
-            "      to V_LOOP - zero for an unlooped sample - so the voice reads from address\n"
-            "      $0000. Measured: after 40 blocks of RES54, V_POS = $0096 with V_LEFT still\n"
-            "      14,506 and V_PAGE unmoved.\n"
-            "      mix_voice also advances its destination with `inc l` alone, so a block\n"
-            "      cannot cross a 256-byte boundary inside the ring either.\n"
-            "      The five other parts of I5 above all PASS; this is the piece left.")
+            f"FAIL: {len(outstanding)} mixing case(s) differ. This is the mixer's OUTPUT, not\n"
+            "      the voice records above - so look at mix_block's block splitting, voice_run's\n"
+            "      bound, voice_advance's page step, or the ring's wrap, in that order. Five\n"
+            "      separate bugs lived in exactly those four places: mix_block not calling\n"
+            "      voice_run at all; the ring resetting to its start instead of wrapping, which\n"
+            "      wrote past it over VOLTAB; `inc l` for a destination that has to carry;\n"
+            "      voice_run reading a full window's $0000 end as 'past the end' and bounding\n"
+            "      the run by inci rather than inci + 1; and voice_advance rewinding to the\n"
+            "      page base instead of carrying the overshoot, which dropped the fraction's\n"
+            "      phase at every crossing. A one-byte first difference that grows is the\n"
+            "      last of those; a wholly different ring is one of the first two.")
     print(f"""
 PASS: I5 entire, in six parts. All {done} modules PARSE exactly as tools/sfxmod.py parses
       them - the delay with and without op_playMusic's override, numOrder, all 128 order

@@ -63,7 +63,16 @@ V_PAGE          EQU 12
 ; advances and V_POS goes back to the window's base. sndtest's sample is 1,024 bytes in one
 ; resident page, so its V_LEFT is zero and nothing about it changes.
 V_LEFT          EQU 13                  ; word
-V_SIZE          EQU 15
+; THE SAMPLE'S FIRST PAGE AND ITS WHOLE LENGTH, which looping needs and nothing else does.
+; V_LOOP is an address in the sample's FIRST window - voice_setup only records a loop point it
+; can reach there - so returning to it means restoring the page and the window with it. Setting
+; V_POS alone left V_PAGE and V_END describing the LAST window, where V_LOOP is past the end:
+; voice_run returned zero for ever, voice_advance looped straight back, and the interrupt never
+; came back. check-aw caught it as "the interrupt advanced 0 ticks in 5s" - the module's own
+; instruments are multi-page and looped, so the intro hit it within a minute.
+V_PAGE0         EQU 15
+V_TOTAL         EQU 16                  ; word
+V_SIZE          EQU 18
 
 ; The ring's DMA programme, from wolf3d-next's ringtest.asm, which measured it
 ; against a recording: port A the ring in memory and incrementing, port B the DAC
@@ -260,6 +269,29 @@ voice_advance:
         ld      (ix + V_POS), l
         ld      (ix + V_POS + 1), h
         ld      (ix + V_FRAC), 0
+        ; AND THE PAGE AND THE WINDOW WITH IT - see V_PAGE0 above for what going without
+        ; cost. The state wanted is exactly what voice_setup left, bar the position.
+        ld      a, (ix + V_PAGE0)
+        ld      (ix + V_PAGE), a
+        ld      l, (ix + V_TOTAL)
+        ld      h, (ix + V_TOTAL + 1)
+        ld      de, $2000
+        or      a
+        sbc     hl, de
+        jr      nc, .loop_spans
+        add     hl, de                  ; it all fits one window
+        ld      de, SAMP_WIN
+        add     hl, de
+        ld      (ix + V_END), l
+        ld      (ix + V_END + 1), h
+        ld      (ix + V_LEFT), 0
+        ld      (ix + V_LEFT + 1), 0
+        ret
+.loop_spans:
+        ld      (ix + V_LEFT), l        ; what is left after this window
+        ld      (ix + V_LEFT + 1), h
+        ld      (ix + V_END), 0         ; $10000, deliberately; see voice_run
+        ld      (ix + V_END + 1), 0
         ret
 .stop:
         ld      (ix + V_ACTIVE), 0

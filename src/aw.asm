@@ -130,6 +130,7 @@ STR_INDEX_AT    EQU $E300
 STR_BLOCK       EQU $C3A0               ; colour, x, y, id - what the C leaves for us
 MUS_BLOCK       EQU $C3B0               ; resNum, delay, pos - what op_playMusic leaves
 SND_BLOCK       EQU $C3B4               ; resource, frequency index, volume, channel; = AW_SND
+NOTE_CODE       EQU $C3B8               ; note_to_inc, in the gap before the order table
 ; The module's window. Its patterns run to 15,552 bytes so they cannot be resident; the
 ; header and order table are copied out once at load, and a pattern block is read through
 ; a window when an event is due. MMU2 is free at the FRAME BOUNDARY, which is where events
@@ -317,7 +318,11 @@ start:
         ld      (dst_p0), a
         call    build_voltab
         call    silence_ring
-        call    ramp_sample
+        ; ramp_sample went with I1's scaffolding. It filled SAMPLE with a ramp for the four
+        ; voices init_voices used to start ACTIVE; the game starts silent now, so nothing ever
+        ; read it. The buffer stays where it is - init_voices still parks V_POS and V_END in it,
+        ; which costs nothing for a voice that is off and voice_setup overwrites both - but
+        ; filling it was dead work in the boot path, and the resident block wanted the bytes.
         call    init_voices
         call    install_im2
         call    start_dma
@@ -861,18 +866,6 @@ silence_ring:
 ; A ramp until I5 loads a real sound resource. It exists so the mixer does its real
 ; work in this gate: 23.2% of the machine is a measured cost and a silent mixer would
 ; not pay it.
-ramp_sample:
-        ld      hl, SAMPLE
-        ld      bc, SAMPLE_LEN
-.r:     ld      a, l
-        ld      (hl), a
-        inc     hl
-        dec     bc
-        ld      a, b
-        or      c
-        jr      nz, .r
-        ret
-
 init_voices:
         ld      ix, VOICES
         ld      b, 4
@@ -1844,6 +1837,10 @@ voice_setup:
 
         ld      a, (mv_page)
         ld      (ix + V_PAGE), a
+        ld      (ix + V_PAGE0), a       ; where a loop has to come back to
+        ld      hl, (mv_total)
+        ld      (ix + V_TOTAL), l
+        ld      (ix + V_TOTAL + 1), h
         ld      (ix + V_POS), (SAMP_WIN + 8) & $FF
         ld      (ix + V_POS + 1), (SAMP_WIN + 8) >> 8
         ld      (ix + V_FRAC), 0
@@ -2448,57 +2445,6 @@ probe_walk:
         ret
 
 ;-----------------------------------------------------------------------------
-; note_to_inc - HL = an Amiga period, out as the mixer's 8.8 sample increment.
-;
-; The reference turns a period into a frequency with `7159092 / (note_1 * 2)`
-; (sfxplayer.cpp) and our mixer steps its pointer in 8.8 fixed point at the DAC's rate,
-; which prescalar 40 makes 875,000 / 40 = 21,875 Hz. So the increment wanted is
-;
-;     freq * 256 / 21875  =  (7159092 / (2 * note)) * 256 / 21875  =  41891 / note
-;
-; ONE 16-BY-16 DIVIDE instead of a 24-bit divide followed by a multiply and another divide.
-; Checked against the reference's own arithmetic over every valid period, 0x37 to 0xFFF: the
-; largest disagreement is 0.012 of a 1/256th step, which is four thousandths of a semitone.
-;
-; A period of zero cannot happen - handlePattern tests note_1 against 0, 0xFFFD and 0xFFFE
-; before ever reaching here - but it returns the maximum rather than dividing by it.
-;-----------------------------------------------------------------------------
-NOTE_NUM        EQU 41891               ; 7159092 * 256 / (2 * 21875)
-
-note_to_inc:
-        ld      a, h
-        or      l
-        jr      nz, .ok
-        ld      hl, $FFFF
-        ret
-.ok:
-        ld      c, l
-        ld      b, h                    ; BC = the divisor
-        ld      hl, 0                   ; HL = the remainder as it builds
-        ld      de, NOTE_NUM            ; DE = the dividend, and the quotient replaces it
-        ld      a, 16
-.loop:
-        ex      de, hl
-        add     hl, hl                  ; shift the dividend left, top bit into carry
-        ex      de, hl
-        adc     hl, hl                  ; and into the remainder
-        sbc     hl, bc
-        jr      nc, .fits
-        add     hl, bc                  ; it did not fit: put it back
-        dec     e                       ; and the quotient bit stays clear
-        inc     e
-        jr      .next
-.fits:
-        inc     e                       ; set the quotient's low bit
-.next:
-        dec     a
-        jr      nz, .loop
-        ex      de, hl                  ; HL = the quotient, 8.8
-        ret
-
-
-
-;-----------------------------------------------------------------------------
 ; voice_locate - A = a resource id and (mp_chan) = the channel. On exit mv_page holds the
 ; resource's first page and IX points at that channel's voice. Carry set means the resource is
 ; not resident, and nothing was written.
@@ -2562,6 +2508,65 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
         DISPLAY "> resource tables end at ", /H, $
         ASSERT $ <= PAL_BASE
 
+        ; NOTE_TO_INC LIVES IN MMU6, not in the resident block, which ran out of room when
+        ; the mixer's loop restore went in. MMU6 is mapped at every moment, so code runs
+        ; from it as happily as data sits in it, and the seventy-two bytes between
+        ; SND_BLOCK and the order table were the largest gap left anywhere in the program.
+        ORG NOTE_CODE
+;-----------------------------------------------------------------------------
+; note_to_inc - HL = an Amiga period, out as the mixer's 8.8 sample increment.
+;
+; The reference turns a period into a frequency with `7159092 / (note_1 * 2)`
+; (sfxplayer.cpp) and our mixer steps its pointer in 8.8 fixed point at the DAC's rate,
+; which prescalar 40 makes 875,000 / 40 = 21,875 Hz. So the increment wanted is
+;
+;     freq * 256 / 21875  =  (7159092 / (2 * note)) * 256 / 21875  =  41891 / note
+;
+; ONE 16-BY-16 DIVIDE instead of a 24-bit divide followed by a multiply and another divide.
+; Checked against the reference's own arithmetic over every valid period, 0x37 to 0xFFF: the
+; largest disagreement is 0.012 of a 1/256th step, which is four thousandths of a semitone.
+;
+; A period of zero cannot happen - handlePattern tests note_1 against 0, 0xFFFD and 0xFFFE
+; before ever reaching here - but it returns the maximum rather than dividing by it.
+;-----------------------------------------------------------------------------
+NOTE_NUM        EQU 41891               ; 7159092 * 256 / (2 * 21875)
+
+note_to_inc:
+        ld      a, h
+        or      l
+        jr      nz, .ok
+        ld      hl, $FFFF
+        ret
+.ok:
+        ld      c, l
+        ld      b, h                    ; BC = the divisor
+        ld      hl, 0                   ; HL = the remainder as it builds
+        ld      de, NOTE_NUM            ; DE = the dividend, and the quotient replaces it
+        ld      a, 16
+.loop:
+        ex      de, hl
+        add     hl, hl                  ; shift the dividend left, top bit into carry
+        ex      de, hl
+        adc     hl, hl                  ; and into the remainder
+        sbc     hl, bc
+        jr      nc, .fits
+        add     hl, bc                  ; it did not fit: put it back
+        dec     e                       ; and the quotient bit stays clear
+        inc     e
+        jr      .next
+.fits:
+        inc     e                       ; set the quotient's low bit
+.next:
+        dec     a
+        jr      nz, .loop
+        ex      de, hl                  ; HL = the quotient, 8.8
+        ret
+
+
+
+        DISPLAY "> note_to_inc at ", /H, NOTE_CODE, " ending ", /H, $
+        ASSERT $ <= MUS_ORDER_AT
+
         ORG SND_FREQ
         INCLUDE "build/sndfreq.inc"
         ASSERT $ <= RD_LOG_AT
@@ -2608,7 +2613,7 @@ nm_tail:    db ".BIN", 0
         ASSERT STR_BLOCK   >= DRAW_BLOCK + 10
         ASSERT MUS_ORDER_AT >= STR_BLOCK + 16
         ASSERT SND_BLOCK   >= MUS_BLOCK + 4
-        ASSERT MUS_ORDER_AT >= SND_BLOCK + 4
+        ASSERT NOTE_CODE   >= SND_BLOCK + 4
         ASSERT SND_FREQ    >= VEC_TABLE + 257
         ASSERT SND_FREQ + 80 <= VEC_TRAMP
         ASSERT MUS_INSTR_AT >= MUS_ORDER_AT + $80

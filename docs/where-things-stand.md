@@ -2791,6 +2791,29 @@ there is no "which voice stores" state left to get wrong. `mix_voice_first` is n
 of the game entirely - sndtest still uses it - which the resident block needed, having had four
 bytes left in it.
 
+**A SIXTH BUG, and the mixing gate did not catch it - `check-aw` did, as a HANG.** With the
+block splitting wired in, a **multi-page looping** sample wedged the machine inside the
+interrupt. `V_LOOP` is an address in the sample's **first** window - `voice_setup` only records
+a loop point it can reach there - so returning to it while `V_PAGE` and `V_END` still described
+the **last** window left the position past the end with nothing behind it: `voice_run` returned
+zero, `voice_advance` looped straight back to the same place, and neither ever moved. Read off
+the wedged machine:
+
+```
+WEDGED after 6s: ticks stuck at 288, 549 records dispatched
+  ch2 active=1 page=74 pos=0xf010 end=0xe674 loop=0xf010 left=0 incf=51
+```
+
+`pos == loop`, `pos > end`, nothing left, still active. 549 records is exactly where `check-aw`
+stopped. The module's own instruments are multi-page and looped, so the intro reached it inside a
+minute - and it is why `check-draw`, `check-res` and `check-text` all passed while `check-aw` and
+`check-input` did not: the short gates never get there.
+
+Looping now restores the **page and the window** with the position, which needs two fields the
+voice record did not have - `V_PAGE0` and `V_TOTAL`, taking `V_SIZE` from 15 to 18. Worth naming:
+**the mixing gate proved the output byte-exact over two page boundaries and still missed this**,
+because its sample does not loop. A gate proves what it exercises.
+
 **Three wrap tests now compare only the high byte**, the ring's end being page-aligned, and an
 `ASSERT (RING_END & $FF) == 0` makes sure it stays that way.
 
