@@ -28,12 +28,16 @@ PROBE = os.environ.get("PROBE", "preflight/hostprobe/probe")
 PAL_BASE, TEXT_PAGE, NR_MMU7, DWIN = 0xEE00, 1, 0x57, 0xE000
 VOICES_AT, V_SIZE, V_ACTIVE = 0xDD00, 18, 11
 
-# index, and why it is here
+# index, and why it is here. None means "do not poke a part or a filename at all" - the game's
+# own boot, which is I8: fname is zero-filled in the image, so an empty first byte tells the
+# boot path that nothing asked for a particular segment and it should set up START_PART instead.
 CASES = [
+    (None, "I8: the game's own boot, no name poked"),
     (1, "the introduction: no second polygon set"),
     (2, "gameplay: a second polygon set, $11"),
     (5, "the battlechar cinematic: no second set"),
 ]
+START_PART = 0                          # the protection screen; 1 with BYPASS_PROTECTION
 
 
 def symbols(path):
@@ -64,17 +68,26 @@ def main():
 
     bad = []
     for index, why in CASES:
-        pal, code, cin, vid2 = parts[index]
+        boot = index is None
+        pal, code, cin, vid2 = parts[START_PART if boot else index]
         z.cmd(f"smartload /work/{NEX}")
         time.sleep(3.2)
         z.cmd("set-memory-zone -1")
-        z.cmd(f"write-memory-raw {sym['fname']} {(b'RES18.BIN' + bytes(1)).hex()}")
-        z.cmd(f"write-memory {sym['probe_part']} {index + 1}")
+        if not boot:
+            z.cmd(f"write-memory-raw {sym['fname']} {(b'RES18.BIN' + bytes(1)).hex()}")
+            z.cmd(f"write-memory {sym['probe_part']} {index + 1}")
         z.cmd(f"write-memory {sym['go']} 1")
-        for _ in range(900):
-            if read(sym["done"], 1)[0] == 0x5A:
-                break
-            time.sleep(0.05)
+        if boot:
+            # THE GAME DOES NOT STOP. With no name poked the boot path sets the part up and then
+            # enters the C, whose main never returns - so `done` never comes. Two seconds is
+            # comfortably past the three resource loads and far short of the VM getting around
+            # to requesting a part of its own, which would change the very thing being checked.
+            time.sleep(2.0)
+        else:
+            for _ in range(900):
+                if read(sym["done"], 1)[0] == 0x5A:
+                    break
+                time.sleep(0.05)
 
         pages = read(sym["res_page"], 256)
         fails = []
@@ -104,6 +117,13 @@ def main():
         if got_vid2 != want_vid2:
             fails.append(f"the second polygon window is at page {got_vid2}, wanted {want_vid2}")
 
+        # THE PC GUARD, which the fixed load sets from the loader and a part must set from the
+        # resource table. A part running with the previous part's bound faults or runs off.
+        got_guard = int.from_bytes(read(0xC010, 2), "little")
+        want_guard = os.path.getsize(os.path.join(ASSETS, f"RES{code:02X}.BIN"))
+        if got_guard != want_guard:
+            fails.append(f"the pc guard is {got_guard:,}, RES{code:02X} is {want_guard:,} bytes")
+
         # claim 1: nothing is playing
         if read(sym["mus_playing"], 1)[0]:
             fails.append("the player is still running")
@@ -122,10 +142,11 @@ def main():
                          f"{got_pal[d]:#04x} vs {want_pal[d]:#04x}")
 
         if fails:
-            print(f"  part {index} ({why}): " + "; ".join(fails[:3]))
+            print(f"  {'boot' if boot else f'part {index}'} ({why}): " + "; ".join(fails[:3]))
             bad += fails
         else:
-            print(f"  part {index} - {why:<40} palette {pal:#04x}, bytecode {code:#04x}"
+            label = "boot" if boot else f"part {index}"
+            print(f"  {label:<7} - {why:<40} palette {pal:#04x}, bytecode {code:#04x}"
                   f"@{pages[code]}, polygons {cin:#04x}@{pages[cin]}"
                   + (f" + {vid2:#04x}@{pages[vid2]}" if vid2 else ", no second set")
                   + ", silent  IDENTICAL")

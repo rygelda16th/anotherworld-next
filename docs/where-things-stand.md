@@ -2039,7 +2039,7 @@ had failed to find in dozens.
 | ~~**I5**~~ | ~~**sound in the game**~~ **DONE**, `make check-mus` - `op_playSound` and `op_playMusic` reach the player, the module is parsed, and the mixer maps each voice's own page | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | **PASSED**: three modules parsed and walked against a model of `sfxplayer.cpp`, the four voice records after 1, 70 and 100 events, and six `op_playSound` cases checked against the sample shapes the host probe logged the reference producing - a stop, a loop, three pages, both ends of the pitch table and the clamp. And the MIXER'S OUTPUT byte-exact on a real sample: all 2,048 ring bytes over 19,164 source bytes and two page boundaries, which took a rewrite of the per-voice loop and found five mixer bugs |
 | ~~**I6**~~ | ~~**part transitions**~~ **DONE**, `make check-part` - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
 | **I7** | **the full-screen bitmap path** | 70 of them load in the arena and no gate covers the machine half | the arena's bitmaps, on the machine, against the engine's pages |
-| **I8** | **the code screen, and its bypass** - which is a **starting part number**, not a subsystem | the wheel screen is `GAME_PART1` and is drawn by ordinary bytecode (`engine.cpp:71-73`); the bypass keeps every gate comparable to the reference build | the screen renders and accepts a correct code; with the flag set, part 2 starts directly, exactly as `BYPASS_PROTECTION` does |
+| ~~**I8**~~ | ~~**the code screen**~~ **DONE**, `make check-part`, and its bypass** - which is a **starting part number**, not a subsystem | the wheel screen is `GAME_PART1` and is drawn by ordinary bytecode (`engine.cpp:71-73`); the bypass keeps every gate comparable to the reference build | the screen renders and accepts a correct code; with the flag set, part 2 starts directly, exactly as `BYPASS_PROTECTION` does |
 | **I9** | **save and load** | in the definition of done, and the reference has a format to match | save mid-part, reload, and both the VM state and the opcode stream from that point match a run that never saved |
 | **I9a** | **the whole suite, on the game** | every gate in Chain 1 was run against a HARNESS, not against the integrated binary | all twelve checkers pass against `aw.nex` rather than their own `.nex`, and the four narrow gates below pass against a gameplay part |
 | **I10** | **playable to the end** - every part, real input | this is the goal | **a full playthrough under the patched ZEsarUX**, recorded, with the per-frame budget re-measured on the real thing against the per-part table |
@@ -3004,27 +3004,45 @@ pages per output group.
 72,000 frames of parts 2 and 3, so nothing measured so far has paid for this path -
 not its load time, not its blit cost, not the frame it lands in.
 
-#### I8. The code screen, and its bypass - much cheaper than it looks
+#### I8. The code screen, and its bypass - DONE, `make check-part`'s boot case
 
-**The protection screen is a game part.** `engine.cpp:71-73`:
+**The protection screen is a game part, and the bypass is a different starting part number.**
+`engine.cpp:71-73`:
 
     uint16_t part = GAME_PART1;  // This game part is the protection screen
     #ifdef BYPASS_PROTECTION
       part = GAME_PART2;
 
-`GAME_PART1` is `0x3E80` and its three resources are `0x14`, `0x15`, `0x16`
-(`parts.cpp`, first row, commented "protection screens"). There is no special-case
-code to port: the wheel screen is drawn by the same opcodes as everything else, and
-**the bypass is a different starting part number.** Part 10, `0x3E89`, is the
-password screen and is likewise just a part.
+There is no special-case code to port: the wheel screen is drawn by the same opcodes as
+everything else. So I8 is a starting index - `START_PART`, 0 for the wheel and 1 with
+`BYPASS_PROTECTION` - and the game now boots into it.
 
-So I8 is: start at part 1, and a build flag that starts at part 2 instead. It earns
-its place in the chain only because it must be *decided* rather than discovered, and
-because the flag keeps every gate comparable to the reference build the measurements
-came from.
+**One binary still serves the game and every gate**, which is the part worth recording.
+`fname` is zero-filled in the image and every checker **pokes** it before setting `go`, so an
+empty first byte means nothing asked for a particular segment - and that is the game starting
+normally. A poked name keeps the fixed load all fourteen gates are built on, untouched; an empty
+one takes the part path. `check-part`'s first case pokes nothing and gets part 0:
 
-**Gate:** the screen renders and accepts a correct code; with the flag set, part 2
-starts directly, exactly as `BYPASS_PROTECTION` does.
+```
+boot  palette 0x14, bytecode 0x15@73, polygons 0x16@74, no second set, silent
+```
+
+**The pc guard cost a gate to get right.** The fixed load sets it from what the loader last
+read, and the part path originally joined *above* that store - so a part ran with the length of
+the **last resource loaded**, which is the cinematic, not the bytecode. The boot case came back
+with a guard of 5,124 when RES15 is 4,321, and 5,124 is resource `$16` exactly. `aw_setup_part`
+takes the length from the resource table now, and the part path joins below the fixed path's
+store.
+
+The boot case also waits two seconds rather than polling for `done`: with no name poked the game
+does not stop, because `main` never returns. Two seconds is past the three loads and well short
+of the VM getting around to requesting a part of its own, which would change the very thing
+being checked.
+
+**What is still owed here:** the wheel screen needs the **code wheel's own input** - it asks for
+a code and the player types it. That is `op_drawString` and the keyboard, both of which exist,
+driven by part 0's own bytecode - so it should need no new code, but nothing has watched it run.
+That is I10's business, and `BYPASS_PROTECTION` is what makes I10 reachable without it.
 
 #### I9. Save and load
 

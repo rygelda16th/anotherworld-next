@@ -59,6 +59,15 @@ NR_MMU7         EQU $57
 
 CODE_WIN        EQU $0000               ; what vmhost.inc slides the bytecode through
 CODE_PAGE       EQU 48                  ; eight 8K pages for the bytecode segment
+; I8. WHERE THE GAME STARTS. engine.cpp:71-73 - the protection screen IS GAME_PART1, and the
+; bypass is `part = GAME_PART2` instead. Both are ordinary parts, so this is a starting index
+; and not a feature: 0 is the wheel screen, 1 is the introduction cinematic. Build with
+; -DBYPASS_PROTECTION (sjasmplus: --define BYPASS_PROTECTION) to skip the wheel.
+    IFDEF BYPASS_PROTECTION
+START_PART      EQU 1
+    ELSE
+START_PART      EQU 0
+    ENDIF
 POLY_PAGE       EQU 56                  ; and eight for the cinematic segment
 ; I3's heap: resources the bytecode asks for at runtime, allocated a page at a time.
 ; The reference's own high-water mark across the parts measured is 305,919 bytes - 38
@@ -342,6 +351,24 @@ start:
         or      a
         jr      z, .wait
 
+        ; I8. WHERE THE GAME STARTS, and how one binary serves both it and every gate.
+        ;
+        ; fname is zero-filled in the image and every checker POKES it before setting go - so an
+        ; empty first byte means nothing asked for a particular segment, which is the game
+        ; starting normally. It starts by setting up a PART: engine.cpp:75 is
+        ; `vm.initForPart(part)` with `part = GAME_PART1`, and there is no special-case code for
+        ; the protection screen to port, because the wheel is drawn by the same opcodes as
+        ; everything else. The bypass is a different starting part number and nothing more.
+        ;
+        ; A poked name keeps the fixed load every gate so far is built on, unchanged.
+        ld      a, (fname)
+        or      a
+        jr      nz, .fixed
+        ld      a, START_PART
+        call    aw_setup_part
+        jp      .ready                  ; NOT .loaded: that sets the pc guard from the loader's
+                                        ; last read, and aw_setup_part has already set it right
+.fixed:
         ; DI ACROSS THE DOS CALL. esxDOS pages itself over the bottom 16K and keeps
         ; state across the RST $08; an interrupt taken inside that - even one whose
         ; vector table and handler are both in resident RAM - froze the machine dead
@@ -381,12 +408,18 @@ start:
         ld      bc, 1024
         call    load_flat
 .loaded:
+        ; THE PC GUARD IS THE FIXED PATH'S ALONE. It takes the length from what the loader last
+        ; read, and for a PART that is the wrong resource entirely - the cinematic, because that
+        ; is loaded after the bytecode. aw_setup_part sets the guard from the resource table
+        ; instead, and the part path joins below this. It cost a gate: the boot case came back
+        ; with a guard of 5,124, which is resource $16, part 0's polygons.
+        ld      hl, (got)
+        ld      (CTL + $10), hl
+.ready:
         ei
         ld      a, (err)
         or      a
         jp      nz, .stop               ; jp, not jr: probe_snd pushed .stop out of reach
-        ld      hl, (got)
-        ld      (CTL + $10), hl         ; the segment length, for the pc guard
 
         ; A PROBE PATH: one draw from a poked DRAW_BLOCK, with the C never entered.
         ; It exists to settle one question - whether the reader gets a particular record
@@ -2552,6 +2585,24 @@ aw_setup_part:
         ld      a, (hl)
         call    part_load
         ld      (code_add + 1), a
+
+        ; THE PC GUARD, which the fixed path sets from what the loader read. A part's bytecode
+        ; length is in the resource table, and vm.c faults a thread whose pc leaves the segment -
+        ; without this a part would run with the previous part's bound.
+        ld      hl, (part_ptr)
+        inc     hl
+        ld      a, (hl)
+        ld      h, 0
+        ld      l, a
+        add     hl, hl
+        add     hl, hl                  ; four bytes an entry: type, size as a word, pages
+        ld      de, res_table
+        add     hl, de
+        inc     hl
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        ld      (CTL + $10), de
 
         ; the cinematic polygons
         ld      hl, (part_ptr)
