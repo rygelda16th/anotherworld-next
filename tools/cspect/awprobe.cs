@@ -38,6 +38,7 @@ namespace AWProbe
         // its FIRST instruction, with the stack still holding whatever put it there.
         const int WIN_TOP = 0x4000;
         bool off = false;
+        int goAddr = 0;
         bool armed = false;
         int trapped = 0;
 
@@ -52,6 +53,8 @@ namespace AWProbe
             logPath = p;
             log = new StreamWriter(p);
             log.AutoFlush = true;
+            string g = Environment.GetEnvironmentVariable("AWPROBE_GO");
+            if (!string.IsNullOrEmpty(g)) goAddr = Convert.ToInt32(g, 16);
             string m = Environment.GetEnvironmentVariable("AWPROBE_MAX");
             if (!string.IsNullOrEmpty(m)) int.TryParse(m, out maxReports);
             log.WriteLine("# AWProbe up");
@@ -140,7 +143,16 @@ namespace AWProbe
             log.WriteLine(pal.ToString());
         }
 
-        public void Tick() { if (off) return; ticks++; Sample(); }
+        // AWPROBE_GO releases the ENTER wait from outside, so the SHIPPED image - the one
+        // that waits at its title screen - can be run unattended without building a
+        // different one. It pokes the flag the key handler would have poked.
+        public void Tick()
+        {
+            if (off) return;
+            ticks++;
+            if (goAddr != 0 && ticks == 150) { CSpect.Poke((ushort)goAddr, 1); log.WriteLine("# released the ENTER wait"); }
+            Sample();
+        }
         public void OSTick() { osticks++; }
         public bool Write(eAccess _t, int _p, int _id, byte _v) { return false; }
 
