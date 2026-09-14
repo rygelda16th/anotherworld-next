@@ -720,10 +720,10 @@ poly_read:
         ld      hl, (rd_zoom)
         ld      a, h
         or      a
-        jr      nz, .each_pt
+        jp      nz, .each_pt            ; a zoom of 256 or more: the general walk
         ld      a, l
         cp      $40
-        jr      nz, .each_pt
+        jr      nz, .zlow               ; under 256 but not the identity: see .zlow
         ld      hl, (rd_src)
         ld      bc, rd_record + 10
 .fast_pt:
@@ -753,6 +753,69 @@ poly_read:
         jr      nz, .fast_pt
         ld      (rd_src), hl
         jp      .draw
+
+        ; ZOOM UNDER 256, the rest of the common case. zoom_byte's (b * zoom) >> 6 and then
+        ; mul_hl_a's scale, in registers instead of through four calls and memory: about 180 T a
+        ; coordinate against about 570. The heavy stretches of the intro draw mostly at zooms that
+        ; miss the identity path above, and the profile there put this walk at 13% of the time
+        ; outside the interrupt. Same bits:
+        ;   P = b * zoom < 65,536, so R = P >> 6 is D shifted left twice with E's top bits in (the
+        ;   low byte) and D's top two bits (the high byte, 0..3)
+        ;   scale_ux / scale_uy(R) = (lo(R) * M) >> 8 + hi(R) * M, with the carry, M = 205 or 246
+.zlow:
+        ld      (.zx + 1), a            ; the zoom's low byte into both multiplies
+        ld      (.zy + 1), a
+        ld      hl, (rd_src)
+        ld      bc, rd_record + 10
+.zlow_pt:
+        ld      d, (hl)
+        inc     hl
+.zx:    ld      e, 0                    ; the zoom (patched)
+        ld      a, X_MUL
+        call    .zscale
+        ld      d, (hl)
+        inc     hl
+.zy:    ld      e, 0
+        ld      a, Y_MUL
+        call    .zscale
+        ld      a, (rd_n)
+        dec     a
+        ld      (rd_n), a
+        jr      nz, .zlow_pt
+        ld      (rd_src), hl
+        jp      .draw
+
+; D = the byte, E = the zoom, A = the scale; stores the scaled coordinate as a word at BC.
+.zscale:
+        ld      (.zm1 + 1), a
+        ld      (.zm2 + 1), a
+        mul     d, e                    ; DE = b * zoom
+        ld      a, d
+        rlca
+        rlca
+        and     3
+        ex      af, af'                 ; A' = hi(R); the interrupt saves AF'
+        ld      a, e
+        rla
+        rl      d
+        rla
+        rl      d                       ; D = lo(R)
+.zm1:   ld      e, 0                    ; M (patched)
+        mul     d, e                    ; D = (lo(R) * M) >> 8
+        ld      a, d
+        ex      af, af'                 ; A = hi(R), A' = that high byte
+        ld      d, a
+.zm2:   ld      e, 0                    ; M (patched)
+        mul     d, e                    ; DE = hi(R) * M
+        ex      af, af'
+        add     a, e
+        ld      (bc), a
+        inc     bc
+        ld      a, d
+        adc     a, 0
+        ld      (bc), a
+        inc     bc
+        ret
 .each_pt:
         call    .next_byte
         call    zoom_byte

@@ -1172,79 +1172,6 @@ aw_fill_page:
         ld      (cur_band), a
         ret
 
-; copyPage, video.cpp:513. Same page in and out does nothing. The scrolled form is
-; NOT implemented here and says so: it needs vscroll, which our op_copyVideoPage does
-; not yet pass, and the scroll is in the reference's 200-line geometry so it has to be
-; scaled the way every other Y is. Recorded as I2's remaining work rather than guessed.
-aw_copy_page:
-        ld      (jt_arg), hl    ; the fastcall argument, before a counter clobbers HL
-        ld      hl, (n_copy)
-        inc     hl
-        ld      (n_copy), hl
-        ld      a, (jt_arg)
-        ld      c, a                    ; C = src as given
-        ld      a, (jt_arg + 1)
-        ld      (cp_dstid), a           ; the destination id, in MEMORY not in B -
-                                        ; page_to_p0 uses B (`ld b, a`) and clobbered it,
-                                        ; so the `ld a, b` meant to recover the
-                                        ; destination read rubbish and both ends resolved
-                                        ; to page 0. The copy then copied page 0 onto
-                                        ; itself and pages 1 and 2 stayed empty. This
-                                        ; project's own traps list warns about exactly
-                                        ; this - helpers that build an index clobber the
-                                        ; register you were holding a value in.
-        cp      c
-        ret     z                       ; src == dst: the reference returns
-        ld      a, c
-        cp      $FE
-        jr      nc, .plain              ; >= $FE is always a plain copy
-        and     $BF
-        ld      c, a
-        bit     7, a
-        jr      nz, .scrolled
-.plain:
-        ld      a, c
-        call    resolve_page
-        ld      (cp_sidx), a
-        call    page_to_p0
-        ld      (cp_src), a
-        ld      a, (cp_dstid)
-        call    resolve_page
-        ld      (cp_didx), a
-        call    page_to_p0
-        ld      (cp_dst), a
-        call    dt_copy_mask            ; which bands actually differ; see dirty_band
-        ld      d, BANDS
-        ld      e, 0
-.cband:
-        srl     b                       ; dt_copy_mask left the band mask in B
-        jr      nc, .cskip
-        ld      a, (cp_src)
-        add     a, e
-        nextreg NR_CPWIN_MMU, a
-        ld      a, (cp_dst)
-        add     a, e
-        nextreg NR_DWIN_MMU, a
-        push    bc                      ; the mask: dma_mem takes BC
-        push    de
-        ld      hl, CPWIN
-        ld      de, DWIN
-        ld      bc, $2000
-        xor     a                       ; a copy
-        call    dma_mem                 ; 8K at the DMA's speed, not LDIR's 21 T a byte
-        pop     de
-        pop     bc
-.cskip:
-        inc     e
-        dec     d
-        jr      nz, .cband
-        ld      a, 255
-        ld      (cur_band), a
-        ret
-.scrolled:
-        ld      a, 1
-        ld      (cp_unimpl), a          ; counted, not guessed: see the comment
-        ret
 
 ; updateDisplay, video.cpp:597. $FE changes nothing, $FF swaps the two display pages,
 ; anything else selects one - and THEN the requested palette is applied, before the
@@ -4184,6 +4111,82 @@ mb_silence:
         ret
 
 mb_stored:      db 0
+
+; aw_copy_page lives up here with the copper code, out of the resident block: only the C's jump
+; table calls it, and nothing it touches cares where it runs from.
+; copyPage, video.cpp:513. Same page in and out does nothing. The scrolled form is
+; NOT implemented here and says so: it needs vscroll, which our op_copyVideoPage does
+; not yet pass, and the scroll is in the reference's 200-line geometry so it has to be
+; scaled the way every other Y is. Recorded as I2's remaining work rather than guessed.
+aw_copy_page:
+        ld      (jt_arg), hl    ; the fastcall argument, before a counter clobbers HL
+        ld      hl, (n_copy)
+        inc     hl
+        ld      (n_copy), hl
+        ld      a, (jt_arg)
+        ld      c, a                    ; C = src as given
+        ld      a, (jt_arg + 1)
+        ld      (cp_dstid), a           ; the destination id, in MEMORY not in B -
+                                        ; page_to_p0 uses B (`ld b, a`) and clobbered it,
+                                        ; so the `ld a, b` meant to recover the
+                                        ; destination read rubbish and both ends resolved
+                                        ; to page 0. The copy then copied page 0 onto
+                                        ; itself and pages 1 and 2 stayed empty. This
+                                        ; project's own traps list warns about exactly
+                                        ; this - helpers that build an index clobber the
+                                        ; register you were holding a value in.
+        cp      c
+        ret     z                       ; src == dst: the reference returns
+        ld      a, c
+        cp      $FE
+        jr      nc, .plain              ; >= $FE is always a plain copy
+        and     $BF
+        ld      c, a
+        bit     7, a
+        jr      nz, .scrolled
+.plain:
+        ld      a, c
+        call    resolve_page
+        ld      (cp_sidx), a
+        call    page_to_p0
+        ld      (cp_src), a
+        ld      a, (cp_dstid)
+        call    resolve_page
+        ld      (cp_didx), a
+        call    page_to_p0
+        ld      (cp_dst), a
+        call    dt_copy_mask            ; which bands actually differ; see dirty_band
+        ld      d, BANDS
+        ld      e, 0
+.cband:
+        srl     b                       ; dt_copy_mask left the band mask in B
+        jr      nc, .cskip
+        ld      a, (cp_src)
+        add     a, e
+        nextreg NR_CPWIN_MMU, a
+        ld      a, (cp_dst)
+        add     a, e
+        nextreg NR_DWIN_MMU, a
+        push    bc                      ; the mask: dma_mem takes BC
+        push    de
+        ld      hl, CPWIN
+        ld      de, DWIN
+        ld      bc, $2000
+        xor     a                       ; a copy
+        call    dma_mem                 ; 8K at the DMA's speed, not LDIR's 21 T a byte
+        pop     de
+        pop     bc
+.cskip:
+        inc     e
+        dec     d
+        jr      nz, .cband
+        ld      a, 255
+        ld      (cur_band), a
+        ret
+.scrolled:
+        ld      a, 1
+        ld      (cp_unimpl), a          ; counted, not guessed: see the comment
+        ret
 
 ;-----------------------------------------------------------------------------
 ; nr_read - A = a Next register, out as its value. Clobbers BC and E.
