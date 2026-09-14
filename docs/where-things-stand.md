@@ -3578,7 +3578,7 @@ run until the KS3 arrives, and it is the only step in this document of which tha
 true. It is also where the one genuinely unmeasurable number lands: esxDOS read
 rate, which step 5 established the emulator cannot time.
 
-### Four gates are narrower than they sound, and must be re-run before I10
+### Four gates are narrower than they sound - three are now settled, one is not
 
 Every gate in Chain 1 that used bytecode used **the intro's** bytecode. The intro is
 a cinematic: it draws polygons, blits, and pauses. It does not exercise what gameplay
@@ -3602,6 +3602,34 @@ exercises.
 So I2, I4, I5 and Gate D itself each get a second run against a **gameplay** part
 before I10 is allowed to pass. That is cheap - the reference length is a parameter
 now - and it is the difference between "the intro works" and "the game works".
+
+**Where that has got to, 2026-09-14:**
+
+| | state |
+|---|---|
+| **Gate D** | **DONE** - `make check-boot AW_PART=2` passes all 759 records of part 2's stream |
+| **I5** | effectively done by `check-mus`, which gates three modules, six `op_playSound` cases and the mixer's OUTPUT on a real sample. The paragraph above is about `check-snd`'s synthetic ramp and remains true of that gate alone |
+| **I4** | does not apply in the form written. `check-text` drives `drawString` directly BY DESIGN, because text needs input and every trace is input-free; it is not a per-part gate. What a second run would add is gameplay's own strings, and the machine can now reach them - see the synthetic player under I10 |
+| **I2** | **still owed**, and it is the one with a real obstacle rather than a missing fixture - see below |
+
+**Gate D's gameplay run is the pattern for the rest, and the cut is the whole difficulty.** The
+probe reaches a later part through `instrJumpPart`, but a jump is a REQUEST: the engine finishes
+the frame it is in and the part it was already running keeps dispatching until the change is
+acted on. Taken straight, the stream opens with three frames of part 1 - and the harness starts
+the new part's bytecode at its first instruction, so it diverged at record two, both sides
+dispatching `call` at pc 0 and going to 444 and 231. `initForPart` resets thread 0 to pc 0 and
+the probe logs that as `thread <frame> 0 0`; the first is the boot, the next is the jump.
+`tools/mkpartops.py` cuts there and renumbers, and the result then opens record for record with
+what the machine had already produced.
+
+**What stands in I2's way is not a fixture.** `check-draw` aligns machine and reference on a
+blit and compares all four pages. For a gameplay part the two do not start from the same picture:
+the probe's run reaches part 2 by JUMPING into it, so its pages carry part 1's leftovers, while a
+machine booting into part 2 through `start_part` begins blank. Part 2's script fills early -
+twelve fills in thirty frames against the intro's three - so they may converge, but "may" is not
+a gate. Settling it means either making the probe start in the part rather than jump into it, or
+finding the first blit after which both are provably identical. **That is the named next step,
+and it is a measurement, not a guess.**
 
 ### Decisions and measurements still owed
 
