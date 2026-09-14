@@ -40,6 +40,8 @@ namespace AWProbe
         bool off = false;
         int goAddr = 0;
         int blitAddr = 0, blitAt = 0; bool blitDumped = false;
+        int paceTicks = 0, paceBlit = 0, pacePoly = 0, lastBlit = -1;
+        StreamWriter pace;
         bool armed = false;
         int trapped = 0;
 
@@ -61,6 +63,18 @@ namespace AWProbe
             // is captured, rather than whatever happened to be up at a round number of seconds.
             string bl = Environment.GetEnvironmentVariable("AWPROBE_BLIT");
             if (!string.IsNullOrEmpty(bl)) { var parts = bl.Split(':'); blitAddr = Convert.ToInt32(parts[0], 16); blitAt = int.Parse(parts[1]); }
+            // AWPROBE_PACE=<ticks>:<n_blit>:<n_poly> writes one line per blit to <log>.pace:
+            // the game's own 50 Hz tick count, the VM's frame count and the polygon count at
+            // the moment the blit counter moved. Emulated time throughout, so the host's speed
+            // does not enter into it.
+            string pc = Environment.GetEnvironmentVariable("AWPROBE_PACE");
+            if (!string.IsNullOrEmpty(pc))
+            {
+                var q = pc.Split(':');
+                paceTicks = Convert.ToInt32(q[0], 16); paceBlit = Convert.ToInt32(q[1], 16); pacePoly = Convert.ToInt32(q[2], 16);
+                pace = new StreamWriter(p + ".pace"); pace.AutoFlush = true;
+                pace.WriteLine("# blit ticks vmframes polys");
+            }
             string m = Environment.GetEnvironmentVariable("AWPROBE_MAX");
             if (!string.IsNullOrEmpty(m)) int.TryParse(m, out maxReports);
             log.WriteLine("# AWProbe up");
@@ -157,6 +171,11 @@ namespace AWProbe
             if (off) return;
             ticks++;
             if (goAddr != 0 && ticks == 150) { CSpect.Poke((ushort)goAddr, 1); log.WriteLine("# released the ENTER wait"); }
+            if (pace != null)
+            {
+                int b = W(paceBlit);
+                if (b != lastBlit) { lastBlit = b; pace.WriteLine("{0} {1} {2} {3}", b, W(paceTicks), W(0xC008), W(pacePoly)); }
+            }
             if (blitAddr != 0 && !blitDumped && W(blitAddr) >= blitAt) { blitDumped = true; DumpScreen(100000 + W(blitAddr)); }
             Sample();
         }
