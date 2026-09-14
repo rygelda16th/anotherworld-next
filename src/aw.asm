@@ -72,6 +72,11 @@ POLY_PAGE       EQU 56                  ; and eight for the cinematic segment
 ; I3's heap: resources the bytecode asks for at runtime, allocated a page at a time.
 ; The reference's own high-water mark across the parts measured is 305,919 bytes - 38
 ; pages - so 40 is the reservation, and running past it is a fault rather than a wrap.
+; I7. SIX PAGES OF BITMAP SCRATCH, between the cinematic segment's eight and the heap's forty.
+; A full-screen bitmap is never resident: loadMarkedAsNeeded loads an RT_POLY_ANIM into a scratch
+; pointer, presents it at once and marks it NOT_NEEDED (resource.cpp:193, :211-214). Part 7 loads
+; seventy of them, and seventy times six pages is more memory than the machine has.
+BMP_PAGE        EQU 64
 RES_FIRST_PAGE  EQU 72
 RES_MAX_PAGES   EQU 40
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
@@ -82,7 +87,11 @@ STACK_FLOOR     EQU $CF00
 ; Code ABOVE the C's image, in the tail the stack vacated when it moved into MMU6. The C is
 ; 7.8K from $9C00 and ends near $BB50, so this is the 1,100-odd bytes between that and $BF00 -
 ; which used to be stack and is now the only resident space left. Asserted at both ends.
-MUSIC_CODE      EQU $BB58   ; just past the C's image
+; $BAD0, which is a dozen bytes past where the C's image ends. The ASSERT below the C's INCLUDE
+; polices it, so a C that grows past here fails the build loudly rather than quietly overwriting
+; the music code - and the 136 bytes reclaimed from the old $BB58 are what let I7's present_bitmap
+; and voice_locate move up here when the resident block had nothing left.
+MUSIC_CODE      EQU $BAD0
 INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
 ; I3's tables, in MMU6's page rather than the resident region, which the rasteriser and
 ; the C had already filled: 584 bytes of resource table and 146 of load state is 730, and
@@ -492,6 +501,16 @@ start:
         call    aw_setup_part
         jp      .stop
 .not_part:
+        ; probe_bmp: hand a bitmap resource to the loader, which presents it and forgets it, and
+        ; stop - so page 0 can be compared without the VM asking for it.
+        ld      a, (probe_bmp)
+        or      a
+        jr      z, .not_bmp2
+        ld      l, a
+        ld      h, 0
+        call    aw_load_res
+        jp      .stop
+.not_bmp2:
         ld      a, (probe_str)
         or      a
         jr      z, .not_str
@@ -757,7 +776,12 @@ aw_load_res:
         or      a
         ret     z                       ; a zero-length entry: nothing to fetch
 
-        ; is there room? running out is a fault, not a wrap onto something else
+        ; is there room? running out is a fault, not a wrap onto something else. A BITMAP is
+        ; exempt: it goes to its own scratch and the heap never sees it.
+        ld      a, (res_type)
+        cp      2
+        jr      z, .room
+        ld      a, (res_pages)
         ld      hl, next_page
         add     a, (hl)
         sub     RES_FIRST_PAGE
@@ -798,7 +822,12 @@ aw_load_res:
         ld      bc, 5
         ldir                            ; ".BIN" and the terminator
 
+        ld      a, (res_type)           ; the heap, unless this is a bitmap
+        cp      2
+        ld      a, BMP_PAGE
+        jr      z, .dest
         ld      a, (next_page)
+.dest:
         ld      (ld_page), a
         di                              ; esxDOS wants the interrupt off: see load_code
         call    load_code
@@ -808,9 +837,20 @@ aw_load_res:
 
         ld      a, (err)
         or      a
-        jr      z, .loaded
+        jr      z, .read
         ld      (res_err), a
         ret
+.read:
+        ; A BITMAP IS PRESENTED AND FORGOTTEN. It never enters res_page and the cursor does not
+        ; move, so the next one reuses the same scratch - which is what MEMENTRY_STATE_NOT_NEEDED
+        ; amounts to (resource.cpp:214).
+        ld      a, (res_type)
+        cp      2
+        jr      nz, .loaded
+        ld      hl, (n_bmp)
+        inc     hl
+        ld      (n_bmp), hl
+        jp      present_bitmap
 .loaded:
         ld      a, (jt_arg)
         ld      h, 0
@@ -845,14 +885,6 @@ aw_inval_res:
 
 ; A = low nibble in, the ASCII hex digit out. Uppercase, because that is what
 ; mkassets.py wrote and esxDOS on a FAT card does not have to be case-blind.
-hex_digit:
-        and     $0F
-        add     a, '0'
-        cp      '9' + 1
-        ret     c
-        add     a, 'A' - '0' - 10
-        ret
-
 ;-----------------------------------------------------------------------------
 ; publish_input - the six variables inp_updatePlayer sets, into a fixed block the C
 ; reads at the top of every frame. A fixed address on both sides rather than a symbol
@@ -1570,6 +1602,80 @@ aw_play_music:
 
 resident_end:                           ; where the ordinary resident block reached
         ORG     MUSIC_CODE
+
+;-----------------------------------------------------------------------------
+; voice_locate - A = a resource id and (mp_chan) = the channel. On exit mv_page holds the
+; resource's first page and IX points at that channel's voice. Carry set means the resource is
+; not resident, and nothing was written.
+;
+; Both callers want exactly this and each had its own copy: thirty-six bytes of table lookup
+; and multiply, twice, in the block with the least room left in the program.
+;-----------------------------------------------------------------------------
+voice_locate:
+        ld      h, 0
+        ld      l, a
+        ld      de, res_page
+        add     hl, de
+        ld      a, (hl)
+        or      a
+        scf
+        ret     z                       ; not resident: carry set, mv_page untouched
+        ld      (mv_page), a
+        ld      hl, VOICES
+        ld      a, (mp_chan)
+        or      a
+        jr      z, .got
+        ld      de, V_SIZE
+.mul:
+        add     hl, de
+        dec     a
+        jr      nz, .mul
+.got:
+        push    hl
+        pop     ix
+        or      a                       ; carry clear: IX is the voice
+        ret
+
+;-----------------------------------------------------------------------------
+; I7. present_bitmap - copyPage(const uint8_t *src), video.cpp:550.
+;
+; The reference DEPLANES here: four planes 8,000 bytes apart, eight bits at a time, into 320x200
+; at four bits a pixel. mkassets.py has already done that at build time and written the result as
+; OUR page - 256x192 at 8bpp, 49,152 bytes - which check-bitmap proves pixel for pixel against
+; the engine's own deplaner on real resources. So the machine's half is a copy, and the deplaning
+; never has to happen at 28 MHz.
+;
+; Into PAGE 0 always: video.cpp:554 takes _pages[0] and not a page id. Six 8K bands, through MMU2
+; and MMU3 - the polygon segment window, which every draw re-maps from seg_base before it reads,
+; so clobbering it between opcodes costs nothing.
+;
+; 49,152 bytes of LDIR is about 1.8 frames at 28 MHz. The reference's deplane of 32,000 bytes is
+; not cheap either, and this is the path nothing has ever measured: part 7 loads seventy of these
+; and parts 2 and 3 load none, so no budget so far has paid for it.
+;-----------------------------------------------------------------------------
+present_bitmap:
+        ld      a, BMP_PAGE
+        ld      (bmp_src), a
+        ld      a, L2_BASE_BANK * 2     ; page 0's first 8K band
+        ld      (bmp_dst), a
+        ld      b, 6
+.band:
+        push    bc
+        ld      a, (bmp_src)
+        nextreg NR_SEG_MMU_LO, a
+        ld      a, (bmp_dst)
+        nextreg NR_SEG_MMU_HI, a
+        ld      hl, SEG_WIN
+        ld      de, SEG_WIN + $2000
+        ld      bc, $2000
+        ldir
+        ld      hl, bmp_src
+        inc     (hl)
+        ld      hl, bmp_dst
+        inc     (hl)
+        pop     bc
+        djnz    .band
+        ret
 ;-----------------------------------------------------------------------------
 ; music_tick - counts frames and runs an event when one is due. handleEvents,
 ; sfxplayer.cpp: the order table selects a 1024-byte pattern block, four channels of four
@@ -2340,6 +2446,8 @@ probe_snd:  db 0            ; 1 = load SND_BLOCK's resource and run aw_play_soun
 probe_mix:  db 0            ; blocks to mix after it, with the interrupt's mixer off
         EXPORT probe_part
 probe_part: db 0            ; a part index + 1: set that part up and stop
+        EXPORT probe_bmp
+probe_bmp:  db 0            ; a bitmap resource id: load and present it, then stop
         EXPORT probe_str
 probe_str:  db 0            ; 1 = draw one string from STR_BLOCK and stop, no VM
         EXPORT probe_fill
@@ -2448,6 +2556,10 @@ n_str:      dw 0
         EXPORT n_str_miss
 n_str_miss: dw 0
 res_type:   db 0
+bmp_src:    db 0            ; present_bitmap's walking source and destination bands
+bmp_dst:    db 0
+        EXPORT n_bmp
+n_bmp:      dw 0            ; full-screen bitmaps presented
 res_size:   dw 0
 res_pages:  db 0
         EXPORT res_err
@@ -2463,38 +2575,6 @@ n_inval:    dw 0
 
 
 
-;-----------------------------------------------------------------------------
-; voice_locate - A = a resource id and (mp_chan) = the channel. On exit mv_page holds the
-; resource's first page and IX points at that channel's voice. Carry set means the resource is
-; not resident, and nothing was written.
-;
-; Both callers want exactly this and each had its own copy: thirty-six bytes of table lookup
-; and multiply, twice, in the block with the least room left in the program.
-;-----------------------------------------------------------------------------
-voice_locate:
-        ld      h, 0
-        ld      l, a
-        ld      de, res_page
-        add     hl, de
-        ld      a, (hl)
-        or      a
-        scf
-        ret     z                       ; not resident: carry set, mv_page untouched
-        ld      (mv_page), a
-        ld      hl, VOICES
-        ld      a, (mp_chan)
-        or      a
-        jr      z, .got
-        ld      de, V_SIZE
-.mul:
-        add     hl, de
-        dec     a
-        jr      nz, .mul
-.got:
-        push    hl
-        pop     ix
-        or      a                       ; carry clear: IX is the voice
-        ret
 
         DISPLAY "> resident code and data end at ", /H, $
         ASSERT $ < CC_ORG
@@ -2532,6 +2612,17 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
         ; from it as happily as data sits in it, and the seventy-two bytes between
         ; SND_BLOCK and the order table were the largest gap left anywhere in the program.
         ORG PART_CODE
+; A = a low nibble, out as the ASCII hex digit. Uppercase, because that is what mkassets.py
+; writes. Up here because the resident block ran out and MMU6 is mapped at every moment - both
+; callers, aw_load_res's name builder and aw_setup_part's, reach it either way.
+hex_digit:
+        and     $0F
+        add     a, '0'
+        cp      '9' + 1
+        ret     c
+        add     a, 'A' - '0' - 10
+        ret
+
 ;-----------------------------------------------------------------------------
 ; I6. aw_setup_part - A = the part INDEX, 0..9. setupPart, resource.cpp:280, and the half of
 ; initForPart, vm.cpp, that is not the thread reset.

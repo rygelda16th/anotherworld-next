@@ -2038,7 +2038,7 @@ had failed to find in dozens.
 | ~~**I4**~~ | ~~text~~ **DONE**, `make check-text` - `op_drawString` and the font | the intro is unreadable without it, and it is small | every string the intro draws, pixel-exact against the reference |
 | ~~**I5**~~ | ~~**sound in the game**~~ **DONE**, `make check-mus` - `op_playSound` and `op_playMusic` reach the player, the module is parsed, and the mixer maps each voice's own page | Chain 1 proved the mixer's arithmetic against a synthetic ramp; it proved neither the game's own samples nor the module format | **PASSED**: three modules parsed and walked against a model of `sfxplayer.cpp`, the four voice records after 1, 70 and 100 events, and six `op_playSound` cases checked against the sample shapes the host probe logged the reference producing - a stop, a loop, three pages, both ends of the pitch table and the clamp. And the MIXER'S OUTPUT byte-exact on a real sample: all 2,048 ring bytes over 19,164 source bytes and two page boundaries, which took a rewrite of the per-voice loop and found five mixer bugs |
 | ~~**I6**~~ | ~~**part transitions**~~ **DONE**, `make check-part` - act on `aw_part_req`: tear down, load, restart | one part is a demo; the game is the sequence | the intro runs into part 2 and part 2 into part 3 unaided, and the opcode stream matches the engine's *across* the transition |
-| **I7** | **the full-screen bitmap path** | 70 of them load in the arena and no gate covers the machine half | the arena's bitmaps, on the machine, against the engine's pages |
+| ~~**I7**~~ | ~~**the full-screen bitmap**~~ **DONE**, `make check-bmp` path** | 70 of them load in the arena and no gate covers the machine half | the arena's bitmaps, on the machine, against the engine's pages |
 | ~~**I8**~~ | ~~**the code screen**~~ **DONE**, `make check-part`, and its bypass** - which is a **starting part number**, not a subsystem | the wheel screen is `GAME_PART1` and is drawn by ordinary bytecode (`engine.cpp:71-73`); the bypass keeps every gate comparable to the reference build | the screen renders and accepts a correct code; with the flag set, part 2 starts directly, exactly as `BYPASS_PROTECTION` does |
 | **I9** | **save and load** | in the definition of done, and the reference has a format to match | save mid-part, reload, and both the VM state and the opcode stream from that point match a run that never saved |
 | **I9a** | **the whole suite, on the game** | every gate in Chain 1 was run against a HARNESS, not against the integrated binary | all twelve checkers pass against `aw.nex` rather than their own `.nex`, and the four narrow gates below pass against a gameplay part |
@@ -2988,21 +2988,41 @@ not another.
 the engine's from the new bytecode, and that its first frames draw what the engine draws. The
 transition is right; the playing of what it set up is I9a's and I10's.
 
-#### I7. The full-screen bitmap path
+#### I7. The full-screen bitmap path - DONE, `make check-bmp`
 
-`RT_POLY_ANIM`, 0x7D00 bytes, presented by the second `copyPage` overload
-(`video.cpp:550`) which takes a raw source rather than a page id.
+**Three bitmaps presented on the machine, all 49,152 pixels of each identical**, in page 0, not
+resident, with the heap cursor untouched.
 
-Half of this is gated: `make check-bitmap` proves `mkassets.py`'s deplaner is the
-engine's, pixel for pixel, on real resources. The machine half does not exist. The
-data is one plane per 8K page and the deplaner reads one byte from each of four
-pages per output group.
+The machine's half turned out to be a **copy, not a deplane**. `copyPage(const uint8_t *src)`
+(`video.cpp:550`) unpicks four planes 8,000 bytes apart, eight bits at a time, into 320x200 at
+four bits a pixel - and `mkassets.py` already does exactly that at build time, writing the result
+as **our** page: 256x192 at 8bpp, 49,152 bytes. `make check-bitmap` proves that deplaner is the
+engine's pixel for pixel on real resources, so the two gates together cover `copyPage` end to
+end and the deplaning never has to happen at 28 MHz.
 
-**Gate:** the arena's bitmaps, on the machine, against the engine's pages.
+**Two things the reference does that were easy to get wrong, and both are now checked:**
 
-**Why this is work rather than wiring:** 70 of them load in part 7 and **zero** in
-72,000 frames of parts 2 and 3, so nothing measured so far has paid for this path -
-not its load time, not its blit cost, not the frame it lands in.
+| | |
+|---|---|
+| a bitmap goes to **page 0**, always | `video.cpp:554` takes `_pages[0]`, not a page id |
+| a bitmap is **not kept** | `loadMarkedAsNeeded` loads an `RT_POLY_ANIM` into a scratch pointer, presents it and marks it `NOT_NEEDED` (`resource.cpp:193`, `:211-214`) |
+
+The second is not a nicety. **Part 7 loads seventy of them**, and seventy times six pages is more
+memory than the machine has - so ours go to a fixed six-page scratch at `BMP_PAGE`, between the
+cinematic segment's eight pages and the heap's forty, and `aw_load_res` neither marks them
+resident nor moves the cursor. `check-bmp` asserts both, because a bitmap that quietly entered the
+heap would pass a pixel comparison and exhaust the machine forty resources later.
+
+**The cost, which nothing had measured:** 49,152 bytes of `LDIR` is about **1.8 frames** at 28 MHz.
+The reference's deplane of 32,000 bytes is not cheap either, and the plan's own note stands - 70 of
+these load in part 7 and **zero** in 72,000 frames of parts 2 and 3, so no budget so far has paid
+for this path. It is a stall at a scene change, not a per-frame cost.
+
+**Space is now the binding constraint on everything.** Fitting this needed `MUSIC_CODE` lowered to
+`$BAD0` - the C's image ends at `$BAC3`, so 136 bytes were sitting unused between them, and the
+`ASSERT $ <= MUSIC_CODE` below the C's include polices it. `present_bitmap` and `voice_locate`
+moved into the reclaimed space, and `hex_digit` went to MMU6 beside the two name-builders that
+call it. The resident block ends at `$9C04` against a `$9C08` ceiling: **four bytes**.
 
 #### I8. The code screen, and its bypass - DONE, `make check-part`'s boot case
 
