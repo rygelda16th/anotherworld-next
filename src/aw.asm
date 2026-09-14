@@ -2770,12 +2770,23 @@ sv_load:
 
         ; pass two: everything that is a straight copy back
         ;
-        ; CLEAR err FIRST. sv_rblock bails silently on a non-zero err, and between pass one and
-        ; here the load calls aw_setup_part, which loads four resources through load_code - and
-        ; load_code writes err itself. So a perfectly good read pass did nothing at all while
-        ; still running to the end and stamping sv_done, and the arrays kept the running game's
-        ; values. aw_pc[0] holding a LIVE program counter where the file held $FFFF is what said
-        ; so: not corruption, but data that was never written over.
+        ; RESTATE THE FILENAME, AND CLEAR err, because pass one and pass two are separated by
+        ; aw_setup_part and the replayed heap - and those load resources through load_code, which
+        ; shares BOTH of the loader's globals with us. It writes err, and it builds its own name
+        ; over fname. Neither is the loader's fault: there is one loader and one name buffer, and
+        ; anything that reopens a file across a load has to say which file it means.
+        ;
+        ; The err half was found and fixed first, and fixing half of it is why the symptom
+        ; survived. With fname left holding the LAST RESOURCE'S name, sv_ropen opened that file
+        ; and succeeded, sv_rblock read 512 bytes from it and succeeded, and the VM's arrays were
+        ; filled with resource bytes - a load that reported err = 0 and sv_got = 512 the whole
+        ; way. A sentinel painted over the destinations is what finally told the two apart: every
+        ; sentinel byte was gone, so the reads were landing; the bytes were nowhere in the save
+        ; file, so they were not coming from it.
+        ld      hl, sv_name
+        ld      de, fname
+        ld      bc, 11
+        ldir
         xor     a
         ld      (err), a
         di

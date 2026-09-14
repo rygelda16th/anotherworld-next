@@ -137,18 +137,30 @@ def main():
     # this gate saw both. It is also unnecessary: measured directly, with nothing poked after the
     # request, the restored fields were identical twelve frames later. A state whose threads the
     # save caught inactive leaves the VM quiescent, which is the state a load lands in.
-    # THE REQUEST, THEN A PAUSE, THEN THE STOPPER. Poking a fault immediately after the request
-    # races the frame boundary - the fault can break the loop before aw_frame_sync ever reads the
-    # request, and this gate saw that too. Waiting first means the boundary has been taken and the
-    # load is underway (it runs for seconds with interrupts off), so the fault lands DURING it and
-    # the break fires the moment it returns, before that frame's threads run.
+    # THE REQUEST, THEN WAIT FOR THE LOAD TO BE UNDERWAY, THEN THE STOPPER - and the middle step
+    # has to be a MEASUREMENT, not a sleep. The C's loop runs aw_frame_sync, then the part block,
+    # then breaks on budget-or-fault, and only AFTER that runs the frame's threads. So a fault
+    # that is already set when the load's frame_sync returns breaks the loop with no thread work
+    # at all, which is the state this gate wants to read.
     #
-    # This is needed. An earlier measurement seemed to show the machine quiescent after a load and
-    # I concluded the freeze was sound - but the poll interval was 250ms, about twelve frames, so
-    # "immediately after sv_done" was never immediate and both samples were taken after the same
-    # thread work. The load writes correctly; what follows it moves aw_vars, pg_ptr1 and the rest.
+    # The race is narrow and real in both directions. Poke the fault first and the loop can break
+    # at the check before any frame_sync reads the request, so the load never happens. Poke it
+    # after a fixed sleep and the sleep can outlast the whole load - which is what a sentinel run
+    # measured: the load finishes in about 0.3s, not the "seconds" this comment used to claim, so
+    # a 0.3s pause armed the stopper AFTER it and left a frame or two of threads to move aw_vars.
+    #
+    # sv_first closes both. sv_load clears it and the first read of the run stamps it $5A, so it
+    # says the load has started and cannot say so early. Waiting on it puts the fault squarely
+    # inside the load every time. It lives in page 10, which is already mapped at MMU2 while the
+    # load's own code is running there.
     z.cmd(f"write-memory {sym['save_req']} 2")                              # 2 = load
-    time.sleep(0.3)
+    for _ in range(200):
+        z.cmd(f"tbblue-set-register {NR_MMU2} {PAGED_PAGE}")
+        if read(sym["sv_first"], 1)[0] == 0x5A:
+            break
+        time.sleep(0.01)
+    else:
+        raise SystemExit("FAIL: the load never started - aw_frame_sync did not read save_req")
     z.cmd(f"write-memory {0xC00D} 1")                                       # CTL_FAULT
 
     # sv_done lives in page 10, so reading it means mapping page 10 where it was assembled
