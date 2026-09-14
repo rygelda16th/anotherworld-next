@@ -3610,7 +3610,7 @@ now - and it is the difference between "the intro works" and "the game works".
 | **Gate D** | **DONE** - `make check-boot AW_PART=2` passes all 759 records of part 2's stream |
 | **I5** | effectively done by `check-mus`, which gates three modules, six `op_playSound` cases and the mixer's OUTPUT on a real sample. The paragraph above is about `check-snd`'s synthetic ramp and remains true of that gate alone |
 | **I4** | does not apply in the form written. `check-text` drives `drawString` directly BY DESIGN, because text needs input and every trace is input-free; it is not a per-part gate. What a second run would add is gameplay's own strings, and the machine can now reach them - see the synthetic player under I10 |
-| **I2** | **still owed**, and it is the one with a real obstacle rather than a missing fixture - see below |
+| **I2** | **partly** - `make check-draw AW_PART=2` passes all four pages for five blits and then diverges transiently; the cause is localised and named below |
 
 **Gate D's gameplay run is the pattern for the rest, and the cut is the whole difficulty.** The
 probe reaches a later part through `instrJumpPart`, but a jump is a REQUEST: the engine finishes
@@ -3622,14 +3622,44 @@ the probe logs that as `thread <frame> 0 0`; the first is the boot, the next is 
 `tools/mkpartops.py` cuts there and renumbers, and the result then opens record for record with
 what the machine had already produced.
 
-**What stands in I2's way is not a fixture.** `check-draw` aligns machine and reference on a
-blit and compares all four pages. For a gameplay part the two do not start from the same picture:
-the probe's run reaches part 2 by JUMPING into it, so its pages carry part 1's leftovers, while a
-machine booting into part 2 through `start_part` begins blank. Part 2's script fills early -
-twelve fills in thirty frames against the intro's three - so they may converge, but "may" is not
-a gate. Settling it means either making the probe start in the part rather than jump into it, or
-finding the first blit after which both are provably identical. **That is the named next step,
-and it is a measurement, not a guess.**
+**I2's obstacle was real and was measured away.** `check-draw` aligns machine and reference on
+a blit, and for a gameplay part the two do not start from the same picture: the probe reaches
+part 2 by JUMPING into it, so its pages carry part 1's leftovers, while a machine booting through
+`start_part` begins with whatever boot left. Rather than assume part 2 overwrites them, the same
+trace was replayed from two different starting pictures: pages 0 and 3 differ in **all 49,152
+bytes** at one, two and three blits, and **all four are identical at five**. The part change is
+at blit 3 - read out of the trace, not assumed - so the machine's blit K aligns with trace blit
+K+3 and anything from K=2 is past it.
+
+**And then it renders part 2 byte-exact, and then it does not.**
+
+| machine blit | trace blit | result |
+|---|---|---|
+| 3, 4, 5 | 6, 7, 8 | **all four pages identical**, 196,608 bytes |
+| 6 | 9 | page 2 differs in **100%** of its bytes |
+| 8 | 11 | page 2 differs in **0.97%**, and every draw had the engine's operands |
+
+Identical, then wholly different, then almost identical again is not a persistent fault - it is
+a **transient**, and 100% of a page changing at once is a fill or a copy, not a polygon.
+
+**What part 2 does that the intro never does is now known exactly.** The two traces use
+different page IDENTIFIERS, and the intro exercises only some of them:
+
+| | intro | part 2 |
+|---|---|---|
+| `copy 3 -> 255` | never | **21 times** |
+| `fill page 255` | never | **2** |
+| `fill page 3` | never | **3** |
+| `copy 64 -> 255` | 37 | 2 |
+| `fill page 0/1/2` | one each | several |
+
+255 and 64 are not physical pages. `getPagePtr` resolves `$FF` to the current front buffer and
+`$FE` to the back one; `copyPage` masks its source with `$BF` first, so 64 means page 0. Both
+`resolve_page` and `aw_copy_page` were read against `video.cpp` line by line - the `>= $FE` test,
+the `& $BF` mask, the bit-7 scroll branch, the src==dst early return - and **they agree**. So the
+fault is not in resolving an id; it is in the ORDER or TIMING of a fill or copy that only part 2
+performs, and the three rows above are where to look. Bisecting to the exact record needs
+`tools/bisectdraw.py` pointed at the part-2 trace with the same +3 offset.
 
 ### Decisions and measurements still owed
 

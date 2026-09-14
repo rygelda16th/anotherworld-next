@@ -350,7 +350,8 @@ bisect-draw: cc-game
 #     make check-draw AW_PART=2    part 2's, from trace_part2.bin
 check-draw: cc-game
 	$(MAKE) asm
-	@$(DC) run --rm -e PYTHONUNBUFFERED=1 -e AW_PART=$(AW_PART) tools \
+	@$(DC) run --rm -e PYTHONUNBUFFERED=1 -e AW_PART=$(AW_PART) \
+		-e AW_BLITS=$(AW_BLITS) tools \
 		sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkdraw.py'
 
@@ -386,6 +387,7 @@ check-map: asm
 # with several frames of the part it was already in, and the harness starts the new part's
 # bytecode at its first instruction. Uncut, it diverges at record two. It did.
 AW_PART   ?=
+AW_BLITS  ?= 8
 OPS_FILE   = $(if $(AW_PART),$(PROBE)/ops_part$(AW_PART).txt,$(PROBE)/ops.txt)
 
 check-boot: | $(BUILD)

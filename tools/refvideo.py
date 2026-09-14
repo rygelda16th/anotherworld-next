@@ -496,7 +496,7 @@ def read_trace(path):
 
 
 def replay(path, on_frame=None, font=None, cls=None, stop_after=None,
-           stop_draws=None):
+           stop_draws=None, start_at_part=None):
     """Run a trace through the reference and return the RefVideo.
 
     `cls` picks the geometry: RefVideo for the engine's own 320x200 4bpp, which is what
@@ -511,7 +511,16 @@ def replay(path, on_frame=None, font=None, cls=None, stop_after=None,
     v = (cls or RefVideo)()
     frames = 0
     draws = 0
+    # `start_at_part` ignores everything before the Nth part record, so a trace that JUMPED
+    # into a part can be replayed as the part alone - which is what a machine booted straight
+    # into it actually performs. Replaying from the trace's start instead includes drawing the
+    # machine never does, and the comparison then fails for that reason rather than any fault.
+    seen_parts = 0
     for kind, a in read_trace(path):
+        if start_at_part is not None and seen_parts < start_at_part:
+            if kind == "part":
+                seen_parts += 1
+            continue
         if kind == "draw":
             # A draw record marks the OPCODE; the leaves that belong to it follow as poly
             # records. So stopping when the next one arrives includes all of draw N's

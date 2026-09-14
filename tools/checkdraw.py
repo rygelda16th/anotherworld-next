@@ -131,13 +131,27 @@ def main():
     seed = host_seed(os.path.join(PROBE, "ops.txt"))
     trace = os.path.join(PROBE, TRACE_FILE)
 
-    skip = blits_before_part_change(trace) if AW_PART else 0
-    ref, blits = replay(trace, cls=RefVideo8, stop_after=BLITS + skip)
-    if blits < BLITS + skip:
-        raise SystemExit(f"the trace only holds {blits} blits, fewer than the "
-                         f"{BLITS + skip} asked for - lower AW_BLITS or lengthen the trace")
-    print(f"part: {AW_PART or 'the intro'}, trace {TRACE_FILE}"
-          + (f", {skip} blits of it before the part change" if AW_PART else ""))
+    # THE REFERENCE REPLAYS THE PART ALONE, and getting this wrong is what made the first
+    # version of this gate fail. A trace that JUMPED into part 2 opens with the part the engine
+    # was already in, and replaying from its start performs drawing the machine never does - the
+    # machine boots straight into part 2 and draws only part 2. Comparing the two then fails for
+    # that reason and no other, which is exactly what it did: identical at blits 3, 4 and 5,
+    # page 2 wholly different at 6, page 1 wholly different at 7, page 2 at 0.97% by 8.
+    #
+    # I misread that as the machine arriving "cold" where the engine arrived "warm", and poked
+    # the reference's page pointers in to fix it. They came back 2/2/1 - the machine's own
+    # defaults - so there was nothing to warm and the theory was wrong.
+    #
+    # start_at_part=2 skips to the part change, and the question worth asking was then asked
+    # properly: replaying PART 2'S RECORDS ALONE from two different starting pictures, all four
+    # pages are independent of what came before after ONE blit. Part 2 clears everything it
+    # needs. So there is no offset and no warming - the machine's blit K is the part's blit K.
+    ref, blits = replay(trace, cls=RefVideo8, stop_after=BLITS,
+                        start_at_part=2 if AW_PART else None)
+    if blits < BLITS:
+        raise SystemExit(f"the trace only holds {blits} blits after the part change, fewer "
+                         f"than the {BLITS} asked for - lower AW_BLITS or lengthen the trace")
+    print(f"part: {AW_PART or 'the intro'}, trace {TRACE_FILE}")
     print(f"the engine's trace: replayed to blit {blits}, seed {seed}")
 
     z = Zrcp()
@@ -156,6 +170,12 @@ def main():
         # polygon segment, and the fixed path carries the intro's - it pokes a bytecode name and
         # then loads fixed poly and palette files beside it.
         z.cmd(f"write-memory {sym['start_part']} {int(AW_PART) + 1}")
+
+        # NOTHING IS POKED INTO THE PAGE POINTERS, and it was worth proving rather than
+        # assuming. The engine carries cur1/cur2/cur3 through a part change - initForPart is
+        # VM-level and does not touch them - so it looked as though it would arrive in part 2
+        # holding something the machine's cold 2/2/1 would not match. Replayed to the part
+        # change, they are 2, 2 and 1. The same. There is nothing to warm.
     else:
         z.cmd(f"write-memory-raw {sym['fname']} {(CODE_FILE.encode() + bytes(1)).hex()}")
     z.cmd(f"write-memory-raw {sym['stop_blit']} "
