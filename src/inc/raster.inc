@@ -1042,6 +1042,19 @@ poly_read:
 ;-----------------------------------------------------------------------------
 span_opaque:
         and     $0F                     ; index in the low nibble, top clear
+    IFDEF RASTER_DMA_SPANS
+        ; A LONG SPAN GOES TO THE INCLUDER'S DMA FILL. This loop is 11 T a pixel; a DMA fill costs a
+        ; programme's worth up front and a few T a byte after, so above RASTER_DMA_SPANS pixels it
+        ; wins. In the intro's heaviest stretch 60% of the pixels are in spans of 96 or more.
+        ld      c, a
+        ld      a, d
+        or      a
+        jp      nz, span_long           ; 256: a whole row
+        ld      a, e
+        cp      RASTER_DMA_MIN
+        jp      nc, span_long
+        ld      a, c
+    ENDIF
         ex      de, hl                  ; HL = length, DE = dest
         add     hl, hl                  ; 2 bytes a pixel in the block below
         ex      de, hl                  ; DE = length*2, HL = dest
@@ -1058,6 +1071,11 @@ opaque_jp:
         EDUP
 opaque_end:
         ret
+    IFDEF RASTER_DMA_SPANS
+span_long:                              ; a global label: opaque_end above would own a local one
+        ld      a, c
+        jp      span_dma                ; A = colour, HL = destination, DE = length
+    ENDIF
 
 span_blend:
         ; Colour 0x10: set bit 3 of the index. The game's palettes already hold

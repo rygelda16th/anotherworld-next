@@ -2330,6 +2330,8 @@ draw_char6:
         INCLUDE "src/inc/input.inc"
         DEFINE RASTER_NO_FILL_PAGE      ; the game fills through aw_fill_page
         DEFINE RASTER_NO_LEAF_LOG       ; nothing in the game reads rd_log; polytest does
+        DEFINE RASTER_DMA_SPANS         ; long opaque spans are filled by the DMA: see span_dma
+RASTER_DMA_MIN  EQU 96
         INCLUDE "src/inc/raster.inc"
 
 ; The ring is resident in MMU6's page, so nothing needs mapping for it - but from I5 each
@@ -4111,6 +4113,21 @@ mb_silence:
         ret
 
 mb_stored:      db 0
+
+; span_dma - a long opaque span, filled by the DMA. A = the colour index, HL = the destination, DE =
+; the length. raster.inc sends spans of RASTER_DMA_MIN pixels or more here. The DMA fills from one
+; byte held fixed, so the colour goes into sd_col first. Measured in CSpect the DMA costs about 4 T a
+; byte against the CPU loop's 11 and about 520 T to programme, so the break-even is near 63 pixels;
+; 96 leaves room for real hardware being slower than the emulator, which nothing documents.
+span_dma:
+        ld      (sd_col), a
+        ld      b, d
+        ld      c, e                    ; BC = the length
+        ex      de, hl                  ; DE = the destination
+        ld      hl, sd_col
+        ld      a, 1                    ; a fill
+        jp      dma_mem
+sd_col:         db 0
 
 ; aw_copy_page lives up here with the copper code, out of the resident block: only the C's jump
 ; table calls it, and nothing it touches cares where it runs from.
