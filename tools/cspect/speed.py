@@ -61,6 +61,8 @@ def run(nex, exp, blits, timeout, extra_env):
     env = dict(os.environ)
     env.update(AWPROBE_LOG=log, AWPROBE_MAX="100000", AWPROBE_GO=f"{sym['go']:X}",
                AWPROBE_PACE=f"{sym['ticks']:X}:{sym['n_blit']:X}:{sym['n_poly']:X}")
+    if "st_played" in sym:
+        env.update(AWPROBE_STREAM=f"{sym['st_played']:X}:{sym['st_avail']:X}")
     env.update(extra_env)
     proc = subprocess.Popen(["mono", "CSpect.exe", "-w2", "-sound", "-mouse", "-basickeys", "-zxnext",
                              "-mmc=../sd/aw/", "../sd/aw/" + name], cwd=CSPECT,
@@ -75,7 +77,7 @@ def run(nex, exp, blits, timeout, extra_env):
                 rows = [l for l in lines if l and not l.startswith("#")]
                 if rows:
                     last = int(rows[-1].split()[0])
-                if last >= blits + 1:
+                if last >= blits + 400:            # the machine is ~355 blits ahead; see compare
                     break
             if proc.poll() is not None:
                 break
@@ -88,13 +90,28 @@ def run(nex, exp, blits, timeout, extra_env):
 
 
 def compare(pace, frames, first, blits):
-    eng = [int(l.split()[6]) for l in open(frames) if not l.startswith("#")]
-    m = {}
+    rows = [l.split() for l in open(frames) if not l.startswith("#")]
+    eng = [int(r[6]) for r in rows]
+    m, polys = {}, {}
     for l in open(pace):
         if l.startswith("#") or not l.strip():
             continue
-        b, t, _, _ = map(int, l.split())
+        f = l.split()
+        b, t = int(f[0]), int(f[1])
         m.setdefault(b, t)
+        polys.setdefault(b, int(f[3]))
+    # THE MACHINE'S BLIT NUMBERS ARE NOT THE REFERENCE'S. The shipped image blits about 350 times,
+    # drawing nothing, before the intro's first picture - the reference draws its first at blit 5 -
+    # so blit N here was never the reference's blit N, and every figure this tool printed before the
+    # offset was a comparison of different pictures. Align on the first picture: the reference's
+    # first blit with polygons, and the machine's first blit after which n_poly has moved.
+    ref_first = next(i for i, r in enumerate(rows) if int(r[2]) > 0)
+    base = polys[min(polys)]
+    mach_first = min(b for b in polys if polys[b] > base + 1)
+    offset = mach_first - ref_first
+    print(f"aligned: the reference's first picture is its blit {ref_first}, the machine's is its blit "
+          f"{mach_first}; machine blit = reference blit + {offset}")
+    m = {b - offset: t for b, t in m.items() if b - offset >= 0}
     have = sorted(m)
     last = max(b for b in have if b <= blits)
 
@@ -107,7 +124,7 @@ def compare(pace, frames, first, blits):
     te = tm = 0.0
     for a in range(first, last, 100):
         b = min(a + 100, last)
-        e = sum(eng[a:b]) * 0.02
+        e = sum(eng[a + 1:b + 1]) * 0.02         # the pauses before blits a+1..b, which is a..b
         mm = (at(b) - at(a)) * 0.02
         te += e
         tm += mm
@@ -120,7 +137,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("nex", nargs="?", default=os.path.join(REPO, "build/aw.nex"))
     ap.add_argument("--exp", default=os.path.join(REPO, "build/aw.exp"))
-    ap.add_argument("--frames", default=os.path.join(REPO, "build/ref700/frames.txt"))
+    ap.add_argument("--frames", default=os.path.join(REPO, "build/ref2614/frames.txt"))
     ap.add_argument("--blits", type=int, default=700)
     ap.add_argument("--first", type=int, default=5)
     ap.add_argument("--timeout", type=int, default=900)

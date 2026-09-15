@@ -28,3 +28,15 @@ bytecode segment mapped there). It reports:
 `-sound` MUTES CSpect 3: the flag is inverted, and passing it bypasses the OpenAL
 setup entirely. `AWPROBE_MAX` caps the number of one-second reports before the plugin
 quits the emulator, so an unattended run cleans up after itself.
+
+## The speed tool
+
+    python3 tools/cspect/speed.py --blits 2613
+
+runs one silent CSpect with `AWPROBE_PACE` (machine ticks, blits and polygons per blit) and,
+when the build has a streamed-music player, `AWPROBE_STREAM=<st_played>:<st_avail>`, which adds
+the emulator's own frame count and the stream's two counters to each line. It compares the
+machine's time between blits with the reference's `pause_slices`, after aligning the two on
+their first picture: the default build blits ~355 times before the intro draws, the reference
+does not.
+

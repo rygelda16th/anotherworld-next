@@ -170,6 +170,7 @@ AW_IN        ?= 0xC380
 AW_DRAW      ?= 0xC390
 AW_MUS       ?= 0xC3B0
 AW_SND       ?= 0xC3B4
+AW_STR       ?= 0xC3A0
 
 # The game's C sits HIGHER than the harness's, because the rasteriser and the reader
 # are resident alongside it: see the CC_ORG comment in src/aw.asm.
@@ -190,7 +191,7 @@ cc-game: | $(BUILD)
 	@$(CC_RUN) zcc $(CFLAGS_ZXN) -pragma-define:CRT_ORG_CODE=$(AW_VM_ORG) \
 	    -pragma-define:REGISTER_SP=$(AW_STACK) \
 	    -DAW_CTL=$(AW_CTL) -DAW_EXP=$(AW_EXP) -DAW_LOG_RECS=$(AW_LOG_RECS) \
-	    -DAW_IN=$(AW_IN) -DAW_DRAW=$(AW_DRAW) -DAW_MUS=$(AW_MUS) -DAW_SND=$(AW_SND) \
+	    -DAW_IN=$(AW_IN) -DAW_DRAW=$(AW_DRAW) -DAW_MUS=$(AW_MUS) -DAW_SND=$(AW_SND) -DAW_STR=$(AW_STR) \
 	    -o $(BUILD)/aw_vm src/aw/vm.c src/aw/jumptab.asm
 	@python3 tools/mkexp.py $(BUILD)/aw_vm.map $(BUILD)/aw_vm_c.exp
 
@@ -387,10 +388,10 @@ check-draw: cc-game
 # bytes in rows 165-191, page 0 itself identical. This regenerates a 700-blit reference from
 # the host probe (gitignored, like the rest of the probe's output, because it is derived from
 # the game data) and compares all four pages at 226, the last copy-mode frame, and at 699.
-INTRO_REF := $(BUILD)/ref700
+INTRO_REF := $(BUILD)/ref2614
 $(INTRO_REF)/trace.bin:
 	mkdir -p $(INTRO_REF)
-	cd $(INTRO_REF) && $(CURDIR)/$(PROBE)/probe $(CURDIR)/$(DATA_DIR) 4000 700 0 >probe.out
+	cd $(INTRO_REF) && $(CURDIR)/$(PROBE)/probe $(CURDIR)/$(DATA_DIR) 4000 2614 0 >probe.out
 	cp $(PROBE)/font.bin $(INTRO_REF)/
 
 #
@@ -398,7 +399,22 @@ $(INTRO_REF)/trace.bin:
 # had not been assembled at all - every copy onto a page that still mirrored its source moved
 # nothing, and the previous frame's shapes stayed - because both of those blits land just after a
 # scene cut, where a page fill resets everything. Spread across the intro, the stale shapes show.
-INTRO_BLITS ?= 30 60 100 140 180 226 260 330 420 520 600 699
+# PAST BLIT 699, TO THE END OF THE INTRO. Stopping at 699 missed that no bytecode string had ever
+# been drawn: the intro's first is at frame 1,122 ("IDENTIFICATION") and Lester's terminal writes
+# text every frame from 1,173. 1130 and 1290 are text; the rest spread over the second half.
+INTRO_BLITS ?= 30 60 100 140 180 226 260 330 420 520 600 699 1130 1290 1700 2100 2600
+# The intro's music, rendered on the host as the original played it, for the machine to stream
+# instead of mixing the module live. Timed by the reference engine's own run. The file is made from
+# the player's data and stays in build/, like the rest of the assets.
+music: $(INTRO_REF)/trace.bin
+	python3 tools/mkmusic.py $(BUILD)/assets $(INTRO_REF)/sound.txt $(BUILD)/assets/MUSIC.PCM
+
+# The stream on the machine: what the interrupt copies against the file, and the markers.
+check-stream: music cc-game
+	$(MAKE) asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkstream.py'
+
 check-intro: $(INTRO_REF)/trace.bin
 	@bad=0; for b in $(INTRO_BLITS); do \
 		if $(MAKE) --no-print-directory check-draw AW_BLITS=$$b AW_PROBE_DIR=$(INTRO_REF) \

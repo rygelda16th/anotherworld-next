@@ -148,8 +148,13 @@ def main():
     # properly: replaying PART 2'S RECORDS ALONE from two different starting pictures, all four
     # pages are independent of what came before after ONE blit. Part 2 clears everything it
     # needs. So there is no offset and no warming - the machine's blit K is the part's blit K.
+    # THE MACHINE'S FONT, not the probe's. The machine draws six-pixel glyphs from font6.bin, five
+    # of them redrawn by hand (tools/mkfont6.py); replay's default is the original 8x8 font.bin,
+    # whose first six columns differ for exactly those glyphs. check-text already compares this way.
+    # No trace reached text until the intro gate went past frame 1,122.
     ref, blits = replay(trace, cls=RefVideo8, stop_after=BLITS,
-                        start_at_part=2 if AW_PART else None)
+                        start_at_part=2 if AW_PART else None,
+                        font=open("build/font6.bin", "rb").read())
     if blits < BLITS:
         raise SystemExit(f"the trace only holds {blits} blits after the part change, fewer "
                          f"than the {BLITS} asked for - lower AW_BLITS or lengthen the trace")
@@ -172,7 +177,9 @@ def main():
         z.cmd(f"tbblue-set-register {NR_MMU7} 1")
         text_before = read(z, DWIN, 8192)
 
-    hdr = (seed.to_bytes(2, "little") + (2000).to_bytes(2, "little")
+    # THE FRAME CAP HAS TO REACH THE BLIT. It was a flat 2,000, which no gate noticed until the intro
+    # gate asked for blit 2,100 and the VM stopped, as told, at 2,002.
+    hdr = (seed.to_bytes(2, "little") + max(2000, BLITS + 200).to_bytes(2, "little")
            + (60000).to_bytes(2, "little"))
     z.cmd(f"write-memory-raw {CTL} {hdr.hex()}")
     if AW_PART:

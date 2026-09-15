@@ -504,6 +504,21 @@ Magnitude-then-sign rounds toward zero for negatives, which is what a Z80 doing
 instead, and the two disagree on every negative odd value. Both extremes land
 exactly: 319 to 255, and 199 to 191.
 
+**One exception, found in play on 2026-09-15: a shape one row tall keeps its row.** 246/256
+takes a height of 1 to 0, and a polygon with no height draws nothing - including the engine's
+points, because the point test (`bbw == 0 && bbh == 1 && npoints == 4`) sees the scaled box.
+Counted by pixels over autoplay traces, that deleted **9% of the shapes part 3 draws and 24% of
+part 4's**: the laser bolts, the gun's shield, and in part 4's tunnel map every horizontal wall.
+David saw the shots and the shield not appearing. So when the post-zoom `bbh` is 1, the points'
+`y` and `bbh` itself are left unscaled (they are 0 or 1) and only the centre is scaled; the point
+test then fires where the engine's does. With that, 4 of part 3's 120,851 shapes and none of
+part 4's 34,944 vanish. `RefVideo8.fill_polygon_scaled` and the reader's leaf (`rd_flat`, which
+sends such a leaf through the general vertex walk) implement it.
+
+**What the scale still costs, and this rule does not fix:** five columns become four, so a shape
+one pixel wide is still drawn but can land in the column the next shape covers. Lester's arm and
+neck, a pixel wide each, are drawn and then painted over. Only the 320x256 mode (F5) avoids that.
+
 ### VM state, all resident
 
     vmVariables        512 bytes   int16_t [256]
@@ -2684,6 +2699,16 @@ number to have chosen.
 
 #### I4 is CLOSED - the machine draws the game's text
 
+**CORRECTION, 2026-09-15: the machine drew the game's text only when a gate asked it to.**
+`op_drawString` in `src/aw/vm.c` fetched its four operands and never called `aw_draw_string`, from
+step 6 onwards. `check-text` pokes `STR_BLOCK` and calls the routine from assembly, so it proved the
+routine and not the wiring - the same shape as the jump-table slot nothing called, recorded under I1.
+And `check-intro` stopped at blit 699, while the intro's first string is at frame 1,122. David saw it:
+no text anywhere in the intro. The C now fills `STR_BLOCK` (`AW_STR`) and calls the routine; blits
+1130 ("IDENTIFICATION") and 1290 (Lester's terminal) are pixel-exact, and `check-intro` now reaches
+the end of the intro. `check-draw`'s reference also had to draw text with `font6.bin`, the machine's
+font, rather than the probe's 8x8 one - no trace had reached a glyph before.
+
 **The geometry, decided 2026-09-13: 40 cells of SIX pixels, 240 of our 256.** Every cell the
 original can address is reachable, no letter touches its neighbour, and the cost is that the
 font is no longer the original's. The two alternatives were scaling the cell origin and
@@ -3668,6 +3693,87 @@ fault here would have named it immediately.
 The general shape: **the VM has a program-counter guard and an opcode budget, and the two
 subsystems underneath it have neither.** Every fault code in the control block exists because a
 wrong run used to look like every other wrong run.
+
+#### I11. The intro at the original's speed - 100.2% in CSpect, by streaming the music
+
+David's goal: the intro playing at 100% of the original's speed. **Measured in CSpect over the
+whole intro (reference blits 5-2613): 97.5% before, 100.2% after**, with 24 of its 27
+hundred-blit segments within 2% of the original. Two changes did it, both his choices:
+the module's music is rendered on the host and streamed, and a late frame may be caught up
+over two seconds instead of one.
+
+**First, a correction to every speed figure before this one.** `tools/cspect/speed.py`
+compared the machine's blit N with the reference's blit N. They are different pictures: the
+default build starts at part 0 and blits about 355 times before the intro's first picture,
+where the reference, started in the intro, draws it at blit 4. So the earlier "97.5%" and
+"100.3%" totals compared 14 s of the part before the intro against the intro, and left the
+intro's last 355 blits out. The tool now aligns on the first picture (the reference's first
+blit with polygons, the machine's first blit after which `n_poly` moves) and says so when it
+runs. Re-measured with the alignment, the committed build is at 97.5% - by coincidence the
+same total - and the per-blit pauses line up exactly (4, 4, 4 ... then 3 from blit 23 in both).
+
+**Why the music.** Mixing the module's voices live is a permanent tax during the intro: with
+the music voices skipped, the old tool already showed the effects-only build near 100%. The
+module is also completely determined - the intro takes no input - so there is nothing to lose
+by rendering it once, on the host.
+
+**`make music` renders it** (`tools/mkmusic.py`), as the original played it rather than as the
+machine's live player would:
+
+- the event clock is SfxPlayer's, `delay * 60 / 7050` ms (`sfxplayer.cpp:43`, `:68`), with the
+  callback's return value as the next interval (`sfxplayer.cpp:207-210`); the start, the retime
+  at 45 s and the stop at 117 s come from the reference engine's own run (`sound.txt`), because
+  the bytecode decides them;
+- the rows are `handlePattern`'s (`sfxplayer.cpp:136-196`); **all 489 notes match the reference
+  engine's log** in time, channel, pitch, volume and length, and the renderer refuses to write a
+  file if one does not;
+- the mixing is `Mixer::mix`'s (`mixer.cpp:99-145`): interpolated, `b * volume / 64` per channel,
+  clamped. The machine's live mixer has two volume tables and no interpolation, so the streamed
+  music is closer to the original than the live music was. The one departure: the reference's
+  end-of-sample tests compare for equality, which a step over one byte can jump; this uses `>=`;
+- **effects and music share four channels** (`mixer.cpp:51-72`), and in the intro that matters:
+  at 42.6 s an effect silences a looped note that would otherwise ring on for thirteen seconds.
+  Every effect in the reference's run takes its channel from the rendered music. The other
+  direction - a note taking a channel from a live effect - goes into the file's event table, and
+  the machine applies it.
+
+The file is 8K of header and event table (14 markers, 489 channel stops) and then 1,852,344
+unsigned samples, 118.7 s at 15,600 Hz. It is made from the player's data and stays in `build/`.
+
+**On the machine.** 1.8 MB does not fit the ~1.2 MB free, so it is read from the card into a
+128K ring in pages 176-191 (eight seconds), table in page 175:
+
+- `st_music` (page 10) takes `op_playMusic` only when the file's header names exactly that op -
+  resource 7, delay 15,700, position 0 - and takes the retime and the stop while it plays. Any
+  other music is the live player's, unchanged. No file, no change.
+- `st_block` (in the interrupt, first in `mix_block`) copies up to 156 samples into the copper
+  list's value bytes, `LDI` and three `INC DE` a sample, and marks the block stored so the
+  effects add on top. **A dry ring is silence and the stream waits**: the markers are keyed to
+  the stream's position, so a slow card delays the pictures together with the tune rather than
+  desynchronising them.
+- `st_frame` (the frame boundary, through `snd_frame`) delivers due events - variable 0xF4, and
+  channel stops - and reads if the ring is under two seconds. `snd_idle`, called while
+  `pace_blit` waits, reads one 1K chunk at most per interrupt, just after one.
+- **The card is read with interrupts off**, as every esxDOS call here is, in 1K pieces meant to
+  finish inside the 10 ms before the next line interrupt. How long a read takes on the real card
+  is not known - both emulators answer esxDOS on the host - so `ST_CHUNK` is a KS3 question.
+
+`make check-stream` runs the intro in ZEsarUX and, at stops outside the interrupt with no effect
+sounding, compares the last block in the copper list with the file byte for byte, checks the ring
+never ran dry and that events are delivered on time. `tools/cspect/speed.py` now logs the
+stream's counters per blit too (`AWPROBE_STREAM`), alongside the emulator's own frame count,
+which is how "ticks are being lost" was ruled out while the alignment was being found.
+
+**`PACE_DEBT` is 100 ticks.** A frame over its deadline is made up by not waiting on the frames
+after it, for up to two seconds' worth. The intro's heaviest scene set-ups overrun by about a
+second each. How much of the 2.7 points is the cap and how much the stream has not been separated
+with the aligned tool; the two went in together, as asked.
+
+**What this does not settle.** All of it is emulated time in CSpect, which also depends on the
+**three local ZEsarUX patches** (`prescalar`, `readback`, `autorestart`) for the gates that run
+there - so none of it is reproducible outside our container. Real hardware still has to answer
+three things: the card's read time with interrupts off, the zxnDMA's byte rate, and whether
+CSpect's ~93% of real speed means the KS3 has headroom the emulator does not show.
 
 #### H1. Real hardware
 

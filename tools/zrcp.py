@@ -10,6 +10,7 @@ import socket
 import time
 
 PROMPT = "command>"
+STEP_PROMPT = "command@cpu-step>"
 
 
 class Zrcp:
@@ -27,13 +28,14 @@ class Zrcp:
         self._read_until_prompt()
 
     def _read_until_prompt(self):
+        # In step mode (enter-cpu-step) the prompt becomes "command@cpu-step>".
         buf = ""
-        while PROMPT not in buf:
+        while PROMPT not in buf and STEP_PROMPT not in buf:
             chunk = self.sock.recv(65536)
             if not chunk:
                 break
             buf += chunk.decode(errors="replace")
-        return buf.split(PROMPT)[0].strip()
+        return buf.split(STEP_PROMPT)[0].split(PROMPT)[0].strip()
 
     def cmd(self, text):
         self.sock.sendall((text + "\n").encode())

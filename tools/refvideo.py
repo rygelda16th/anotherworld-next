@@ -722,8 +722,23 @@ class RefVideo8(RefVideo):
             return
         self.fill_polygon_scaled(colour, ptx, pty, bbw, bbh, points)
 
+    @classmethod
+    def scale_record(cls, ptx, pty, bbw, bbh, points):
+        """(ptx, pty, bbw, bbh, points) in 256x192 space - the one place the scale's rule lives.
+
+        A SHAPE ONE ROW TALL KEEPS ITS ROW. 246/256 takes a height of 1 to 0, and a polygon with no
+        height draws nothing - including the engine's points, whose bbh of 1 is what the point test
+        looks for. Scaled blindly, 9% of the shapes part 3 draws and 24% of part 4's vanished:
+        laser bolts, the shield, part 4's tunnel walls. So when bbh is 1 its points' y stay as they
+        are (0 or 1), bbh stays 1, and the point test sees what the engine sees. Only the centre is
+        scaled. mkpolytest.py builds Gate C's pre-scaled records through this too.
+        """
+        if bbh == 1:
+            return (cls.sx(ptx), cls.sy(pty), cls.sx(bbw), 1,
+                    [(cls.sx(x), y) for x, y in points])
+        return (cls.sx(ptx), cls.sy(pty), cls.sx(bbw), cls.sy(bbh),
+                [(cls.sx(x), cls.sy(y)) for x, y in points])
+
     def fill_polygon_scaled(self, colour, ptx, pty, bbw, bbh, points):
-        """Scale a polygon out of 320x200 space and draw it."""
-        return self.fill_polygon(
-            colour, self.sx(ptx), self.sy(pty), self.sx(bbw), self.sy(bbh),
-            [(self.sx(x), self.sy(y)) for x, y in points])
+        """Scale a polygon out of 320x200 space and draw it. See scale_record."""
+        return self.fill_polygon(colour, *self.scale_record(ptx, pty, bbw, bbh, points))

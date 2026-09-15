@@ -707,7 +707,15 @@ poly_read:
         ld      (rd_record + 5), hl     ; bbw
         call    .next_byte
         call    zoom_byte
-        call    scale_uy
+        ; A SHAPE ONE ROW TALL KEEPS ITS ROW. 246/256 takes 1 to 0, and a polygon with no height
+        ; draws nothing - the engine's points among them, since bbh 1 is what the point test looks
+        ; for. Scaled blindly, 9% of part 3's shapes and 24% of part 4's vanished: the laser bolts,
+        ; the shield. So bbh 1 and its points' y are left unscaled. rd_flat is ZERO for that case.
+        ld      a, l
+        dec     a
+        or      h
+        ld      (rd_flat), a
+        call    nz, scale_uy
         ld      (rd_record + 7), hl     ; bbh
 
         call    .next_byte
@@ -723,6 +731,9 @@ poly_read:
         ; walk below cost about 2,200 T a vertex in calls, shifts and stores; this costs about 160.
         ; A profile of the intro's late frames put 62% of the time outside the interrupt in
         ; poly_read, zoom_byte and mul_hl_a, and 1% in filling spans.
+        ld      a, (rd_flat)
+        or      a
+        jp      z, .each_pt             ; one row tall: the general walk, which can leave y alone
         ld      hl, (rd_zoom)
         ld      a, h
         or      a
@@ -829,7 +840,9 @@ poly_read:
         call    .store
         call    .next_byte
         call    zoom_byte
-        call    scale_uy
+        ld      a, (rd_flat)
+        or      a
+        call    nz, scale_uy            ; not for a one-row shape: see rd_flat
         call    .store
         ld      a, (rd_n)
         dec     a
@@ -1517,6 +1530,7 @@ p_ptx:          dw 0
 p_pty:          dw 0
 p_bbw:          dw 0
 p_bbh:          dw 0
+rd_flat:        db 1            ; zero while the leaf being read is one row tall
 p_npts:         db 0
 p_pts:          dw 0
 p_i:            db 0

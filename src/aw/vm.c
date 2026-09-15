@@ -37,6 +37,7 @@ extern void aw_frame_sync(void);
 /* I3. The harness's are `ret`s; the game's load a resource and forget them all. */
 extern void aw_load_res(uint16_t id) __z88dk_fastcall;
 extern void aw_inval_res(void);
+extern void aw_draw_string(void);
 /* I5. The harness counts; the game parses the module's header. */
 extern void aw_play_music(void);
 extern void aw_play_sound(void);
@@ -117,6 +118,10 @@ extern void aw_setup_part(uint8_t index) __z88dk_fastcall;
 /* Where op_playSound leaves its four operands. = SND_BLOCK in src/aw.asm. */
 #ifndef AW_SND
 #define AW_SND          0
+#endif
+/* Where op_drawString leaves colour, x, y and the id. = STR_BLOCK in src/aw.asm. */
+#ifndef AW_STR
+#define AW_STR          0
 #endif
 
 #define CTL_SEED        (*(volatile uint16_t *)(AW_CTL + 0x00))
@@ -474,12 +479,28 @@ static void op_killThread(void)
     aw_goto_next = 1;
 }
 
+/* op_drawString, vm.cpp:311-320, into drawString, video.cpp:267.
+ *
+ * THIS FETCHED ITS OPERANDS AND DREW NOTHING, from step 6 until 2026-09-15. I4 built and gated
+ * aw_draw_string, but its gate pokes STR_BLOCK and calls the routine from assembly, so nothing
+ * ever checked that the VM reached it - and check-intro's pictures stop at blit 699, while the
+ * intro's first string is at frame 1,122. Every piece of text the bytecode asks for, from
+ * "IDENTIFICATION" to Lester's terminal, was missing. */
 static void op_drawString(void)
 {
-    fetch_word();                   /* string id */
-    fetch_byte();                   /* x, a character cell */
-    fetch_byte();                   /* y, a pixel row */
-    fetch_byte();                   /* colour */
+    uint16_t id = fetch_word();
+    uint8_t x = fetch_byte();       /* a character cell */
+    uint8_t y = fetch_byte();       /* a pixel row */
+    uint8_t col = fetch_byte();
+#if AW_STR
+    *(volatile uint8_t *)(AW_STR + 0) = col;
+    *(volatile uint8_t *)(AW_STR + 1) = x;
+    *(volatile uint8_t *)(AW_STR + 2) = y;
+    *(volatile uint16_t *)(AW_STR + 4) = id;
+    aw_draw_string();
+#else
+    (void)id; (void)x; (void)y; (void)col;
+#endif
 }
 
 static void op_sub(void)  { uint8_t i = fetch_byte(); aw_vars[i] -= aw_vars[fetch_byte()]; }

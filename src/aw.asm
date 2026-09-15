@@ -104,6 +104,11 @@ NR_PAGED_MMU    EQU $52                 ; MMU2, page 10's own slot at boot
 RES_FIRST_PAGE  EQU 72
 RES_MAX_PAGES   EQU 96                  ; pages 72..167; banks 40-111 stay free
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
+; THE STREAMED MUSIC'S MEMORY, in pages 168-223, which nothing else uses: its event table, and a
+; 128K ring - eight seconds at 15,600 Hz - the main code fills from MUSIC.PCM and the interrupt
+; empties. See st_block and st_music.
+ST_TABLE_PAGE   EQU 175
+ST_RING_PAGE    EQU 176                 ; sixteen pages, to 191
 
 CTL             EQU $C000
 STACK_TOP       EQU $D400               ; grows down to $D0A0: 864 bytes
@@ -788,9 +793,8 @@ aw_load_res:
         ; FORGET THE MAPPED BAND. load_code leaves MMU7 on page 1, and page 1 is TEXT_PAGE - the
         ; font, the string dictionary and the palettes. The rasteriser only maps DWIN when cur_band
         ; changes, so a draw after a load, in the band the last draw used, would write straight into
-        ; the text page. This closes that. It did NOT fix the missing "IDENTIFICATION" at intro blit
-        ; 1,123 (224 pixels of background under ZEsarUX, where check-text draws the same string at
-        ; boot pixel-identically), which was being looked for when this turned up and is still open.
+        ; the text page. This closes that. The missing "IDENTIFICATION" at intro blit 1,123 was
+        ; something else: vm.c's op_drawString never called aw_draw_string at all.
         ld      a, 255
         ld      (cur_band), a
         ei
@@ -833,6 +837,9 @@ aw_load_res:
 ; invalidateRes, resource.cpp:229. The reference marks everything not permanent as
 ; absent; ours forgets the lot and rewinds the cursor.
 aw_inval_res:
+        ; invalidateRes stops the player and the mixer (vm.cpp:371-374), so the stream stops too
+        ld      hl, st_stop
+        call    paged_call
         ld      hl, res_page
         ld      de, res_page + 1
         ld      bc, RES_COUNT - 1
@@ -1430,6 +1437,12 @@ aw_draw_poly:
 ; tools/sfxmod.py decodes the same thing on the host and is this routine's oracle.
 ;-----------------------------------------------------------------------------
 aw_play_music:
+        ; THE STREAMED MUSIC FIRST. st_music takes this op_playMusic if MUSIC.PCM was rendered for
+        ; exactly it, or if the stream is playing and this is a retime or a stop it already holds.
+        ld      hl, st_music
+        call    paged_call
+        or      a
+        ret     nz
         ld      a, (MUS_BLOCK + 0)      ; the resource number
         or      a
         jr      nz, .have
@@ -1540,7 +1553,7 @@ aw_frame_sync:
         call    aw_saveload             ; 1 saves, 2 loads; it reads the byte and clears it
 .no_save:
     IFNDEF NO_MUSIC
-        call    music_clock
+        call    snd_frame               ; music_clock, or the streamed music's frame
     ELSE
         ; NO_MUSIC: does the module player return?
         ;
@@ -2367,6 +2380,7 @@ go:         db 0
 done:       db 0
         EXPORT ticks
 ticks:      dw 0
+        EXPORT ring_wr
 ring_wr:    dw 0                        ; the next line to mix, 0..311
 blocklen:   db 0
 mix_dst:    dw 0
@@ -2552,6 +2566,33 @@ next_page:  db RES_FIRST_PAGE
 n_load:     dw 0
         EXPORT n_inval
 n_inval:    dw 0
+
+; paged_call - HL = a routine in page 10. Maps page 10 at MMU2, calls it, puts back what was there.
+; The slot's old value is kept on the STACK, so a routine in page 10 may come back through here (sv_load
+; reaches aw_inval_res). A comes back as the routine left it.
+paged_call:
+        ld      a, NR_PAGED_MMU
+        call    nr_read                 ; keeps HL
+        push    af
+        ld      a, PAGED_PAGE
+        nextreg NR_PAGED_MMU, a
+        call    .go
+        ld      b, a
+        pop     af
+        nextreg NR_PAGED_MMU, a
+        ld      a, b
+        ret
+.go:    jp      (hl)
+
+; The main code's routines are in page 10; these reach them. snd_frame replaces music_clock at the
+; frame boundary. snd_idle is called while pace_blit waits, and reads one chunk at most per interrupt,
+; just after one, so a read made with interrupts off is over before the next line interrupt is due.
+snd_frame:
+        ld      a, (st_on)
+        or      a
+        jp      z, music_clock
+        ld      hl, st_frame
+        jp      paged_call
 
 
 
@@ -3249,6 +3290,401 @@ sv_mmu7:    db 0
         DISPLAY "> paged code at ", /H, PAGED_WIN, " ending ", /H, $
         ASSERT $ <= SV_HDR
 
+        ORG SV_HDR + $100
+;-----------------------------------------------------------------------------
+; THE STREAMED MUSIC, the main code's half, in page 10 behind paged_call.
+;
+; MUSIC.PCM is what tools/mkmusic.py rendered: 8K of header and event table, then unsigned 8-bit
+; samples at 15,600 Hz. Its header names the op_playMusic it stands in for - resource, delay and
+; position - and st_music plays it only for exactly that op, so any other music is the live player's
+; as before. No file, or a file for something else, and nothing changes.
+;
+; THE CARD IS READ IN SMALL PIECES WITH INTERRUPTS OFF, because esxDOS wants them off across a call
+; (see load_code) and a line interrupt missed is a half-frame of sound replayed. ST_CHUNK bytes a call,
+; started just after an interrupt by snd_idle, is meant to end before the next is due 10 ms later.
+; HOW LONG A READ TAKES ON THE REAL CARD IS NOT KNOWN - both emulators answer esxDOS on the host - so
+; ST_CHUNK is the number the KS3 has to confirm.
+;-----------------------------------------------------------------------------
+ST_CHUNK        EQU 1024
+ST_PREFILL      EQU 16                  ; chunks read before the stream starts: a second
+ST_LOW          EQU $80                 ; below $8000 bytes - two seconds - st_frame reads too
+
+; A = 0: not the stream's, the live player carries on. A = 1: taken.
+st_music:
+        ld      a, (MUS_BLOCK + 0)
+        or      a
+        jr      nz, .start
+        ld      a, (st_on)              ; a retime or a stop: the stream already holds it
+        ret
+.start:
+        call    st_stop                 ; a new module replaces whatever was playing
+        ld      hl, MUS_BLOCK           ; resource, delay and position, as the file's header has them
+        ld      de, st_key
+        ld      bc, 4
+        ldir
+        ld      a, i
+        push    af
+        di
+        call    esx_rom
+        ld      a, ESX_DRIVE
+        ld      ix, st_name
+        ld      hl, st_name
+        ld      b, FA_READ
+        rst     $08
+        db      F_OPEN
+        jp      c, .no_file
+        ld      (st_handle), a
+        ld      a, NR_SAMP_MMU
+        call    nr_read
+        ld      (st_mmu7), a
+        ld      a, ST_TABLE_PAGE
+        nextreg NR_SAMP_MMU, a
+        ld      a, (st_handle)
+        ld      ix, SAMP_WIN
+        ld      hl, SAMP_WIN
+        ld      bc, $2000
+        rst     $08
+        db      F_READ
+        jr      c, .bad
+        ld      a, b
+        cp      $20
+        jr      nz, .bad
+        ld      hl, SAMP_WIN
+        ld      de, st_magic
+        ld      b, 8                    ; "AWMS", then resource, delay and position as the op has them
+.key:
+        ld      a, (de)
+        cp      (hl)
+        jr      nz, .bad
+        inc     hl
+        inc     de
+        djnz    .key
+        ld      de, st_len
+        ld      bc, 5                   ; the length, 24 bits, and the event count
+        ldir
+        ld      a, (st_mmu7)
+        nextreg NR_SAMP_MMU, a
+        call    esx_back
+        ld      a, 1
+        ld      (st_open), a
+        pop     af
+        jp      po, .off
+        ei
+.off:
+        xor     a
+        ld      (st_eof), a
+        ld      (mus_playing), a        ; the live player's clock stops: the stream is the music
+        ld      hl, 0
+        ld      (st_avail), hl
+        ld      (st_avail + 2), a
+        ld      (st_played), hl
+        ld      (st_played + 2), a
+        ld      hl, 16
+        ld      (st_ev_off), hl
+        call    st_next_event
+        ld      b, ST_PREFILL
+.prefill:
+        push    bc
+        call    st_read
+        pop     bc
+        djnz    .prefill
+        ld      a, 1
+        ld      (st_on), a
+        ret
+.bad:
+        ld      a, (st_mmu7)
+        nextreg NR_SAMP_MMU, a
+        ld      a, (st_handle)
+        rst     $08
+        db      F_CLOSE
+.no_file:
+        call    esx_back
+        pop     af
+        jp      po, .none
+        ei
+.none:
+        xor     a
+        ret
+
+; st_stop - the stream ends: file closed, interrupt told. Keeps the interrupt state it found, because
+; sv_load calls it through aw_inval_res with interrupts off.
+st_stop:
+        xor     a
+        ld      (st_on), a
+        ld      a, (st_open)
+        or      a
+        ret     z
+        xor     a
+        ld      (st_open), a
+        ld      a, i
+        push    af
+        di
+        call    esx_rom
+        ld      a, (st_handle)
+        rst     $08
+        db      F_CLOSE
+        call    esx_back
+        pop     af
+        ret     po
+        ei
+        ret
+
+; st_fill - A:HL = avail - played, what the ring holds. Interrupts on at the end.
+st_fill:
+        di
+        ld      hl, (st_avail)
+        ld      de, (st_played)
+        or      a
+        sbc     hl, de
+        ld      a, (st_avail + 2)
+        ld      b, a
+        ld      a, (st_played + 2)
+        ld      c, a
+        ld      a, b
+        sbc     a, c
+        ei
+        ret
+
+; st_read - one chunk from the card into the ring, if there is room and file left. Interrupts are off
+; for the call and on after it.
+st_read:
+        ld      a, (st_eof)
+        or      a
+        ret     nz
+        call    st_fill
+        or      a
+        jr      z, .room
+        ld      a, h
+        cp      $FC                     ; $1FC00: a chunk would not fit in the 128K
+        ret     nc
+.room:
+        ld      hl, (st_avail)
+        ld      a, h
+        and     $1F
+        ld      d, a
+        ld      e, l
+        ld      hl, $2000
+        or      a
+        sbc     hl, de                  ; HL = to the end of this page
+        ld      bc, ST_CHUNK
+        call    .min
+        push    bc
+        ld      hl, (st_len)            ; A:HL = what the file has left
+        ld      de, (st_avail)
+        or      a
+        sbc     hl, de
+        ld      a, (st_len + 2)
+        ld      d, a
+        ld      a, (st_avail + 2)
+        ld      e, a
+        ld      a, d
+        sbc     a, e
+        pop     bc
+        or      a
+        call    z, .min
+        ld      a, b
+        or      c
+        jr      z, .at_end
+        ld      (st_want), bc
+        ld      hl, (st_avail)          ; the page: ST_RING_PAGE + bits 16..13
+        ld      a, h
+        rlca
+        rlca
+        rlca
+        and     7
+        ld      c, a
+        ld      a, (st_avail + 2)
+        and     1
+        add     a, a
+        add     a, a
+        add     a, a
+        or      c
+        add     a, ST_RING_PAGE
+        ld      (st_page), a
+        di
+        ld      a, NR_SAMP_MMU
+        call    nr_read
+        ld      (st_mmu7), a
+        ld      a, (st_page)
+        nextreg NR_SAMP_MMU, a
+        call    esx_rom
+        ld      hl, (st_avail)
+        ld      a, h
+        and     $1F
+        or      SAMP_WIN >> 8
+        ld      h, a
+        push    hl
+        pop     ix
+        ld      a, (st_handle)
+        ld      bc, (st_want)
+        rst     $08
+        db      F_READ
+        push    af
+        push    bc
+        call    esx_back
+        ld      a, (st_mmu7)
+        nextreg NR_SAMP_MMU, a
+        pop     bc
+        pop     af
+        jr      c, .at_end              ; a card error ends the stream where it stands
+        ld      hl, (st_avail)
+        add     hl, bc
+        ld      (st_avail), hl
+        jr      nc, .no_carry
+        ld      hl, st_avail + 2
+        inc     (hl)
+.no_carry:
+        ld      hl, (st_want)
+        or      a
+        sbc     hl, bc
+        jr      nz, .at_end             ; a short read: the file is done
+        ei
+        ret
+.at_end:
+        ld      a, 1
+        ld      (st_eof), a
+        ei
+        ret
+; BC = min(BC, HL)
+.min:
+        push    hl
+        or      a
+        sbc     hl, bc
+        pop     hl
+        ret     nc
+        ld      b, h
+        ld      c, l
+        ret
+
+; st_frame - at the frame boundary while the stream plays: the events that are due, a read if the
+; ring is low, and the end.
+st_frame:
+.events:
+        ld      hl, (st_ev_left)
+        ld      a, h
+        or      l
+        jr      z, .refill
+        di
+        ld      hl, (st_played)
+        ld      a, (st_played + 2)
+        ei
+        ld      de, (st_ev_pos)
+        ld      c, a
+        or      a
+        sbc     hl, de
+        ld      a, (st_ev_pos + 2)
+        ld      b, a
+        ld      a, c
+        sbc     a, b
+        jr      c, .refill              ; the next event is still ahead
+        call    st_apply
+        jr      .events
+.refill:
+        ld      a, (st_eof)
+        or      a
+        jr      nz, .ending
+        call    st_fill
+        or      a
+        ret     nz
+        ld      a, h
+        cp      ST_LOW
+        ret     nc
+        jp      st_read
+.ending:
+        ld      hl, (st_ev_left)
+        ld      a, h
+        or      l
+        ret     nz
+        call    st_fill
+        or      h
+        or      l
+        ret     nz
+        jp      st_stop                 ; every sample played and every event delivered
+
+; st_apply - the cached event. Type 0 is variable 0xF4, as a 0xFFFD row writes it (sfxplayer.cpp:184);
+; type 1 stops a live channel, as a note or 0xFFFE takes it from an effect (mixer.cpp:51-72), and $FF
+; is all four. mkmusic.py makes no other type.
+st_apply:
+        ld      a, (st_ev_type)
+        or      a
+        jr      nz, .stop
+        ld      hl, (st_ev_val)
+        ld      (mus_mark), hl
+        ld      (_aw_vars + $F4 * 2), hl
+        jr      .done
+.stop:
+        dec     a
+        jr      nz, .done
+        ld      ix, VOICES
+        ld      de, V_SIZE
+        ld      a, (st_ev_val)
+        cp      $FF
+        jr      z, .all
+        or      a
+        jr      z, .one
+        ld      b, a
+.step:
+        add     ix, de
+        djnz    .step
+.one:
+        ld      (ix + V_ACTIVE), 0
+        jr      .done
+.all:
+        ld      b, 4
+.quiet:
+        ld      (ix + V_ACTIVE), 0
+        add     ix, de
+        djnz    .quiet
+.done:
+        ld      hl, (st_ev_left)
+        dec     hl
+        ld      (st_ev_left), hl
+        ld      hl, (st_ev_off)
+        ld      de, 6
+        add     hl, de
+        ld      (st_ev_off), hl
+        ; and on into the next
+
+; st_next_event - the event at st_ev_off in the table page, into st_ev_pos..st_ev_val.
+st_next_event:
+        ld      hl, (st_ev_left)
+        ld      a, h
+        or      l
+        ret     z
+        ld      a, NR_SAMP_MMU
+        call    nr_read
+        push    af
+        ld      a, ST_TABLE_PAGE
+        nextreg NR_SAMP_MMU, a
+        ld      hl, (st_ev_off)
+        ld      de, SAMP_WIN
+        add     hl, de
+        ld      de, st_ev_pos
+        ld      bc, 6
+        ldir
+        pop     af
+        nextreg NR_SAMP_MMU, a
+        ret
+
+st_name:        db "MUSIC.PCM", 0
+st_magic:       db "AWMS"
+st_key:         ds 4
+st_handle:      db 0
+st_open:        db 0
+st_mmu7:        db 0
+st_page:        db 0
+st_want:        dw 0
+        EXPORT st_len
+st_len:         ds 3
+        EXPORT st_ev_left
+st_ev_left:     dw 0
+st_ev_off:      dw 0
+st_ev_pos:      ds 3
+st_ev_type:     db 0
+st_ev_val:      dw 0
+        DISPLAY "> streamed music at ", /H, SV_HDR + $100, " ending ", /H, $
+        ASSERT $ <= PAGED_WIN + $2000
+
         ORG PART_CODE
 ;-----------------------------------------------------------------------------
 ; aw_saveload - save_req says which: 1 to write the save, 2 to read it back. All of both
@@ -3507,6 +3943,24 @@ note_to_inc:
         ret
 
 
+
+; snd_idle is here, in MMU6's gap before the order table, because the resident block needed the room.
+snd_idle:
+        ld      a, (st_on)
+        or      a
+        ret     z
+        ld      a, (st_eof)
+        or      a
+        ret     nz
+        ld      hl, (n_mix)
+        ld      de, (st_last_mix)
+        or      a
+        sbc     hl, de
+        ret     z
+        add     hl, de
+        ld      (st_last_mix), hl
+        ld      hl, st_read
+        jp      paged_call
 
         DISPLAY "> note_to_inc at ", /H, NOTE_CODE, " ending ", /H, $
         ASSERT $ <= MUS_ORDER_AT
@@ -3821,7 +4275,7 @@ cp_didx:        db 0
 ; pictures in step with the music, whose clock runs on real time. The debt is capped at
 ; PACE_DEBT: past that - a load, say - the schedule starts again from now rather than racing.
 ;-----------------------------------------------------------------------------
-PACE_DEBT       EQU 50                  ; a second of catching up at most
+PACE_DEBT       EQU 100                 ; two seconds of catching up at most
 pace_blit:
         ei                              ; the wait needs the tick; see aw_frame_sync
         ld      hl, (_aw_vars + $FF * 2)        ; VM_VARIABLE_PAUSE_SLICES, low byte
@@ -3838,8 +4292,11 @@ pace_blit:
         jr      c, .late
         ld      a, h
         or      a
-        jr      z, .wait                ; early by under 256 ticks: wait for it
+        jr      z, .idle                ; early by under 256 ticks: wait for it
         jr      .restart                ; further ahead than any pause: a stale deadline
+.idle:
+        call    snd_idle                ; the streamed music reads the card in the time spare
+        jr      .wait
 .late:
         ld      a, h
         inc     a
@@ -4007,6 +4464,7 @@ mix_block:
         ld      (blk_dst), hl
         xor     a
         ld      (mb_stored), a          ; no voice has written this block yet
+        call    st_block                ; the streamed music, if it is playing, stores first
 
         ld      ix, VOICES
         ld      b, 4
@@ -4302,6 +4760,129 @@ dm_end:
 dma_busy:       db 0
 cop_pending:    db 0
 cop_pend_line:  dw 0
+;-----------------------------------------------------------------------------
+; THE STREAMED MUSIC, the interrupt's half. tools/mkmusic.py renders the intro's module on the host
+; as the original played it, and the machine plays that back instead of mixing the module's voices:
+; measured in CSpect, mixing the music live held the intro to 97.5% of the original's speed.
+;
+; st_block runs first in mix_block. It COPIES up to a block of samples from the ring - sixteen 8K
+; pages the main code fills from the card, see st_read - into the copper list's value bytes, and
+; marks the block stored so the sound effects add on top. What the ring cannot supply is silence and
+; the stream WAITS rather than skipping: the markers the intro's scripts wait on are keyed to the
+; stream's position, so a late card delays the pictures with the tune and never desynchronises them.
+;
+; st_played is written only here and st_avail only by the main code, each under DI where the other
+; side reads it, so neither ever sees half a 24-bit update. The ring position is the count modulo
+; 128K: page ST_RING_PAGE + bits 16..13, offset bits 12..0.
+;-----------------------------------------------------------------------------
+st_block:
+        ld      a, (st_on)
+        or      a
+        ret     z
+        ld      hl, (st_avail)          ; A:HL = avail - played, what the ring holds
+        ld      de, (st_played)
+        or      a
+        sbc     hl, de
+        ld      a, (st_avail + 2)
+        ld      b, a
+        ld      a, (st_played + 2)
+        ld      c, a
+        ld      a, b
+        sbc     a, c
+        or      h
+        ld      a, (blk_total)
+        ld      b, a
+        jr      nz, .have               ; 256 or more: the whole block
+        cp      l
+        jr      c, .have
+        ld      a, l                    ; fewer than the block: all of them, then silence
+.have:
+        ld      (st_n), a
+        ld      c, a
+        ld      a, b
+        sub     c
+        ld      (st_left), a
+        ld      hl, (blk_dst)
+        ld      (st_dst), hl
+.piece:
+        ld      a, (st_n)
+        or      a
+        jr      z, .pad
+        ld      hl, (st_played)
+        ld      a, h
+        and     $1F
+        ld      d, a
+        ld      e, l                    ; DE = the offset in the page
+        ld      a, h
+        rlca
+        rlca
+        rlca
+        and     7
+        ld      c, a
+        ld      a, (st_played + 2)
+        and     1
+        add     a, a
+        add     a, a
+        add     a, a
+        or      c
+        add     a, ST_RING_PAGE
+        nextreg NR_SAMP_MMU, a          ; the interrupt saved MMU7 around mix_block
+        ld      hl, $2000
+        or      a
+        sbc     hl, de                  ; HL = what is left of this page, 1..$2000
+        ld      a, h
+        or      a
+        ld      a, (st_n)
+        jr      nz, .count
+        cp      l
+        jr      c, .count
+        ld      a, l
+.count:
+        ld      c, a
+        ld      b, 0
+        push    bc
+        ld      hl, SAMP_WIN
+        add     hl, de
+        ld      de, (st_dst)
+.copy:
+        ldi                             ; a sample, and every fourth byte of the list: 44 T
+        inc     de
+        inc     de
+        inc     de
+        jp      pe, .copy
+        ld      (st_dst), de
+        pop     bc
+        ld      hl, (st_played)
+        add     hl, bc
+        ld      (st_played), hl
+        jr      nc, .no_carry
+        ld      hl, st_played + 2
+        inc     (hl)
+.no_carry:
+        ld      a, (st_n)
+        sub     c
+        ld      (st_n), a
+        jr      .piece
+.pad:
+        ld      a, (st_left)
+        ld      hl, (st_dst)
+        call    mb_silence
+        ld      a, 1
+        ld      (mb_stored), a
+        ret
+
+        EXPORT st_on
+st_on:          db 0            ; the stream is the music
+        EXPORT st_played
+st_played:      ds 3            ; samples the interrupt has taken
+        EXPORT st_avail
+st_avail:       ds 3            ; bytes the main code has put in the ring
+        EXPORT st_eof
+st_eof:         db 0            ; the whole file is read, or a read failed
+st_last_mix:    dw 0
+st_n:           db 0
+st_left:        db 0
+st_dst:         dw 0
         ASSERT $ <= VOLTAB
         DISPLAY "> copper code at ", /H, COP_CODE, " ending ", /H, $
 

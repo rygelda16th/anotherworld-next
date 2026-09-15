@@ -42,6 +42,7 @@ namespace AWProbe
         int blitAddr = 0, blitAt = 0; bool blitDumped = false;
         int paceTicks = 0, paceBlit = 0, pacePoly = 0, lastBlit = -1;
         StreamWriter pace;
+        int streamPlayed = 0, streamAvail = 0;
         // AWPROBE_POKE="addr=val,addr=val" (hex) is written the frame BEFORE the ENTER wait is
         // released, so a run can choose its part and turn the synthetic player on.
         List<int[]> pokes = new List<int[]>();
@@ -93,6 +94,12 @@ namespace AWProbe
                 paceTicks = Convert.ToInt32(q[0], 16); paceBlit = Convert.ToInt32(q[1], 16); pacePoly = Convert.ToInt32(q[2], 16);
                 pace = new StreamWriter(p + ".pace"); pace.AutoFlush = true;
                 pace.WriteLine("# blit ticks vmframes polys");
+            }
+            string sm = Environment.GetEnvironmentVariable("AWPROBE_STREAM");
+            if (!string.IsNullOrEmpty(sm))
+            {
+                var q = sm.Split(':');
+                streamPlayed = Convert.ToInt32(q[0], 16); streamAvail = Convert.ToInt32(q[1], 16);
             }
             string pk = Environment.GetEnvironmentVariable("AWPROBE_POKE");
             if (!string.IsNullOrEmpty(pk))
@@ -248,7 +255,19 @@ namespace AWProbe
             if (pace != null)
             {
                 int b = W(paceBlit);
-                if (b != lastBlit) { lastBlit = b; pace.WriteLine("{0} {1} {2} {3}", b, W(paceTicks), W(0xC008), W(pacePoly)); }
+                if (b != lastBlit)
+                {
+                    lastBlit = b;
+                    // AWPROBE_STREAM=<st_played>:<st_avail> adds the emulator's own frame count and the
+                    // streamed music's two 24-bit counters, so lost ticks and a dry ring show per blit.
+                    if (streamPlayed != 0)
+                        pace.WriteLine("{0} {1} {2} {3} {4} {5} {6} on={7} eof={8}", b, W(paceTicks), W(0xC008), W(pacePoly), ticks,
+                            W(streamPlayed) | (CSpect.Peek((ushort)(streamPlayed + 2)) << 16),
+                            W(streamAvail) | (CSpect.Peek((ushort)(streamAvail + 2)) << 16),
+                            CSpect.Peek((ushort)(streamPlayed - 1)), CSpect.Peek((ushort)(streamAvail + 3)));
+                    else
+                        pace.WriteLine("{0} {1} {2} {3}", b, W(paceTicks), W(0xC008), W(pacePoly));
+                }
             }
             if (blitAddr != 0 && !blitDumped && W(blitAddr) >= blitAt) { blitDumped = true; DumpScreen(100000 + W(blitAddr)); }
             Sample();

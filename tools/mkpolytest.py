@@ -41,8 +41,7 @@ def classify(p):
     """The coverage bucket a traced polygon falls into, or None."""
     R = RefVideo8
     colour, n = p["colour"], len(p["points"])
-    bbw, bbh = R.sx(p["bbw"]), R.sy(p["bbh"])
-    x, y = R.sx(p["px"]), R.sy(p["py"])
+    x, y, bbw, bbh, _ = R.scale_record(p["px"], p["py"], p["bbw"], p["bbh"], p["points"])
     x1, x2 = x - bbw // 2, x + bbw // 2
     y1, y2 = y - bbh // 2, y + bbh // 2
 
@@ -153,12 +152,12 @@ def main():
             fh.write("        dw      " + ", ".join(str(v) for v in offs[k:k + 8]) + "\n")
         fh.write("\npoly_data:\n")
         for bucket, a in picked:
-            pts = [(R.sx(x), R.sy(y)) for x, y in a["points"]]
+            sx_, sy_, sbw, sbh, pts = R.scale_record(a["px"], a["py"], a["bbw"], a["bbh"], a["points"])
             fh.write(f"        ; {bucket}: colour {a['colour']:#04x}, "
                      f"{len(pts)} points\n")
             fh.write(f"        db      {a['colour']}\n")
-            fh.write(f"        dw      {R.sx(a['px'])}, {R.sy(a['py'])}\n")
-            fh.write(f"        dw      {R.sx(a['bbw'])}, {R.sy(a['bbh'])}\n")
+            fh.write(f"        dw      {sx_}, {sy_}\n")
+            fh.write(f"        dw      {sbw}, {sbh}\n")
             fh.write(f"        db      {len(pts)}\n")
             for k in range(0, len(pts), 4):
                 row = ", ".join(f"{x}, {y}" for x, y in pts[k:k + 4])
