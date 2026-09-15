@@ -127,7 +127,7 @@ STACK_CODE      EQU $CF00               ; up to STACK_FLOOR: load_flat, the musi
 ; polices it, so a C that grows past here fails the build loudly rather than quietly overwriting
 ; the music code - and the 136 bytes reclaimed from the old $BB58 are what let I7's present_bitmap
 ; and voice_locate move up here when the resident block had nothing left.
-MUSIC_CODE      EQU $BAE0
+MUSIC_CODE      EQU $BB00               ; $BAE0 until the C needed 32 more bytes for aw_logrec's early return
 INTERP_AT       EQU $C500               ; the 2,048-byte reciprocal table
 ; I3's tables, in MMU6's page rather than the resident region, which the rasteriser and
 ; the C had already filled: 584 bytes of resource table and 146 of load state is 730, and

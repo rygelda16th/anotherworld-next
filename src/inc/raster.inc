@@ -210,6 +210,7 @@ poly_draw:
 
         ; pick the fill: < 0x10 opaque, == 0x10 blend, > 0x10 copy from page 0
         ld      a, (p_colour)
+        ld      (.colour + 1), a        ; and the span's colour, once a polygon, not once a row
         cp      $10
         jr      c, .opaque
         jr      z, .blend
@@ -306,6 +307,8 @@ poly_draw:
         exx
         ld      ix, (cpt1 + 2)
         ld      iy, (cpt2 + 2)
+        ld      a, (cur_band)
+        ld      (.bcmp + 1), a
 
 ;-----------------------------------------------------------------------------
 ; One scanline, FUSED. This was three routines and four calls to cmp_signed,
@@ -370,8 +373,10 @@ poly_draw:
         rlca
         rlca
         and     7
-        ld      hl, cur_band
-        cp      (hl)
+        ; cur_band as an IMMEDIATE, copied in at each trapezoid and kept by band_set, which is the
+        ; only thing that changes it while a polygon's rows are walked. 10 T a row less than
+        ; loading HL and comparing through memory.
+.bcmp:  cp      0
         call    nz, band_set
 .band_ok:
         ; HL = DWIN + ((y & 31) << 8) + sx1 ; DE = length as a WORD.
@@ -387,7 +392,8 @@ poly_draw:
         ld      e, a
         ld      d, 0
         inc     de                      ; DE = 1..256
-        ld      a, (p_colour)
+.colour:
+        ld      a, 0                    ; p_colour (patched once a polygon)
         ; A LOCAL label. As a global one it reparented every local label after it
         ; to itself, so .row and .step became span_call.row and span_call.step and
         ; poly_draw's own jumps stopped resolving - the same trap span_tail hit in
@@ -1151,6 +1157,7 @@ copy_end:
 ;-----------------------------------------------------------------------------
 band_set:
         ld      (cur_band), a
+        ld      (poly_draw.bcmp + 1), a ; the row walk's copy of it
     IFDEF DIRTY_BANDS
         call    dirty_band              ; the includer's: this band of this page is being drawn on
     ENDIF

@@ -135,8 +135,7 @@ p_first:
         add     a, 0
         ld      c, a
         adc     hl, de
-        dec     b
-        jp      nz, mvf
+        djnz    mvf
         jp      voice_save
         ENDIF
 
@@ -147,15 +146,18 @@ mva:
         exx
         ld      e, a
         ld      a, (de)
-        bit     7, a
-        jr      nz, mva_neg
+        ; The sign by OR A and JP M, and the usual outcome of each clip test as a taken JP: 10 T
+        ; where JR takes 12. With the intro's music keeping three voices busy this loop runs forty
+        ; thousand times a second.
+        or      a
+        jp      m, mva_neg
         add     a, (hl)
-        jr      nc, mva_st
+        jp      nc, mva_st
         ld      a, 255
         jr      mva_st
 mva_neg:
         add     a, (hl)
-        jr      c, mva_st
+        jp      c, mva_st
         xor     a
 mva_st:
         ld      (hl), a
@@ -173,8 +175,7 @@ mva_st:
 p_add:  add     a, 0
         ld      c, a
         adc     hl, de
-        dec     b
-        jp      nz, mva
+        djnz    mva                     ; 13 T against DEC B / JP NZ's 14
         jp      voice_save
 
 voice_regs:

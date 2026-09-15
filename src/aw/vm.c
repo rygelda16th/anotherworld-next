@@ -281,6 +281,14 @@ static void aw_logrec(uint8_t kind, uint16_t pc, uint8_t v)
     const uint8_t *q;
     uint8_t rec[4];
 
+    /* NOTHING LEFT TO DO BUT COUNT. With no expected stream (CTL_EXP_N zero - every run but Gate D's)
+     * and the buffer full, all this routine does is advance the counter, and building and comparing
+     * a record first cost about 1% of the time in the intro's heaviest stretch. Same effect. */
+    if (!CTL_EXP_N && aw_log_count >= LOG_RECS) {
+        CTL_RECORDS = ++aw_log_count;
+        return;
+    }
+
     rec[0] = kind;
     rec[1] = (uint8_t)pc;
     rec[2] = (uint8_t)(pc >> 8);
