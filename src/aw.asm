@@ -842,6 +842,7 @@ aw_load_res:
 
 ; invalidateRes, resource.cpp:229. The reference marks everything not permanent as
 ; absent; ours forgets the lot and rewinds the cursor.
+        EXPORT aw_inval_res
 aw_inval_res:
         ; invalidateRes stops the player and the mixer (vm.cpp:371-374), so the stream stops too
         ld      hl, st_stop
@@ -1446,6 +1447,7 @@ aw_draw_poly:
 ; tools/sfxmod.py decodes the same thing on the host and is this routine's oracle.
 ;-----------------------------------------------------------------------------
 aw_play_music:
+        call    card_mus_gate           ; THE PI'S CARD, told once the rest of this has run
         ; THE STREAMED MUSIC FIRST. st_music takes this op_playMusic if MUSIC.PCM was rendered for
         ; exactly it, or if the stream is playing and this is a retime or a stop it already holds.
         ld      hl, st_music
@@ -2097,6 +2099,7 @@ voice_setup:
 ; No divide: snd_freq is the forty pitches already reduced to 8.8 increments at load time.
 ;-----------------------------------------------------------------------------
 aw_play_sound:
+        call    card_snd_gate           ; THE PI'S CARD gets the effect too (plan-pi-gus.md)
         ld      a, (SND_BLOCK + 3)      ; the channel, masked
         and     3
         ld      (mp_chan), a
@@ -2886,6 +2889,11 @@ sv_load:
 .done_load:
         ld      a, $5A
         ld      (sv_done), a
+        ; THE PI'S CARD follows the player as it was loaded (card_load)
+        ld      a, (card_on)
+        or      a
+        ld      hl, CARD_LOAD
+        call    nz, card_call
         ei
         ret
 .bad_magic:
@@ -3320,6 +3328,14 @@ ST_LOW          EQU $80                 ; below $8000 bytes - two seconds - st_f
 
 ; A = 0: not the stream's, the live player carries on. A = 1: taken.
 st_music:
+        ; NOT WITH THE PI'S CARD ON: the card plays the module itself, from the live player's own
+        ; state, and the stream would only be read and not heard.
+        ld      a, (card_on)
+        or      a
+        jr      z, .z80
+        xor     a
+        ret
+.z80:
         ld      a, (MUS_BLOCK + 0)
         or      a
         jr      nz, .start
@@ -3418,6 +3434,12 @@ st_music:
 ; st_stop - the stream ends: file closed, interrupt told. Keeps the interrupt state it found, because
 ; sv_load calls it through aw_inval_res with interrupts off.
 st_stop:
+        ; THE PI'S CARD STOPS TOO: every caller is a stop of the player and every voice
+        ; (op_updateMemList(0), a part's setup, a load), and card_stop keeps the interrupt state.
+        ld      a, (card_on)
+        or      a
+        ld      hl, CARD_STOP
+        call    nz, card_call
         xor     a
         ld      (st_on), a
         ld      a, (st_open)
@@ -5213,11 +5235,23 @@ auto_47:    db 0
         ORG CARD_GATES
         EXPORT card_on
 card_on:        db 0                    ; 1: the card is on (card.inc's card_go, card_lost)
-card_isr_gate:
+card_snd_gate:                          ; aw_play_sound's first instruction: the card is told,
+        ld      hl, CARD_SND            ; then the Z80 path runs on as ever
+        jr      card_gate
+card_isr_gate:                          ; the interrupt's, at both lines
+        ld      hl, CARD_ISR
+        jr      card_gate
+card_mus_gate:                          ; aw_play_music's first instruction: the Z80 path runs
+        ld      a, (card_on)            ; first - the card's sender reads the player it sets
+        or      a                       ; up - and THEN the card is told
+        ret     z
+        pop     hl                      ; the rest of aw_play_music
+        call    card_jp_hl
+        ld      hl, CARD_MUS
+card_gate:
         ld      a, (card_on)
         or      a
         ret     z
-        ld      hl, CARD_ISR
         ; fall through
 ; card_call - HL = a routine in page 11. MMU7 is borrowed and put back as found - READ, not
 ; tracked, because the interrupt borrows the same slot and the two must nest (see the ISR).

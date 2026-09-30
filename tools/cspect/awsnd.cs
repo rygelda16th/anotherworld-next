@@ -4,7 +4,8 @@
 // from the C goes through: $8024 (aw_play_sound: SND_BLOCK's resource, frequency index, volume and
 // channel at $C3B4) and $8021 (aw_play_music: MUS_BLOCK's resource, delay and position at $C3B0).
 // Each call is one line: the machine's tick (AWSND_TICKS, the hex address of `ticks`), the kind, the
-// operands. AWSND_INVAL=<hex address of aw_inval_res> logs an `inval` line whenever it runs - from
+// operands; with AWSND_RESPAGE=<hex address of res_page>, an sfx line ends with the sound's first
+// page (0: not loaded, which the game ignores). AWSND_INVAL=<hex address of aw_inval_res> logs an `inval` line whenever it runs - from
 // op_updateMemList(0), a part's setup (the boot's too) or a load: each stops the player and every
 // voice in the reference, and the Pi card with it (plan-pi-gus.md A3). It costs the image nothing: no marker, no byte of code.
 //
@@ -32,7 +33,7 @@ namespace AwSnd
         StreamWriter log;
         bool off = true;
         int ticksAt = 0;
-        int cardAt = 0, cardLen = 0, frame = 0;
+        int cardAt = 0, cardLen = 0, frame = 0, resPage = 0;
         List<int> watch = new List<int>();
 
         public List<sIO> Init(iCSpect _CSpect)
@@ -57,6 +58,8 @@ namespace AwSnd
             if (!string.IsNullOrEmpty(w)) foreach (string a in w.Split(',')) watch.Add(Convert.ToInt32(a, 16));
             io.Add(new sIO(0x8024, eAccess.Memory_EXE, 1, 0));
             io.Add(new sIO(0x8021, eAccess.Memory_EXE, 2, 0));
+            string rp = Environment.GetEnvironmentVariable("AWSND_RESPAGE");
+            if (!string.IsNullOrEmpty(rp)) resPage = Convert.ToInt32(rp, 16);
             string iv = Environment.GetEnvironmentVariable("AWSND_INVAL");
             if (!string.IsNullOrEmpty(iv)) io.Add(new sIO(Convert.ToInt32(iv, 16), eAccess.Memory_EXE, 3, 0));
             log.WriteLine("# awsnd up");
@@ -76,7 +79,8 @@ namespace AwSnd
             _valid = false;
             if (off || _t != eAccess.Memory_EXE) return 0;
             if (_id == 1)
-                log.WriteLine(string.Format("sfx {0} {1} {2} {3} {4}", Ticks(), B(0xC3B4), B(0xC3B5), B(0xC3B6), B(0xC3B7)));
+                log.WriteLine(string.Format("sfx {0} {1} {2} {3} {4}{5}", Ticks(), B(0xC3B4), B(0xC3B5), B(0xC3B6), B(0xC3B7),
+                    resPage == 0 ? "" : " " + B(resPage + B(0xC3B4))));
             else if (_id == 2)
                 log.WriteLine(string.Format("music {0} {1} {2} {3}", Ticks(), B(0xC3B0), B(0xC3B1) | (B(0xC3B2) << 8), B(0xC3B3)));
             else if (_id == 3)

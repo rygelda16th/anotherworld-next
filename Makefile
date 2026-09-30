@@ -26,7 +26,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
         check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-save check-bitmap \
-        toolchain-diff play record check-sndcalls gus-assets check-gus check-card
+        toolchain-diff play record check-sndcalls gus-assets check-gus check-card play-gus
 
 help:
 	@echo "make certs          extract the corporate TLS-inspection CA for the image"
@@ -59,6 +59,7 @@ help:
 	@echo "make gus-assets     plan-pi-gus A1: the Pi card's files, built by nextpi-gus (NEXTPI_GUS)"
 	@echo "make check-gus      plan-pi-gus A1: the card holds every sound byte for byte, the pins"
 	@echo "make check-card     plan-pi-gus A2/A3: the game with a fake Pi card in CSpect (windows, one at a time)"
+	@echo "make play-gus       plan-pi-gus A4: play it in CSpect, the card on the Mac's speakers (CARD=0: the Z80 path)"
 
 certs:
 	@mkdir -p certs
@@ -528,9 +529,21 @@ check-gus:
 # the boot, the upload and %M (A2: sessions 1-3), the effects and music on the card, the markers, the
 # speed, a card lost mid-intro (A3: 4-5). ONLY=1,2,3 runs some. Opens CSpect windows, one at a time.
 ONLY ?= 1,2,3,4,5
-check-card:
+check-card: cc-game
+	$(MAKE) asm
 	$(MAKE) -C $(NEXTPI_GUS) build/mac/ngus
 	NEXTPI_GUS=$(NEXTPI_GUS) python3 tools/checkcard.py --only $(ONLY)
+
+# plan-pi-gus.md A4, David's: the BYPASS_PROTECTION image (the intro, then part 2) in CSpect, its sound
+# on the card on the Mac's speakers - or with CARD=0 no Pi, the Z80 path, for the comparison. The plain
+# image is built again after, so build/aw.nex stays what every gate expects. See tools/play_gus.sh.
+CARD ?= 1
+play-gus: cc-game
+	$(MAKE) asm ASMDEF=-DBYPASS_PROTECTION
+	cp $(BUILD)/aw.nex $(BUILD)/aw-play.nex
+	$(MAKE) asm
+	$(MAKE) -C $(NEXTPI_GUS) build/mac/ngus
+	CARD=$(CARD) NEXTPI_GUS=$(NEXTPI_GUS) sh tools/play_gus.sh
 
 # plan-pi-gus.md A0: the game's own sound calls, logged from outside in CSpect (tools/cspect/awsnd.cs),
 # against the reference engine's run of the intro. Opens a CSpect window; one at a time.

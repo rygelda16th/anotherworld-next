@@ -94,7 +94,7 @@ def plugin(name, src):
 
 def wait_no_mono(most=1800):
     t0 = time.time()
-    while subprocess.run(["pgrep", "-x", "mono"], capture_output=True).returncode == 0:
+    while subprocess.run(["pgrep", "-f", "CSpect.exe"], capture_output=True).returncode == 0:
         if time.time() - t0 > most:
             raise SystemExit("another CSpect (mono) is still running after 30 min")
         print("        (another CSpect is running: waiting)", flush=True)
@@ -158,6 +158,8 @@ def session(label, seconds, pi="card", kill_after=0, extra_env=None, seed=False,
         env["AWPROBE_PACE"] = f"{sym['ticks']:X}:{sym['n_blit']:X}:{sym['n_poly']:X}"
         if os.path.exists(plog + ".pace"):
             os.remove(plog + ".pace")
+    if "res_page" in sym:
+        env["AWSND_RESPAGE"] = f"{sym['res_page']:X}"
     if "aw_inval_res" in sym:
         env["AWSND_INVAL"] = f"{sym['aw_inval_res']:X}"
     env.update(extra_env or {})
@@ -293,6 +295,8 @@ def expected_fx(calls, gus_of):
             alloffs.append(gus_of(tick + 1))
         elif c[0] == "sfx":
             res, freq, vol, chan = (int(x) for x in c[2:6])
+            if len(c) > 6 and c[6] == "0":
+                continue                    # not loaded: the game ignores it (vm.cpp:698), the card too
             last[(tick, chan & 3)] = (res, freq, vol)
     out = []
     for (tick, ch) in sorted(last):

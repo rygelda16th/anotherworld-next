@@ -117,7 +117,36 @@ is built only if the KS3 shows the fast link will not run (nextpi-gus's docs/ks3
 | A0 | done, tag gus-a0 | `make check-sndcalls`: the intro's calls are the engine's, bar three sound-52 calls (below) |
 | A1 | done, tag gus-a1 | `make check-gus`: every sound in the card's memory byte for byte; five pins; the pitches in Hz |
 | A2 | done, tag gus-a2 | all 18 ZEsarUX gates pass with no Pi (the probe costs half a second); `make check-card ONLY=1,2,3`: in CSpect the boot finds the fake Pi's card, uploads 227 blocks (861 frames at 115,200, no block named), %M = 139E5101 as the machine read it and as the card wrote it, the card's work every frame after and the card counting ~50 good lines a second and no bad one while the intro runs; a Pi without the card gets it from GUSINST.TXT (the ARM build, byte for byte) and the same boot follows; with no Pi, CS_NOPI and the Z80 path |
-| A3 | next | |
+| A3 | done, tag gus-a3 | `make check-card` (all five sessions): over the whole intro in CSpect, the 225 effects on the F lines are the machine's 225 aw_play_sound calls, each on the next frame's line; the music the card keeps is the reference player's for the machine's own op_playMusic calls - 977 events, 487 notes, row for row at the same times, after 5 cuts; W zeroes the 6 instruments' first samples; every voice off after each st_stop (2); the markers keep their times (the machine's effects are the engine's, as at A0); 13,433 lines, none bad, the card counting no bad line or gap; the intro at 100.2% of the original (speed.py). The card killed mid-intro: SUP> seen at once (err 4), the Z80 mixer takes over, the intro runs on with its effects. All 18 ZEsarUX gates pass with no Pi |
+| A4 | ready: David's | `make play-gus`, and `make play-gus CARD=0` to compare (below) |
+| A5 | ready: David's, on the KS3 | below; after nextpi-gus's H1 |
+
+## A4 and A5: David's checkpoints
+
+**A4, in CSpect.** `make play-gus` builds the BYPASS_PROTECTION image (the intro, then part 2),
+starts nextpi-gus's fake NextPi with the card playing on the Mac's speakers, and opens CSpect.
+The boot uploads every sound first: about 17 s of a blank screen with a blue border, then the
+border goes black and ENTER starts the intro. `make play-gus CARD=0` is the same image with no Pi:
+the Z80 path, CSpect's own sound. Listen to both: the intro's music (the card mixes the module
+live, the Z80 path streams MUSIC.PCM), the effects, and how late the effects feel (the card's are
+D plus the Mac's output buffer after the frame that asked). Keys as ever: O P Q A, Space, ENTER.
+
+**A5, on the KS3** (after nextpi-gus's H1, which installs and hears the card with its own test
+.nex and tries the fast link):
+1. On the Deck (the Mac mounts SD cards read-only): the game's folder as CSpect has it
+   (~/src/cspect/sd/aw: AW.NEX and the resources), with build/aw.nex (or build/aw-play.nex) as
+   AW.NEX and build/assets/GUSALL.GUS and GUSINST.TXT beside it.
+2. Boot the game with the Pi fitted. THE BORDER SAYS WHAT THE CARD DID: blue from the Pi's
+   answer while the card is found, installed (the first time: GUSINST.TXT, about 11 s at
+   115,200) and uploaded - time it: that is the upload; black once the card is on; magenta if it
+   failed after the Pi answered, or was lost mid-game (the Z80 path is playing then). No Pi: the
+   border never changes and the game starts half a second later than before.
+3. Play the intro and part 2 with the card, then without (take GUSALL.GUS away: the upload fails,
+   magenta, the Z80 path). Judge the effects' latency, and part 2's frame rate with the mixer's
+   16% given back.
+4. Decide: the upload mode (every sound at boot is what is built; per-load only if the fast link
+   will not run and the boot's upload is too long), and the default route (the card whenever it
+   is there, or not).
 
 ## A0's finding (2026-09-30)
 
@@ -131,6 +160,11 @@ engine there - CSpect runs at about 93% of the hardware - and the intro's script
 their loops against the music, so a loop runs a different number of times. It is the Z80 path's
 own behaviour, reported to the Another World session; the card's gates hold the card to what the
 MACHINE asks for (this hook), not to the engine.
+
+**A3 closed half of it: those three calls play nothing.** Sound 52 is not loaded when the machine
+asks for it (the hook now logs each call's res_page), so op_playSound returns before it touches a
+channel - on the Z80 path and on the card alike, as the reference would (vm.cpp:698). What remains
+is that the scripts run the loop more times than the engine's did; nobody hears it.
 
 ## The memory map, additions only
 
