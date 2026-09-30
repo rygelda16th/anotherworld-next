@@ -34,72 +34,90 @@ the ring 512 bytes and the CRC table 256, so it fits in 8 KB. It runs at $E000: 
 MMU7, maps page 11, and puts back what it found, exactly as the interrupt already borrows MMU7
 for a voice's sample page. (While the card is on, the mixer does not run, so the two never nest.)
 
-**The hooks: 12 resident bytes, and a 53-byte block after the C.** One 3-byte `call` each in:
-- the interrupt, on the frame's line (LINE_A): the card's work for this frame;
-- aw_play_sound: the effect goes to the card instead;
-- aw_play_music: the module goes to the card's player instead;
-- snd_frame: the frame boundary's card work (the 0xF4 marker) instead of music_clock.
+**The hooks: 9 resident bytes, and a 49-byte block after the C.** One 3-byte `call` each in:
+- the interrupt, at `.no_mix`, so at both line interrupts: the card's frame work at LINE_A, the
+  UART both ways at both;
+- aw_play_sound's first instruction: the effect goes to the card, then the Z80 path runs on;
+- aw_play_music's first instruction: the Z80 path runs first, then the card is told.
 
-Each call goes to a gate in a block at $BAC4, between the C's variables (CC_TOP) and MUSIC_CODE,
-which the C's ASSERTs move down to. A gate returns at once while the card is off, so the Z80
-path costs 17 T-states more a call and nothing else. With the card on, it drops the hooked
-routine's own return and runs the card's routine through card_call (the MMU7 borrow). Page 10,
-which has room, takes the rest: st_music declines while the card is on, st_stop (reached from
-op_updateMemList(0) and aw_setup_part) sends the card a cut and all-off, and sv_load resyncs it.
+Each call goes to a gate in a block at **$BACA** (CARD_GATES), between the C's heap header and
+MUSIC_CODE. A gate returns at once while the card is off, so the Z80 path pays a call, a load and
+a test. With the card on it runs the card's routine through card_call (the MMU7 borrow). cop_start
+ends in the boot (`ei`, then card_call CARD_BOOT: 6 bytes of COP_CODE's 14 spare). Page 10 takes
+the rest: st_music declines while the card is on, st_stop (every stop of the player and every
+voice: op_updateMemList(0), a part's setup, a load) tells the card, and sv_load's end resyncs it.
+
+**$BACA, not $BAC4: the C writes twelve bytes nobody had counted.** The zxn CRT is built with
+CLIB_MALLOC_HEAP_SIZE -1, so at startup it puts a malloc heap between the BSS's end ($BABE) and the
+stack and asm_heap_init writes a six-byte mutex and the first block's six-byte header there -
+whether or not the C mallocs, and it does not. CC_TOP was "the highest symbol plus eight", $BAC4,
+so the gates' first build had card_on and the gate's first bytes overwritten the moment the VM
+started, and the interrupt ran garbage two seconds later (check-aw: ticks stopped at 129).
+tools/mkexp.py's CC_TOP now counts the header ($BACA), and the C's ASSERT holds against the gates.
 
 **The boot.** cop_start's end calls card_boot, with interrupts on (the upload's time limits count
 ticks). It probes (half a second for SUP>, so a machine with no Pi loses half a second), installs
-the card from GUSINST.TXT if the probe says GA42, hands off, uploads GUSALL.GUS (every sound, 227
-blocks), and checks the card's CRC of its memory against the build's. Only then is the card on:
-the copper list's values are set to silence and the interrupt's mixer is switched off (snd_off).
-Any failure leaves the card off and the Z80 path as it is.
+the card from GUSINST.TXT if the probe says GA42, hands off, tries the fast link (1 Mbit with
+RTS/CTS; an emulator never switches, and a switch that fails is back at 115,200 inside a second),
+uploads GUSALL.GUS (every sound, 227 blocks), and checks the card's CRC of its memory against the
+build's. Only then is the card on: the interrupt's mixer is switched off (snd_off), the copper's
+list is set to silence and uploaded whole, and the interrupt's card work starts. Any failure ends
+the session (E, SUP>) and leaves the card off and the Z80 path as it is.
 
 **Effects.** aw_play_sound with the card on keeps the reference's order of tests (a resource not
-resident returns before volume 0 stops the channel), then writes the channel's slot in a
-four-slot mailbox: clear its flag, write the note, set the flag. The interrupt, the ring's only
-writer, puts every full slot on that frame's F line: a note on voice (channel & 3), the sound's
-own resource number as the card's sample, the reference's frequency table in Hz, volume x 4.
+loaded returns before volume 0 stops the channel), then writes the channel's slot in a four-slot
+mailbox with interrupts held off. The interrupt, the ring's only writer, puts every full slot on
+that frame's F line: a note on voice (channel & 3), the sound's own resource number as the card's
+sample, the reference's frequency table in Hz, volume x 4; or a stop. The Z80 path then runs as
+ever, into voices nobody hears - which is what a lost card hands back to.
 
-**Music.** aw_play_music with the card on does what the resident routine does - the same mus_*
-variables and the same order and instrument tables in MMU6, so sv_save, sv_load and a fallback
-all see a consistent player - and then tells the card's player. The player runs **in the
-interrupt**: it maps the module's two pages at MMU2 and MMU3 (saved and put back by reading the
-NextRegs), and each frame:
-- moves the play cursor over the rows now due, keeping mus_cur_order and mus_cur_pos current and
-  latching a 0xFFFD row's value with its time;
-- sends the rows due up to 300 ms ahead as A lines, stamped with their exact time (a row every
-  `delay x 60 / 7050` ms): a note (7159092 / (period x 2) Hz, the instrument's volume with effects
-  5 and 6, x 4), a stop for 0xFFFE, the volume for a row naming an instrument with no note, and
-  all-off where the order list ends.
-
-A retime or stop (resNum 0) sends a cut reaching back to the op's time, and the rows from the
-pending one on are sent again on the new timing (the pending row keeps its time, as
-sfxplayer.cpp's re-armed timer does). A new module cuts the old one's queued rows, and writes
-four zero bytes over each instrument's first samples in the card's memory (W lines), as
-prepareInstruments does to the resources themselves.
-
-**The 0xF4 marker** is published at the frame boundary from the latch, never from the
-interrupt: the C reads the variable as two bytes, and its threads must all see one value in a
-frame. That is when the Z80 player publishes it today, so the scripts see the same timing.
+**Music: the Z80 player keeps the time, a sender in the interrupt plays it.** The Z80 player runs
+at the frame boundary exactly as without the card - music_clock, music_tick, the 0xF4 marker the
+scripts wait on, the positions a save keeps - with the mixer off. So the game's timing, the
+markers included, is the Z80 path's by construction, and nothing had to be latched. The card's
+notes come from a sender in the interrupt that walks the same module on the same clock (a row
+every `delay x 60 / 7050` ms from the Z80 clock's own start), up to L = 300 ms ahead, as A lines
+stamped with each row's exact time - so a row is heard on time however long the VM frame that owns
+it runs. It keeps its own copy of the order and instrument tables (the Z80 path rewrites them for
+the next module) and borrows MMU2/MMU3 for the pattern, reading and putting back what it found. It
+follows the reference, sfxplayer.cpp, where the Z80 path does not: a row naming an instrument sets
+the channel's volume, the order list's end stops every channel, a note is 7159092 / (period x 2)
+Hz (a 24-by-16 division in the interrupt, about 2,000 T-states). What the machine's calls tell it:
+- a module start: the old module's rows after the start cut; W lines zero each loaded
+  instrument's first four samples in the card's memory (prepareInstruments); rows from there;
+- a retime: the reference's re-armed timer - the pending row keeps its time, the rows after it are
+  cut and sent again on the new period (the sender remembers its last eight rows to rewind among);
+- a stop (op_playMusic 0, 0): the rows after it cut; the notes sounding carry on;
+- st_stop (op_updateMemList(0), a part's setup, a load): the same, and every voice off, and any
+  effect still in the mailbox dropped (`player->stop(); mixer->stopAll()`, vm.cpp:371-374);
+- sv_load's end: the sender restarts from the loaded player's position.
 
 **What the card changes in the game's timing:** the sound is heard D (20 ms) plus the Pi's
 output buffer (about 45-70 ms) after the Next sends it, where the Z80 path's is 10-20 ms. David
 judges it at A4 and A5.
 
 **A card lost mid-game** (the watchdog: no `%` line for 1.5 s, or SUP>): the interrupt turns the
-card off and the mixer back on. The effects go on at once on the Z80 path, and so does the music,
-because the player's state was the Z80 player's all along. The intro's streamed music does not
-restart (st_music declined it); its tune resumes at the module player's position instead.
+card off and the mixer back on. The effects and the music go on at once on the Z80 path, from the
+Z80 voices, which op_playSound and the Z80 player kept current all along. The intro's streamed
+music does not start (st_music declined it); its tune carries on in the module player instead.
 
-**Saves.** sv_save is unchanged. sv_load with the card on sends all-off and a cut, and restarts
-the card's player from the loaded mus_* state; the voices it restores are the Z80 mixer's, and
-the card does not replay notes that were sounding. A loop that was sounding at the save starts
-again with the next row or effect that names it.
+**Saves.** sv_save is unchanged. sv_load stops the card (its aw_setup_part reaches st_stop) and,
+at its end, restarts the sender from the loaded player's state; the voices it restores are the Z80
+mixer's, and the card does not replay notes that were sounding.
 
 **The upload modes.** The plan builds two, and the KS3 picks: every sound at boot (built at A2,
 the default, and what CSpect uses), or each sound as the game loads it. The second needs a hook in
 aw_load_res (3 more resident bytes, which exist) and a W-free path for the loader's own MMU7; it
 is built only if the KS3 shows the fast link will not run (nextpi-gus's docs/ks3-checklist.md).
+
+## Status
+
+| Step | State | Evidence |
+|---|---|---|
+| A0 | done, tag gus-a0 | `make check-sndcalls`: the intro's calls are the engine's, bar three sound-52 calls (below) |
+| A1 | done, tag gus-a1 | `make check-gus`: every sound in the card's memory byte for byte; five pins; the pitches in Hz |
+| A2 | done, tag gus-a2 | all 18 ZEsarUX gates pass with no Pi (the probe costs half a second); `make check-card ONLY=1,2,3`: in CSpect the boot finds the fake Pi's card, uploads 227 blocks (861 frames at 115,200, no block named), %M = 139E5101 as the machine read it and as the card wrote it, the card's work every frame after and the card counting ~50 good lines a second and no bad one while the intro runs; a Pi without the card gets it from GUSINST.TXT (the ARM build, byte for byte) and the same boot follows; with no Pi, CS_NOPI and the Z80 path |
+| A3 | next | |
 
 ## A0's finding (2026-09-30)
 
@@ -118,10 +136,11 @@ MACHINE asks for (this hook), not to the engine.
 
 | Where | What | Size |
 |---|---|---|
-| resident | four `call` hooks | 12 bytes of the 16 free |
-| $BAC4-$BAFF | card_on, card_call and the gates | 53 of 60 bytes; CC_TOP asserted below them |
-| page 10 | st_music's decline, st_stop's cut, sv_load's resync | a few dozen bytes of the ~5 KB free |
-| page 11 | gus.inc, piuart.inc, the glue, the player, the ring, the CRC table, the tables | under 8 KB, asserted |
+| resident | three `call` hooks | 9 bytes of the 16 free |
+| COP_CODE | cop_start's end: the boot | 6 of the 14 bytes free |
+| $BACA-$BAFA | card_on, card_call and the gates | 49 of 54 bytes; CC_TOP (with the heap header) asserted below them |
+| page 10 | st_music's decline, st_stop's call, sv_load's | a few dozen bytes of the ~5 KB free |
+| page 11 | gus.inc, piuart.inc, gusprobe.inc, the glue, the sender, the ring, the CRC table, the tables | under 8 KB, asserted |
 
 ## Coordination
 

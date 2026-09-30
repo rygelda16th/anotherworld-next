@@ -26,7 +26,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
         check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-save check-bitmap \
-        toolchain-diff play record check-sndcalls gus-assets check-gus
+        toolchain-diff play record check-sndcalls gus-assets check-gus check-card
 
 help:
 	@echo "make certs          extract the corporate TLS-inspection CA for the image"
@@ -58,6 +58,7 @@ help:
 	@echo "make check-sndcalls plan-pi-gus A0: the intro's sound calls in CSpect = the engine's (a window)"
 	@echo "make gus-assets     plan-pi-gus A1: the Pi card's files, built by nextpi-gus (NEXTPI_GUS)"
 	@echo "make check-gus      plan-pi-gus A1: the card holds every sound byte for byte, the pins"
+	@echo "make check-card     plan-pi-gus A2/A3: the game with a fake Pi card in CSpect (windows, one at a time)"
 
 certs:
 	@mkdir -p certs
@@ -227,6 +228,7 @@ ASMDEF     ?=
 
 asm: | $(BUILD)
 	python3 tools/mksndfreq.py $(PROBE) $(BUILD)/sndfreq.inc
+	@test -f $(BUILD)/gusdata.inc || python3 tools/mkgusdata.py $(NEXTPI_GUS) $(BUILD) $(PROBE)
 	python3 tools/mkparts.py $(PROBE) $(BUILD)/parts.inc
 	$(RUN) sh -c 'set -e; for f in src/*.asm; do \
 		b=$$(basename "$$f" .asm); echo "  ASM $$f"; \
@@ -516,11 +518,19 @@ SHARED := tools/zrcp.py tools/zesarux/prescalar.patch \
 NEXTPI_GUS ?= $(HOME)/src/nextpi-gus
 gus-assets: | $(BUILD)
 	$(MAKE) -C $(NEXTPI_GUS) upload pi-card
-	python3 tools/mkgusdata.py $(NEXTPI_GUS) $(BUILD)
+	python3 tools/mkgusdata.py $(NEXTPI_GUS) $(BUILD) $(PROBE)
 
 check-gus:
 	$(MAKE) -C $(NEXTPI_GUS) build/mac/ngus
 	NEXTPI_GUS=$(NEXTPI_GUS) python3 tools/checkgus.py
+
+# plan-pi-gus.md A2 and A3: the shipped image in CSpect with its Pi UART on nextpi-gus's fake NextPi -
+# the boot, the upload and %M (A2: sessions 1-3), the effects and music on the card, the markers, the
+# speed, a card lost mid-intro (A3: 4-5). ONLY=1,2,3 runs some. Opens CSpect windows, one at a time.
+ONLY ?= 1,2,3,4,5
+check-card:
+	$(MAKE) -C $(NEXTPI_GUS) build/mac/ngus
+	NEXTPI_GUS=$(NEXTPI_GUS) python3 tools/checkcard.py --only $(ONLY)
 
 # plan-pi-gus.md A0: the game's own sound calls, logged from outside in CSpect (tools/cspect/awsnd.cs),
 # against the reference engine's run of the intro. Opens a CSpect window; one at a time.

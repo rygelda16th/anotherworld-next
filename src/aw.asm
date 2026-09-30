@@ -101,6 +101,12 @@ BMP_PAGE        EQU 64
 PAGED_PAGE      EQU 10
 PAGED_WIN       EQU $4000
 NR_PAGED_MMU    EQU $52                 ; MMU2, page 10's own slot at boot
+; THE PI'S CARD (plan-pi-gus.md): its code is src/inc/card.inc, in PAGE 11 - the other half of
+; bank 5, which nothing else writes - assembled and run at $E000 through MMU7, which card_call
+; borrows the way the interrupt borrows it for a sample page. CARD_GATES is the resident block
+; that reaches it, between the C's variables and MUSIC_CODE.
+CARD_PAGE       EQU 11
+CARD_GATES      EQU $BACA               ; CC_TOP: past the C's heap header (tools/mkexp.py)
 RES_FIRST_PAGE  EQU 72
 RES_MAX_PAGES   EQU 96                  ; pages 72..167; banks 40-111 stay free
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
@@ -1068,6 +1074,9 @@ isr:
         inc     hl
         ld      (n_mix), hl
 .no_mix:
+        ; THE PI'S CARD, when it is on: its clock and heartbeat at LINE_A, the UART both ways at
+        ; both lines, the watchdog. card_isr_gate returns at once while the card is off.
+        call    card_isr_gate
 
         pop     hl
         pop     de
@@ -4395,7 +4404,12 @@ cop_start:
         ld      (cop_half), a
         nextreg NR_LINEINT_LSB, LINE_A & $FF
         nextreg NR_LINEINT_CTL, LINEINT_ON | (LINE_A >> 8)
-        ret
+        ; THEN THE PI'S CARD (plan-pi-gus.md): find it, upload, check - with interrupts ON, which
+        ; the boot path turns on next anyway, because the upload's time limits count ticks. With
+        ; no Pi this costs half a second; any failure leaves the card off and the Z80 path as it was.
+        ei
+        ld      hl, CARD_BOOT
+        jp      card_call
 
 ; cop_upload - HL = the first of COP_HALF lines just mixed. The DMA copies their 624 bytes over the
 ; copper's own copy, from the same index. Continuous mode: done before the next instruction.
@@ -5194,14 +5208,50 @@ auto_47:    db 0
         DISPLAY "> text data ends at ", /H, $
         ASSERT $ < $FF00
 
+        ; THE CARD'S GATES, resident: what the interrupt and the boot call. A gate returns at once
+        ; while the card is off, so the Z80 path pays a call, a load and a test and nothing else.
+        ORG CARD_GATES
+        EXPORT card_on
+card_on:        db 0                    ; 1: the card is on (card.inc's card_go, card_lost)
+card_isr_gate:
+        ld      a, (card_on)
+        or      a
+        ret     z
+        ld      hl, CARD_ISR
+        ; fall through
+; card_call - HL = a routine in page 11. MMU7 is borrowed and put back as found - READ, not
+; tracked, because the interrupt borrows the same slot and the two must nest (see the ISR).
+card_call:
+        push    hl
+        ld      a, NR_MMU7
+        call    nr_read                 ; the select and the read, safe from the interrupt
+        pop     hl
+        push    af
+        nextreg NR_MMU7, CARD_PAGE
+        call    card_jp_hl
+        pop     af
+        nextreg NR_MMU7, a
+        ret
+card_jp_hl:
+        jp      (hl)
+        DISPLAY "> the card's gates at ", /H, CARD_GATES, " ending ", /H, $
+        ASSERT $ <= MUSIC_CODE
+
+        ; THE CARD'S CODE, in page 11 at $E000 (src/inc/card.inc). Slot 7 maps page 1 - the text
+        ; page, assembled above - everywhere else in this file, and is put back.
+        INCLUDE "build/gusdata.inc"
+        MMU 7, CARD_PAGE
+        INCLUDE "src/inc/card.inc"
+        MMU 7, TEXT_PAGE
+
         ORG CC_ORG
         INCBIN  "build/aw_vm_CODE.bin"
         ; AGAINST CC_TOP, NOT AGAINST THIS. The C's BSS lives ABOVE the image sjasmplus
         ; measures, so `$ <= MUSIC_CODE` here passed while the music code sat inside the C's
         ; variables - the VM dispatched thirteen records and stopped, nothing drew, and no
         ; assertion fired. tools/mkexp.py emits the real top from the link map now.
-        ASSERT $ <= MUSIC_CODE          ; the C's IMAGE must not reach the music code
-        ASSERT CC_TOP <= MUSIC_CODE     ; and neither must its variables
+        ASSERT $ <= CARD_GATES          ; the C's IMAGE must not reach the card's gates
+        ASSERT CC_TOP <= CARD_GATES     ; and neither must its variables (the gates, then the music code)
         DISPLAY "> the C is ", /D, $ - CC_ORG, " bytes at ", /H, CC_ORG
         ASSERT $ < VEC_TABLE
 

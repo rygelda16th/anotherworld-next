@@ -49,21 +49,39 @@ def append_cc_top(map_path, exp_path):
 
     The highest symbol plus eight: a symbol's address is its start, and the map does not give
     sizes, so eight covers the largest single object the compiler places last.
+
+    AND THE MALLOC HEAP'S HEADER, which no symbol names. The zxn CRT is built with
+    CLIB_MALLOC_HEAP_SIZE -1, so at startup it puts a heap between the end of the BSS and the
+    stack, and asm_heap_init WRITES twelve bytes at the BSS's end - a six-byte mutex and the first
+    block's six-byte header - whether or not the C ever calls malloc. The game's does not, so
+    nothing noticed until the Pi card's gates were placed at the old CC_TOP ($BAC4): the CRT wrote
+    a block pointer over card_on and the gate's first bytes the moment the VM started, and the
+    interrupt ran garbage two seconds later. (Its two-byte end marker lands just under the stack
+    reserve, SP - 512, which is the stack's own page and was never anyone else's.)
     """
     hi, who = 0, ""
+    bss_end, auto_heap = None, False
     for line in open(map_path, errors="replace"):
         m = LINE.match(line)
+        if m and m.group("name") == "__BSS_END_tail":
+            bss_end = int(m.group("addr"), 16)
+        if m and m.group("name") == "__clib_malloc_heap_size":
+            auto_heap = m.group("addr").upper().startswith("FFFF")
         if not m or m.group("kind") != "addr":
             continue
         a = int(m.group("addr"), 16)
         if 0x8000 <= a < 0xC000 and a > hi:
             hi, who = a, m.group("name")
     if hi:
+        top, why = hi + 8, "Plus eight, for the object's own size."
+        if auto_heap and bss_end is not None and bss_end + 12 > top:
+            top, why = bss_end + 12, (f"The heap's header, twelve bytes from the BSS's end at 0x{bss_end:04X}, "
+                                      "is higher (mkexp.py, append_cc_top).")
         with open(exp_path, "a") as fh:
             fh.write(f"; the C's highest address is {who} at 0x{hi:04X} - its BSS, which is NOT\n")
-            fh.write("; in the image sjasmplus measures. Plus eight, for the object's own size.\n")
-            fh.write(f"CC_TOP: EQU 0x{hi + 8:04X}\n")
-        print(f"  CC_TOP = 0x{hi + 8:04X}  (highest is {who} at 0x{hi:04X})")
+            fh.write(f"; in the image sjasmplus measures. {why}\n")
+            fh.write(f"CC_TOP: EQU 0x{top:04X}\n")
+        print(f"  CC_TOP = 0x{top:04X}  (highest is {who} at 0x{hi:04X}; {why})")
     return hi
 
 

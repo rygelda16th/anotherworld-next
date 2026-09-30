@@ -10,7 +10,8 @@ the boot will send it, then E, and dumps its memory. Then:
   2. the card's CRC-32 of that memory is gusdata.inc's (what the boot's %M must match);
   3. each RES<id>.GUS alone fills its own sound, and nothing else;
   4. GUSALL.GUS's lines are all valid (no bad line) and it is every block once, 0 to n-1;
-  5. the copies in src/inc/gus/ are nextpi-gus's files, and gusdata.inc's pins are the files'.
+  5. the copies in src/inc/gus/ are nextpi-gus's files, and gusdata.inc's pins are the files';
+  6. gusdata.inc's pitches in Hz are the reference's frequenceTable.
 FAIL: lines and exit 1 on a failure; RESULT: ALL PASS otherwise.
 """
 import os
@@ -22,6 +23,7 @@ import zlib
 
 GUS = os.environ.get("NEXTPI_GUS", os.path.expanduser("~/src/nextpi-gus"))
 sys.path.insert(0, os.path.join(GUS, "tools"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gus_proto as g   # noqa: E402
 
 FAILS = []
@@ -96,17 +98,22 @@ def main():
     check(n == 3 and ok_all, "RES5A.GUS, RES05.GUS and RES69.GUS alone: each fills its own sound and nothing else")
     print("\n3. the copies and the pins")
     same = all(open(f"src/inc/gus/{f}").read().split("\n", 3)[3] == open(os.path.join(GUS, "src/next", f)).read()
-               for f in ("gus.inc", "piuart.inc"))
-    check(same, "src/inc/gus/gus.inc and piuart.inc are nextpi-gus's, bar their three-line header")
+               for f in ("gus.inc", "piuart.inc", "gusprobe.inc"))
+    check(same, "src/inc/gus/gus.inc, piuart.inc and gusprobe.inc are nextpi-gus's, bar their three-line header")
     pins = re.findall(r"(\S+) (\d+ \d+)", inc.split("\n")[1] + " " + inc.split("\n")[2])
     now = {"GUSALL.GUS": "build/assets/GUSALL.GUS", "GUSINST.TXT": "build/assets/GUSINST.TXT",
-           "gus.inc": "src/inc/gus/gus.inc", "piuart.inc": "src/inc/gus/piuart.inc"}
+           "gus.inc": "src/inc/gus/gus.inc", "piuart.inc": "src/inc/gus/piuart.inc",
+           "gusprobe.inc": "src/inc/gus/gusprobe.inc"}
     ok = True
     for name, ck in pins:
         name = name.rstrip(";")
         r = subprocess.run(["cksum", now[name]], capture_output=True, text=True)
         ok &= " ".join(r.stdout.split()[:2]) == ck
-    check(ok and len(pins) == 4, f"gusdata.inc's four pins are the files' cksums", f"{pins}")
+    check(ok and len(pins) == 5, f"gusdata.inc's five pins are the files' cksums", f"{pins}")
+    import mksndfreq
+    hz = [int(x) for x in re.findall(r"\d+", " ".join(re.findall(r"DW ([\d, ]+)", inc.split("MACRO GUS_FREQ_HZ")[1])))]
+    ref = mksndfreq.table(open("preflight/hostprobe/probe/staticres.cpp").read())
+    check(hz == ref, f"gusdata.inc's {len(hz)} pitches in Hz are the reference's frequenceTable ({ref[0]}-{ref[-1]} Hz)")
     print()
     if FAILS:
         print(f"RESULT: {len(FAILS)} FAILED")
