@@ -26,7 +26,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
         check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-save check-bitmap \
-        toolchain-diff play record check-sndcalls
+        toolchain-diff play record check-sndcalls gus-assets check-gus
 
 help:
 	@echo "make certs          extract the corporate TLS-inspection CA for the image"
@@ -56,6 +56,8 @@ help:
 	@echo "make check-bitmap   is our full-screen deplaner the engine's? Host only"
 	@echo "make toolchain-diff has the shared toolchain drifted from wolf3d-next?"
 	@echo "make check-sndcalls plan-pi-gus A0: the intro's sound calls in CSpect = the engine's (a window)"
+	@echo "make gus-assets     plan-pi-gus A1: the Pi card's files, built by nextpi-gus (NEXTPI_GUS)"
+	@echo "make check-gus      plan-pi-gus A1: the card holds every sound byte for byte, the pins"
 
 certs:
 	@mkdir -p certs
@@ -507,6 +509,19 @@ check-mix: asm
 # is what stops that being invisible.
 SHARED := tools/zrcp.py tools/zesarux/prescalar.patch \
           tools/zesarux/readback.patch tools/zesarux/autorestart.patch
+# plan-pi-gus.md A1: the Pi card's files. nextpi-gus packs this game's sounds (it reads data/ through
+# this repo's own tools) and builds the card's installer; mkgusdata.py takes them into build/assets,
+# writes build/gusdata.inc, and copies the Next's side into src/inc/gus/. Without a nextpi-gus build
+# gusdata.inc says GUS_BLOCKS 0 and the card is never tried.
+NEXTPI_GUS ?= $(HOME)/src/nextpi-gus
+gus-assets: | $(BUILD)
+	$(MAKE) -C $(NEXTPI_GUS) upload pi-card
+	python3 tools/mkgusdata.py $(NEXTPI_GUS) $(BUILD)
+
+check-gus:
+	$(MAKE) -C $(NEXTPI_GUS) build/mac/ngus
+	NEXTPI_GUS=$(NEXTPI_GUS) python3 tools/checkgus.py
+
 # plan-pi-gus.md A0: the game's own sound calls, logged from outside in CSpect (tools/cspect/awsnd.cs),
 # against the reference engine's run of the intro. Opens a CSpect window; one at a time.
 check-sndcalls:
