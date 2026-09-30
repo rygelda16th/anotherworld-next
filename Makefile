@@ -26,7 +26,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
         check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-save check-bitmap \
-        toolchain-diff play record
+        toolchain-diff play record check-sndcalls
 
 help:
 	@echo "make certs          extract the corporate TLS-inspection CA for the image"
@@ -55,6 +55,7 @@ help:
 	@echo "make check-parts    Step 9: every part the probe can reach, separately"
 	@echo "make check-bitmap   is our full-screen deplaner the engine's? Host only"
 	@echo "make toolchain-diff has the shared toolchain drifted from wolf3d-next?"
+	@echo "make check-sndcalls plan-pi-gus A0: the intro's sound calls in CSpect = the engine's (a window)"
 
 certs:
 	@mkdir -p certs
@@ -506,6 +507,11 @@ check-mix: asm
 # is what stops that being invisible.
 SHARED := tools/zrcp.py tools/zesarux/prescalar.patch \
           tools/zesarux/readback.patch tools/zesarux/autorestart.patch
+# plan-pi-gus.md A0: the game's own sound calls, logged from outside in CSpect (tools/cspect/awsnd.cs),
+# against the reference engine's run of the intro. Opens a CSpect window; one at a time.
+check-sndcalls:
+	python3 tools/checksndcalls.py
+
 toolchain-diff:
 	@test -d $(WOLF3D) || { echo "no wolf3d-next checkout at $(WOLF3D)"; exit 1; }
 	@rc=0; for f in $(SHARED); do \
