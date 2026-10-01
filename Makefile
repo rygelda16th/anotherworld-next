@@ -566,3 +566,22 @@ clean:
 
 distclean: clean
 	-docker image rm aw-next-tools
+
+# What would Layer 2's 320x256 mode cost? A measurement, not a port: see tools/wide320.py.
+# The machine half times one span of each kind in ZEsarUX; the host half counts the intro's spans.
+measure-wide320: $(INTRO_REF)/trace.bin
+	$(RUN) sjasmplus --zxnext=cspect --fullpath --exp=$(BUILD)/wide320.exp \
+		--lst=$(BUILD)/wide320.lst preflight/wide320/wide.asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/wide320.py machine $(BUILD)/wide320/coeff.json'
+	python3 tools/wide320.py count $(INTRO_REF)/trace.bin $(BUILD)/wide320/intro.json
+
+# W0 of docs/plan-wide320.md: the sound interrupt's share of the machine, sampled in ZEsarUX, for the
+# intro (part index 1) and two gameplay parts with the synthetic player, at the reference runs' seeds.
+measure-wide320-isr: asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/wide320.py isr $(BUILD)/wide320/isr1.json --part 1 --seed 4493'
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/wide320.py isr $(BUILD)/wide320/isr3.json --part 3 --seed 8392'
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/wide320.py isr $(BUILD)/wide320/isr4.json --part 4 --seed 8430'
