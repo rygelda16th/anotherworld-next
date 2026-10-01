@@ -53,7 +53,7 @@ def plugin(name, src):
 
 def run(nex, seconds, extra_env=None, com=None):
     """One silent CSpect of the intro: (the calls, awprobe's log). com: a pty for -com (the fake Pi)."""
-    if subprocess.run(["pgrep", "-f", "CSpect.exe"], capture_output=True).returncode == 0:
+    if subprocess.run(["pgrep", "-f", r"^mono[^ ]* CSpect\.exe"], capture_output=True).returncode == 0:
         raise SystemExit("a CSpect is already open - not touching it")
     sym = symbols(os.path.join(REPO, "build", "aw.exp"))
     probe = plugin("AWProbe.dll", os.path.join(HERE, "cspect", "awprobe.cs"))

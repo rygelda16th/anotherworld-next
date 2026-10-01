@@ -94,7 +94,7 @@ def plugin(name, src):
 
 def wait_no_mono(most=1800):
     t0 = time.time()
-    while subprocess.run(["pgrep", "-f", "CSpect.exe"], capture_output=True).returncode == 0:
+    while subprocess.run(["pgrep", "-f", r"^mono[^ ]* CSpect\.exe"], capture_output=True).returncode == 0:
         if time.time() - t0 > most:
             raise SystemExit("another CSpect (mono) is still running after 30 min")
         print("        (another CSpect is running: waiting)", flush=True)

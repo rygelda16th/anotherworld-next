@@ -22,7 +22,7 @@ CSPECT=${CSPECT:-$HOME/src/cspect}
 NEX=${NEX:-build/aw-play.nex}
 [ -f "$NEX" ] || { echo "no $NEX: make play-gus builds it"; exit 1; }
 [ -d "$CSPECT/CSpect" ] || { echo "no CSpect at $CSPECT"; exit 1; }
-if pgrep -f CSpect.exe >/dev/null; then echo "another CSpect (mono) is running: close it first"; exit 1; fi
+if pgrep -f '^mono[^ ]* CSpect\.exe' >/dev/null; then echo "another CSpect (mono) is running: close it first"; exit 1; fi
 cp "$NEX" "$CSPECT/sd/aw/AWGUS.NEX"
 cp build/assets/GUSALL.GUS build/assets/GUSINST.TXT "$CSPECT/sd/aw/"
 COM=""
