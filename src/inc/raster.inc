@@ -1,7 +1,7 @@
 ; The rasteriser and the polygon reader, shared by the harness and the game.
 ;
 ; Every line below is gated. make check-poly draws 39 coverage polygons and compares
-; 49,152 of 49,152 pixels against the Python reference, with calc_step exact on 576
+; 64,000 of 64,000 pixels (49,152 in check-poly256) against the Python reference, with calc_step exact on 576
 ; cases as words. make check-readmachine drives the reader over 17 real draws from the
 ; engine's own trace - 59 polygons it finds for itself, at 55 distinct zooms - and
 ; compares the page again.
@@ -13,6 +13,12 @@
 ;                NR_SEG_MMU_LO and NR_SEG_MMU_HI as its two slots
 ;   DWIN         where the destination band is mapped, and NR_DWIN_MMU its slot
 ;   SWIN         where the source band is mapped for a page copy, and NR_SWIN_MMU
+;
+; and, under WIDE320 only:
+;
+;   WWIN         a 16K window (two 8K slots) where a 64-column destination strip is
+;                mapped, with NR_WWIN_LO and NR_WWIN_HI as its slots
+;   WSWIN        the same for page 0's strip in a copy fill, NR_WSWIN_LO and NR_WSWIN_HI
 ;
 ; polytest.asm has $4000-$7FFF spare and uses MMU2 at $4000 and MMU3 at $6000. THE
 ; GAME CANNOT: $4000-$7FFF is its polygon/cinematic window, and the reader is reading
@@ -27,7 +33,8 @@
 ; A shared file that reaches past its own contract for a slot number is only correct in the
 ; configuration it was written in - the same shape as RD_LOG_RECS two paragraphs up.
 ;
-; It must also define SCR_W and SCR_H (256 and 192), a small
+; It must also define SCR_W and SCR_H - 320 and 200 under WIDE320 (the picture inside the
+; 320x256 Layer 2), 256 and 192 otherwise - a small
 ; rd_log for the reader's leaf log - whose LENGTH the includer sets in RD_LOG_RECS, because
 ; this wrapped at a hard-coded thirty-two records while aw.asm reserved eight. The reader
 ; therefore ran the log 192 bytes past its reservation in the game, and because the wrap

@@ -11,10 +11,10 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX                          # noqa: E402
+from checksave import symbols, NEX, EXP                          # noqa: E402
 
 z = Zrcp()
-sym = symbols("build/aw.exp")
+sym = symbols(EXP)
 z.cmd(f"smartload /work/{NEX}")
 time.sleep(3.2)
 z.cmd("set-memory-zone -1")

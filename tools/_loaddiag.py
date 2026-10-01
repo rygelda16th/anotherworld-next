@@ -14,14 +14,14 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import compare, symbols, NEX, SAVE, HDR, VM_BYTES, PAGE_BYTES  # noqa: E402
+from checksave import compare, symbols, NEX, SAVE, HDR, VM_BYTES, PAGE_BYTES, EXP  # noqa: E402
 
 NR_MMU2, PAGED_PAGE = 0x52, 10
 FRAMES_DONE, FINISHED, OUT_OF_BUDGET, FAULT = 0xC008, 0xC00A, 0xC00B, 0xC00D
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     sym.update(symbols("build/aw_vm_c.exp"))
     blob = open(SAVE, "rb").read()
     print(f"the save on disk is {len(blob):,} bytes "

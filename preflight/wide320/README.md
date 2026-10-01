@@ -6,7 +6,7 @@ down the columns (`x * 256 + y`, ten 8K pages of 32 columns), so a span is `inc 
 every 32 columns, and cannot use the zxnDMA. This measures the cost; it changes nothing in the game.
 
     make measure-wide320                                       the machine half, then the intro's counts
-    python3 tools/wide320.py idle build/wide320/idle.txt       busy time per blit, from CSpect (silent)
+    AW_SCREEN=256 python3 tools/wide320.py idle build/wide320/idle.txt   busy time per blit, 256x192 build
     python3 tools/wide320.py project build/wide320/intro.json build/wide320/coeff.json \
         build/wide320/idle.txt build/ref2614/frames.txt
 
@@ -55,7 +55,7 @@ The whole intro (reference blits 5-2613):
 ## W0: gameplay, measured (docs/plan-wide320.md)
 
     make measure-wide320-isr                                   the interrupt's share, ZEsarUX
-    python3 tools/wide320.py idle build/wide320/idle3.txt --part 3 --seed 8392 --blits 1600
+    AW_SCREEN=256 python3 tools/wide320.py idle build/wide320/idle3.txt --part 3 --seed 8392 --blits 1600
     python3 tools/wide320.py project-part build/wide320/part3.json build/wide320/coeff.json \
         build/wide320/idle3.txt build/ref_gun3/frames.txt build/wide320/isr3.json
 
@@ -81,10 +81,12 @@ player and seed in CSpect.
 
 ## W1-W4: built, and measured again (2026-10-01)
 
-The 320x256 build is `make asm320` (build/aw320.nex, the same sources with `-DWIDE320`); the
-256x192 build is unchanged byte for byte. Its gates are `make check-wide check-poly320
-check-readmachine320 check-intro320 check-text320 check-bmp320 check-save320 check-part320
-check-res320`, every one pixel-exact against RefVideo320 or the engine's own pages.
+The 320x256 build was `make asm320` (build/aw320.nex, `-DWIDE320`) while it was built; **since W5
+(2026-10-01) it is the normal build**: `make asm` writes it as build/aw.nex, and the 256x192 game is
+`make asm256` (`-DSCREEN256`, build/aw256.nex, byte-identical to before). Its gates are the plain
+ones - `make check-wide check-poly check-readmachine check-intro check-text check-bmp check-save
+check-part check-res` - every one pixel-exact against RefVideo320 or the engine's own pages; the
+256x192 game keeps the same gates with a 256 suffix (AW_SCREEN=256).
 
 | CSpect, emulated time | the original | 256x192 | 320x256 |
 |---|---|---|---|
@@ -92,6 +94,7 @@ check-res320`, every one pixel-exact against RefVideo320 or the engine's own pag
 | part index 3, autoplay (measured-part) | 257.6 s | 72.4% | **71.8%** |
 | part index 4, autoplay (measured-part) | 167.5 s | 85.0% | **81.1%** |
 
+    python3 tools/wide320.py idle build/wide320/idle320_3.txt --part 3 --seed 8392 --blits 1600   (the default build)
     python3 tools/wide320.py measured-part build/ref_gun3/frames.txt build/wide320/idle3.txt build/wide320/idle320_3.txt
 
 W4's gate holds: the intro at 99.5% or more, and gameplay no worse than W0's projection (part index

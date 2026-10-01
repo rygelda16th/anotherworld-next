@@ -1,15 +1,21 @@
 # Plan: the 320x256 drawing mode
 
-Written 2026-10-01, before any code. **Status, 2026-10-01: W0-W4 done, gates passed; W5 is
-David's.** Tags `wide-w0` .. `wide-w4`; numbers in `preflight/wide320/README.md`.
+Written 2026-10-01, before any code. **Status, 2026-10-01: done.** W0-W4 built and gated (tags
+`wide-w0` .. `wide-w4`, numbers in `preflight/wide320/README.md`); at W5 David made 320x256 the normal
+build, with the build-time switch kept (tag `wide-w5`): `make asm` is 320x256, `make asm256` the
+earlier 256x192 game, and the plain gates test the former, the 256-suffixed ones the latter.
 
 | step | gate | result |
 |---|---|---|
 | W0 | the gameplay table | part index 3: 70% today; 320x256 projected 1-6 points slower |
 | W1 | `make check-wide` | RefVideo320 identical to RefVideo at all 17 intro blits and to the engine's pages; 5 bitmaps identical |
-| W2 | `make check-poly320 check-readmachine320` | 64,000 of 64,000 pixels, every bucket; 17 real draws |
-| W3 | `make check-intro320` and the rest | all 17 intro blits, text, bitmaps, save, parts, resources; the 256x192 sweep unchanged |
+| W2 | `make check-poly check-readmachine` | 64,000 of 64,000 pixels, every bucket; 17 real draws |
+| W3 | `make check-intro` and the rest | all 17 intro blits, text, bitmaps, save, parts, resources; the 256x192 sweep (now `make check-*256`) unchanged |
 | W4 | speed.py, measured-part | intro 100.3%; part index 3 71.8% (256x192: 72.4%), part index 4 81.1% (85.0%) |
+| W5 | David plays it | 320x256 made the normal build (2026-10-01); the KS3 run is still owed |
+
+Gate names are as they are since W5. Until then the 320x256 gates had a `320` suffix
+(`check-poly320`, `check-intro320`, ...) and the plain names tested 256x192.
 
 ## Why
 
@@ -90,6 +96,11 @@ screen page is 80K, not 48K.
   at banks 12-21 (8K pages 24-43), pages 2 and 3 at banks 96-105 (8K pages 192-211). Bitmaps need
   10 pages at `BMP_PAGE` 64, so the resource heap starts at 74, not 72 (74-169, below the stream at
   175). Page 11 (the GUS card) and 175-191 (the music stream) do not move.
+- **As built** (src/aw.asm), not the proposal: the four pages are contiguous at banks 12-31 (8K
+  pages 24-63; NextReg $12 = page * 5 + 12). The bytecode segment is at `CODE_PAGE` 64, the
+  cinematic at `POLY_PAGE` 72, the ten-page bitmap scratch at `BMP_PAGE` 80, and the heap at
+  `RES_FIRST_PAGE` 90 for 78 pages (90-167). It stops 7 pages short of the stream at 175,
+  because `clear_code` (vmhost.inc) zeroes 8 pages from a load's first page; an ASSERT holds it there.
 - **What the Pi card already claims** (from the GUS session, 2026-10-01; table in
   `docs/plan-pi-gus.md`), which this step must not break:
   - page 11 is the card's code and data, 125 bytes free: nothing else goes there;

@@ -31,9 +31,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from refvideo import RefVideo8, RefVideo320, read_trace  # noqa: E402
 
-# AW_WIDE=1: the 320x256 build's vector (docs/plan-wide320.md W2) - the same polygons, unscaled,
+# THE SCREEN: 320x256 unless AW_SCREEN=256 asks for the earlier 256x192 build's vector (docs/plan-wide320.md W2) - the same polygons, unscaled,
 # and the reference page at 320x200.
-WIDE = bool(os.environ.get("AW_WIDE"))
+WIDE = os.environ.get("AW_SCREEN", "320") != "256"
 
 # Page 0 is filled with this before anything is drawn, so the copy-from-page-0
 # mode has something recognisable to copy and a failure is visible rather than

@@ -353,9 +353,9 @@ def idle(out, part=None, seed=None, blits=2613):
     import subprocess
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "cspect"))
     import speed
-    wide = bool(os.environ.get("AW_WIDE"))           # the 320x256 build itself (W4)
-    nex, exp, lstf = (("build/aw320.nex", "build/aw320.exp", "build/aw320.lst") if wide
-                      else ("build/aw.nex", "build/aw.exp", "build/aw.lst"))
+    wide = os.environ.get("AW_SCREEN", "320") != "256"   # AW_SCREEN=256: the earlier 256x192 build
+    nex, exp, lstf = (("build/aw.nex", "build/aw.exp", "build/aw.lst") if wide
+                      else ("build/aw256.nex", "build/aw256.exp", "build/aw256.lst"))
     if os.environ.get("AW_NEX"):                    # a copy, while a gate rebuilds the originals
         nex, exp, lstf = os.environ["AW_NEX"], os.environ["AW_EXP"], os.environ["AW_LST"]
     sym = speed.symbols(exp)
@@ -385,9 +385,13 @@ def idle(out, part=None, seed=None, blits=2613):
                                f"{ctl:X}={seed & 255:X},{ctl + 1:X}={seed >> 8:X}")
     pace = speed.run(nex, exp, blits, 900, env)
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    shutil.copy(log, out)
+    # WHICH BUILD, in the log itself: project and project-part model the 256x192 build plus what
+    # 320x256 adds, so a log of the 320x256 build fed to them would count the addition twice.
+    with open(out, "w") as fh:
+        fh.write(f"# screen {'320' if wide else '256'} {nex}\n")
+        fh.write(open(log).read())
     shutil.copy(pace, out + ".pace")
-    print(f"wrote {out} and {out}.pace")
+    print(f"wrote {out} and {out}.pace ({'320x256' if wide else '256x192'})")
 
 
 def isr(out, part=None, seed=None, seconds=90, samples=1500):
@@ -399,13 +403,15 @@ def isr(out, part=None, seed=None, seconds=90, samples=1500):
     import time
     from zrcp import Zrcp
     sym = {}
-    for path in ("build/aw.exp", "build/aw_vm_c.exp"):
+    wide = os.environ.get("AW_SCREEN", "320") != "256"   # AW_SCREEN=256: the earlier 256x192 build
+    nex, exp = ("build/aw.nex", "build/aw.exp") if wide else ("build/aw256.nex", "build/aw256.exp")
+    for path in (exp, "build/aw_vm_c.exp"):
         for line in open(path):
             name, _, val = line.partition(":")
             if "0x" in val:
                 sym[name.strip()] = int(val.split("0x")[1], 16)
     z = Zrcp()
-    z.cmd("smartload /work/build/aw.nex")
+    z.cmd(f"smartload /work/{nex}")
     time.sleep(3.5)
     z.cmd("set-memory-zone -1")
     if part is not None:
@@ -479,7 +485,22 @@ def pace(busy, pauses, first, last):
     return t
 
 
+def screen_of(idle_log):
+    """'320', '256', or '256?' for a log written before idle recorded the build (W0's were 256x192)."""
+    for line in open(idle_log):
+        if line.startswith("# screen "):
+            return line.split()[2]
+    return "256?"
+
+
+def needs_256(idle_log):
+    if screen_of(idle_log) == "320":
+        raise SystemExit(f"{idle_log} is the 320x256 build's own run; project adds 320x256's extra to a "
+                         f"256x192 run (AW_SCREEN=256 tools/wide320.py idle). Compare builds with measured-part.")
+
+
 def project(counts, coeff, idle_log, frames):
+    needs_256(idle_log)
     d = json.load(open(counts))
     f = json.load(open(coeff))["fits"]
     pauses = [int(l.split()[6]) for l in open(frames) if not l.startswith("#")]
@@ -519,6 +540,7 @@ def opt(name, default=None):
 
 
 def project_part(counts, coeff, idle_log, frames, isr_json):
+    needs_256(idle_log)
     """The same for a gameplay part: the probe ran the intro's first frames, then jumped, so the
     part's blits are the frames.txt rows after part 1's. The machine started in the part itself."""
     d = json.load(open(counts))
@@ -581,7 +603,7 @@ def measured_part(frames, *idle_logs):
                 b += 1
             return ticks[b]
         got = at(last + off) - at(first + off)
-        print(f"{log}: blits {first}-{last}: the original {ref * 0.02:.1f} s, the machine {got * 0.02:.1f} s, "
+        print(f"{log} [{screen_of(log)}]: blits {first}-{last}: the original {ref * 0.02:.1f} s, the machine {got * 0.02:.1f} s, "
               f"{100 * ref / got:.1f}% of the original")
 
 

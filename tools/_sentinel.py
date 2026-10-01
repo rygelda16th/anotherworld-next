@@ -19,7 +19,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX, SAVE, HDR               # noqa: E402
+from checksave import symbols, NEX, SAVE, HDR, EXP               # noqa: E402
 
 NR_MMU2, PAGED_PAGE, SENT = 0x52, 10, 0xEE
 FRAMES_DONE = 0xC008
@@ -29,7 +29,7 @@ BLOCKS = [("aw_vars", "_aw_vars", 512), ("aw_call_stack", "_aw_call_stack", 512)
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     sym.update(symbols("build/aw_vm_c.exp"))
     blob = open(SAVE, "rb").read()
     off, want = HDR, {}

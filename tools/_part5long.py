@@ -10,13 +10,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX                          # noqa: E402
+from checksave import symbols, NEX, EXP                          # noqa: E402
 
 PART, FRAMES_DONE, RECORDS = 5, 0xC008, 0xC006
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     z = Zrcp()
 
     def read(a, n):

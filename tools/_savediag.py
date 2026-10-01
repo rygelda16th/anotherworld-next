@@ -10,13 +10,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX, SAVE, HDR, VM_BYTES, PAGE_BYTES   # noqa: E402
+from checksave import symbols, NEX, SAVE, HDR, VM_BYTES, PAGE_BYTES, EXP   # noqa: E402
 
 FRAMES_DONE, FINISHED, FAULT = 0xC008, 0xC00A, 0xC00D
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     sym.update(symbols("build/aw_vm_c.exp"))
     if os.path.exists(SAVE):
         os.unlink(SAVE)

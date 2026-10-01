@@ -17,7 +17,8 @@ bytecode segment mapped there). It reports:
   first instruction, with `$876F` still on the stack
 * the game's own counters, read out of memory: ticks, polygons, blits, loads, err
 * the visible Layer 2 page as a PPM, decoded through the machine's real palette, so a
-  run can be LOOKED at here rather than described over someone's shoulder
+  run can be LOOKED at here rather than described over someone's shoulder; 320x256 (the normal build) or
+  256x192, whichever NextReg $70 says is showing
 
 ## Build and run
 

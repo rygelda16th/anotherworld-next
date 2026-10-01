@@ -191,23 +191,26 @@ namespace AWProbe
         {
             int bank = CSpect.GetNextRegister(0x12, -1);       // in 16K banks
             int baseAddr = bank * 0x4000;
-            var px = new byte[256 * 192];
+            // NextReg $70 bits 5-4 say which layout: 01 is 320x256, column-major across five 16K
+            // banks (address = x * 256 + y), the game's normal build since 2026-10-01; 00 is
+            // 256x192, row-major across three (address = y * 256 + x). Read it rather than assume.
+            bool wide = ((CSpect.GetNextRegister(0x70, -1) >> 4) & 3) == 1;
+            int w = wide ? 320 : 256, h = wide ? 256 : 192;
+            var px = new byte[w * h];
             for (int i = 0; i < px.Length; i++) px[i] = CSpect.PeekPhysical(baseAddr + i);
             string path = string.Format("{0}.{1}.ppm", logPath, n);
             using (var f = new BinaryStream(path))
             {
-                f.Text("P6\n256 192\n255\n");
-                for (int y = 0; y < 192; y++)
-                    for (int x = 0; x < 256; x++)
+                f.Text(string.Format("P6\n{0} {1}\n255\n", w, h));
+                for (int y = 0; y < h; y++)
+                    for (int x = 0; x < w; x++)
                     {
-                        // 256x192 8bpp Layer 2 is a flat row-major bitmap across three 16K
-                        // banks: 64 rows each, address = y * 256 + x.
                         //
                         // GetColour hands back the NINE-BIT palette word, not 24-bit RGB:
                         // RRRGGGBB with bit 8 carrying blue's low bit. Read as 0xRRGGBB it
                         // is pure blue at a twentieth of its brightness, which is exactly
                         // what the first dumps looked like.
-                        uint c = CSpect.GetColour(1, px[y * 256 + x]);
+                        uint c = CSpect.GetColour(1, wide ? px[x * 256 + y] : px[y * 256 + x]);
                         int r = (int)((c >> 5) & 7), g = (int)((c >> 2) & 7);
                         int b = (int)(((c & 3) << 1) | ((c >> 8) & 1));
                         f.Byte((byte)(r * 255 / 7)); f.Byte((byte)(g * 255 / 7)); f.Byte((byte)(b * 255 / 7));

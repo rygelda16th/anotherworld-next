@@ -24,9 +24,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp  # noqa: E402
 from refvideo import RefVideo8, RefVideo320  # noqa: E402
 
-# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W2). Its page is ten 8K strips of 32 columns,
+# THE SCREEN: 320x256 unless AW_SCREEN=256 asks for the earlier 256x192 build (docs/plan-wide320.md W2). Its page is ten 8K strips of 32 columns,
 # column-major (x * 256 + y), and is turned back into 320x200 rows before it is compared.
-WIDE = bool(os.environ.get("AW_WIDE"))
+WIDE = os.environ.get("AW_SCREEN", "320") != "256"
 NEX = "build/polytest320.nex" if WIDE else "build/polytest.nex"
 EXP = "build/polytest320.exp" if WIDE else "build/polytest.exp"
 EXPECTED = "build/expected320.bin" if WIDE else "build/expected.bin"

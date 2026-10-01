@@ -10,10 +10,12 @@ The VM dispatches op_updateMemList and the machine now loads. Three claims:
     type but not by id, so there was nothing to compare against - and a port that silently
     SKIPPED a load passes claims 1 and 3 without difficulty, because everything it did load
     is byte-correct and the heap it did not fill is well under its limit.
- 3. THE HEAP STAYS INSIDE ITS RESERVATION. 96 pages, and running past it sets a flag rather
-    than wrapping onto Layer 2. It was 40 until part 2 was run and lost 22 of its 45 loads:
-    40 came from the reference's 305,919-byte peak, which is 38 pages of a BYTE heap, and
-    ours rounds every resource up to a whole 8K page. The measured high-water is 55.
+ 3. THE HEAP STAYS INSIDE ITS RESERVATION. 78 pages from page 90 in the default 320x256
+    build, 96 from page 72 with AW_SCREEN=256, and running past it sets a flag rather than
+    wrapping onto Layer 2 or the music stream. It was 40 until part 2 was run and lost 22 of
+    its 45 loads: 40 came from the reference's 305,919-byte peak, which is 38 pages of a BYTE
+    heap, and ours rounds every resource up to a whole 8K page. The measured high-water (in
+    the 256x192 build) is 55.
 """
 import os
 import sys
@@ -23,10 +25,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp  # noqa: E402
 from memlist import entries, memlist_path  # noqa: E402
 
-# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W3): the heap starts at 90 and keeps 85 pages.
-WIDE = bool(os.environ.get("AW_WIDE"))
-NEX = "build/aw320.nex" if WIDE else "build/aw.nex"
-EXP_ASM, EXP_C = ("build/aw320.exp" if WIDE else "build/aw.exp"), "build/aw_vm_c.exp"
+# THE SCREEN: 320x256 unless AW_SCREEN=256 asks for the earlier 256x192 build (docs/plan-wide320.md W3): the heap starts at 90 and keeps 85 pages.
+WIDE = os.environ.get("AW_SCREEN", "320") != "256"
+NEX = "build/aw.nex" if WIDE else "build/aw256.nex"
+EXP_ASM, EXP_C = ("build/aw.exp" if WIDE else "build/aw256.exp"), "build/aw_vm_c.exp"
 PROBE = "preflight/hostprobe/probe"
 ASSETS = "build/assets"
 CTL = 0xC000
@@ -34,7 +36,7 @@ CTL = 0xC000
 # the reservation was exceeded without trusting the machine's own flag - and RES_MAX_PAGES
 # went 40 -> 96 the day part 2 was first run, so a stale copy would have reported a pass
 # against the wrong ceiling.
-RES_FIRST_PAGE, RES_MAX_PAGES = (90, 85) if WIDE else (72, 96)
+RES_FIRST_PAGE, RES_MAX_PAGES = (90, 78) if WIDE else (72, 96)
 NR_MMU7, DWIN = 0x57, 0xE000
 FRAMES = int(os.environ.get("AW_FRAMES", "45"))
 

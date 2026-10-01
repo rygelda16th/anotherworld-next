@@ -18,9 +18,10 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                   # noqa: E402
 
-# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W3): forty strips, and an "AWS2" save.
-WIDE = bool(os.environ.get("AW_WIDE"))
-NEX, ASSETS = ("build/aw320.nex" if WIDE else "build/aw.nex"), "build/assets"
+# THE SCREEN: 320x256 unless AW_SCREEN=256 asks for the earlier 256x192 build (docs/plan-wide320.md W3): forty strips, and an "AWS2" save.
+WIDE = os.environ.get("AW_SCREEN", "320") != "256"
+NEX, ASSETS = ("build/aw.nex" if WIDE else "build/aw256.nex"), "build/assets"
+EXP = "build/aw.exp" if WIDE else "build/aw256.exp"
 SAVE = os.path.join(ASSETS, "AWSAVE.BIN")
 L2_BASE_BANK, BANDS, BAND, DWIN, NR_MMU7 = 12, (40 if WIDE else 24), 8192, 0xE000, 0x57
 HDR, VM_BYTES, PAGE_BYTES = 256, 512 + 512 + 256 + 128, BANDS * BAND
@@ -42,7 +43,7 @@ def symbols(path):
 
 
 def main():
-    sym = symbols("build/aw320.exp" if WIDE else "build/aw.exp")
+    sym = symbols(EXP)
     sym.update(symbols("build/aw_vm_c.exp"))
     if os.path.exists(SAVE):
         os.unlink(SAVE)                 # so a stale file cannot pass for a new one

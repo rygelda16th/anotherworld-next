@@ -14,7 +14,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX                          # noqa: E402
+from checksave import symbols, NEX, EXP                          # noqa: E402
 
 REGS = [
     (0x69, "Layer 2 enable + timing", "bit 7 = Layer 2 visible"),
@@ -26,7 +26,7 @@ REGS = [
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     z = Zrcp()
 
     def nr(n):

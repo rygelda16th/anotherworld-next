@@ -28,8 +28,12 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp  # noqa: E402
 
-NEX = "build/aw.nex"
-EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
+# THE SCREEN: 320x256 unless AW_SCREEN=256 asks for the earlier 256x192 build (docs/plan-wide320.md):
+# a page is five banks of ten 8K strips there, three of six bands here.
+WIDE = os.environ.get("AW_SCREEN", "320") != "256"
+NEX = "build/aw.nex" if WIDE else "build/aw256.nex"
+EXP_ASM, EXP_C = ("build/aw.exp" if WIDE else "build/aw256.exp"), "build/aw_vm_c.exp"
+PAGE_BANKS, BANDS = (5, 10) if WIDE else (3, 6)
 PROBE = "preflight/hostprobe/probe"
 CODE_FILE = "RES18.BIN"
 CTL = 0xC000
@@ -128,12 +132,12 @@ def main():
 
     # DID ANYTHING ACTUALLY GET DRAWN? The reader being wired is not the reader working,
     # and a page full of one value is what a fill leaves behind. Sample the page the VM
-    # last drew into, across all six of its bands, and count distinct values. This is a
+    # last drew into, across all of its 8K bands or strips, and count distinct values. This is a
     # weak check on purpose - I2's real gate is the page compared against the engine -
     # but it separates "the callbacks are reached" from "pixels changed", which the call
     # counters cannot.
     pg1 = read(z, sym["pg_ptr1"], 1)[0] & 3
-    p0 = (12 + pg1 * 3) * 2
+    p0 = (12 + pg1 * PAGE_BANKS) * 2
 
     # QUIESCE THE MIXER ACROSS THESE READS, and put it back before the soak.
     #
@@ -152,7 +156,7 @@ def main():
     time.sleep(0.1)
 
     seen, samples = set(), 0
-    for band in range(6):
+    for band in range(BANDS):
         z.cmd(f"tbblue-set-register {0x57} {p0 + band}")
         chunk = read(z, 0xE000, 512)
         seen.update(chunk)

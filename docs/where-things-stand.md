@@ -40,7 +40,8 @@ the VM, the rasteriser, the loader, the text, the module player. Of the thirteen
 **ten are done and gated**. The VM draws the intro's four pages byte-for-byte against the engine;
 text is pixel-exact; resources arrive at runtime byte-for-byte against the card; sound plays real
 samples and real music, mixed byte-exact; parts transition; full-screen bitmaps present; and a
-198,272-byte save both writes and reads back with every field matching the machine.
+329,344-byte save (all 40 strips; 198,272 bytes in the 256x192 build) both writes and reads back
+with every field matching the machine.
 
 **It started running on 2026-09-14**, and the entry that used to sit here - "the shipped game
 runs zero frames" - was right about the symptom and wrong about the cost. The C's loop was bounded
@@ -121,7 +122,11 @@ are now optional. See *What has been measured*.
     make toolchain-diff  has the shared toolchain drifted from wolf3d-next?
 
 The above are Chain 1's, and each builds its own single-purpose harness. **Chain 2's gates all
-build the same `build/aw.nex` - the game** - and check one thing about it:
+build the same `build/aw.nex` - the game** - and check one thing about it. **The game is 320x256
+since 2026-10-01** (I12): `make asm` builds it, the plain gates below test it, and the earlier
+256x192 game is `make asm256` (build/aw256.nex) with gates of the same names ending in 256 -
+check-poly256, check-readmachine256, check-draw256, check-intro256, check-text256, check-bmp256,
+check-save256, check-part256, check-res256 - each checker taking AW_SCREEN=256:
 
     make check-map     I1: all five windows and the resident code coexist
     make check-aw      I1: one program, everything live, Gate D re-run inside it
@@ -135,6 +140,9 @@ build the same `build/aw.nex` - the game** - and check one thing about it:
     make check-bmp     I7: a full-screen bitmap, in page 0, not resident
     make check-save    I9: a save against the machine, and a load back
     make check-bitmap  I7: mkassets.py's deplaner IS the engine's, on real resources
+    make check-intro   the intro's pages at 17 blits, to the end, against RefVideo320
+    make check-stream  the streamed music: the copper list against MUSIC.PCM, and the markers
+    make check-wide    I12: RefVideo320 is the engine's picture at one byte a pixel. Host only
 
 `make check-ref` and `make check-poly` need the host probe built and run first;
 see `preflight/hostprobe/README.md`. `make diag D=_name` runs a one-off script in
@@ -149,7 +157,7 @@ All seven were David's, resolved before any code. Verdicts after measurement:
 
 | | Decision | Verdict |
 |---|---|---|
-| 1 | 256x192 at 8bpp | confirmed, and the argument is stronger than stated |
+| 1 | 256x192 at 8bpp | confirmed at scoping; **reversed 2026-10-01 (W5)**: 320x256 is the normal build (I12), 256x192 is `make asm256` |
 | 2 | store the low nibble, offset the palette | confirmed and **extended** |
 | 3 | zero-copy page flip | **amended** - two corrections, one load-bearing |
 | 4 | map 48K of Layer 2 via `$123B` | **rejected** - right conclusion, wrong route |
@@ -171,8 +179,9 @@ In 256x192 a span is `inc l`, wraps inside its own line for free because a line
 is exactly 256 bytes, and can never cross anything. Since spans turn out to be
 CPU work (decision 5), the CPU argument is the one that decides it.
 
-The retraction of "256x192 distorts the vector art" was right. See the memory map
-for the scale, which is a vertex transform and costs nothing per pixel.
+The retraction of "256x192 distorts the vector art" held for the geometry, but not for thin
+shapes: five columns become four, and pixel-wide shapes are painted over (see The vertex scale).
+That is why I12 moved the game to 320x256.
 
 ### 2. Low nibble plus palette offset - and there are TWO palettes
 
@@ -458,7 +467,33 @@ construction.
 The 2 MB profile: 1,792 KiB usable, 8K pages 0-223, 16K banks 0-111. The `.nex`
 must ask for it - `SAVENEX CFG 0, 0, 0, 1`, the fourth argument.
 
-### 16K banks
+### The normal build, 320x256 (`make asm`, since 2026-10-01)
+
+| Banks | 8K pages | Holds | `$12` / `$13` |
+|---|---|---|---|
+| 0-7 | 0-15 | the classic 128K; page 10 is the paged code (save, load, part setup), page 11 the Pi card's | |
+| 12-16 | 24-33 | Layer 2 **page 0**, ten 8K strips of 32 columns | 12 |
+| 17-21 | 34-43 | Layer 2 **page 1** | 17 |
+| 22-26 | 44-53 | Layer 2 **page 2** | 22 |
+| 27-31 | 54-63 | Layer 2 **page 3** | 27 |
+| 32-35 | 64-71 | the bytecode segment (`CODE_PAGE`) | |
+| 36-39 | 72-79 | the cinematic segment (`POLY_PAGE`) | |
+| 40-44 | 80-89 | full-screen bitmap scratch (`BMP_PAGE`, `BMWnn.BIN`) | |
+| 45-83 | 90-167 | the resource heap, 78 pages; 7 short of the stream (`clear_code`, ASSERTed) | |
+| 87-95 | 175-191 | the intro's music stream: event table at 175, ring 176-191 | |
+
+    pixel address   x * 256 + y in the page; strip x >> 5, 0..9
+    draw window     MMU2/3 ($4000), a 64-column strip (WWIN); a copy's source on MMU0/1 (WSWIN)
+    fills, text     MMU7 ($E000), one strip at a time (DWIN)
+    display         NextReg $70 = %00010000; Y offset $17 = 228 and clip $18 = 0,159,28,227
+                    put the 200 rows at screen rows 28-227
+
+The tables below are the 256x192 build (`make asm256`). There, pages 48-79 are the bytecode
+(48-55), the cinematic (56-63) and the bitmap scratch (64-69), and the heap is 72-167; the draw
+window became MMU7 (`$E000`, DWIN) with the copy source on MMU0 (SWIN), so the address is
+`$E000 + ((y & 31) << 8) + x`.
+
+### 16K banks (256x192, as first planned)
 
 | Banks | 8K pages | Holds | `$12` / `$13` |
 |---|---|---|---|
@@ -475,7 +510,7 @@ Banks 5, 7 and 8 are avoided as the wiki asks. For the record, wolf3d-next
 displays from bank 8 without trouble because it never returns to BASIC, so the
 warning is about warm restart rather than about the memory.
 
-### The 64K address space
+### The 64K address space (256x192, as first planned)
 
 | MMU | Range | Holds |
 |---|---|---|
@@ -488,6 +523,10 @@ warning is about warm restart rather than about the memory.
     band            y >> 5, 0..5, one nextreg on change
 
 ### The vertex scale
+
+**256x192 build only (`make asm256`).** The normal build has been 320x256 since 2026-10-01 (I12):
+it draws the original's coordinates unscaled, and under `WIDE320` the `scale_*` routines are a
+bare `ret`.
 
 320x200 and 256x192 fill the same 4:3 screen, so the geometry is reproduced and
 only sampling resolution is lost. The scale is a vertex transform and folds into
@@ -517,7 +556,8 @@ sends such a leaf through the general vertex walk) implement it.
 
 **What the scale still costs, and this rule does not fix:** five columns become four, so a shape
 one pixel wide is still drawn but can land in the column the next shape covers. Lester's arm and
-neck, a pixel wide each, are drawn and then painted over. Only the 320x256 mode (F5) avoids that.
+neck, a pixel wide each, are drawn and then painted over. The 320x256 mode (F5, built as I12,
+the normal build since 2026-10-01) avoids that.
 
 ### VM state, all resident
 
@@ -1987,7 +2027,8 @@ and pixel doubling on the other project.
 the game runs, since the game's own 320x200 maps into it without horizontal
 resampling at all. The cost is five banks of stride-256 columns and a rasteriser
 that writes down columns rather than along rows, which is a different program, not
-a flag.
+a flag. **Reopened and DONE as I12:** built behind a flag after all (`WIDE320`), the
+normal build since 2026-10-01; `make asm256` (`-DSCREEN256`) keeps 256x192.
 
 ---
 
@@ -2706,8 +2747,11 @@ routine and not the wiring - the same shape as the jump-table slot nothing calle
 And `check-intro` stopped at blit 699, while the intro's first string is at frame 1,122. David saw it:
 no text anywhere in the intro. The C now fills `STR_BLOCK` (`AW_STR`) and calls the routine; blits
 1130 ("IDENTIFICATION") and 1290 (Lester's terminal) are pixel-exact, and `check-intro` now reaches
-the end of the intro. `check-draw`'s reference also had to draw text with `font6.bin`, the machine's
-font, rather than the probe's 8x8 one - no trace had reached a glyph before.
+the end of the intro. `check-draw`'s reference also had to draw text with `font6.bin`, the 256x192
+build's font, rather than the probe's 8x8 one - no trace had reached a glyph before.
+
+(Since I12 the normal 320x256 build draws the engine's own 8x8 `font.bin` in 40 cells of eight
+pixels, `src/inc/wide.inc`. `mkfont6.py` and `font6.bin` are only for `make asm256` and its gates.)
 
 **The geometry, decided 2026-09-13: 40 cells of SIX pixels, 240 of our 256.** Every cell the
 original can address is reachable, no letter touches its neighbour, and the cost is that the
@@ -3267,8 +3311,9 @@ That is I10's business, and `BYPASS_PROTECTION` is what makes I10 reachable with
 
 #### I9. Save and load - THE SAVE IS DONE AND GATED, `make check-save`. The load is not.
 
-**A 198,272-byte save, written from page 10 through esxDOS, every field matching the machine it
-was taken from** - the VM's variables, call stack, thread pcs and channel flags byte for byte; the
+**A 198,272-byte save (AWS1, the 256x192 build; the 320x256 build writes AWS2, 329,344 bytes with
+all 40 strips, and neither build reads the other's), written from page 10 through esxDOS, every
+field matching the machine it was taken from** - the VM's variables, call stack, thread pcs and channel flags byte for byte; the
 palette and page state; the player down to its pattern position; all four voice records; the
 heap's load order; and all 24 bands of the four Layer 2 pages. The load order for part 0 comes out
 `0x14 0x15 0x16` - its palette, bytecode and cinematic, in heap order.
@@ -3330,7 +3375,7 @@ thread work after it, and the machine stands still on exactly the state the file
 
 **THE LOAD IS WRITTEN AND RUNS; ITS HALF OF THE GATE FAILS AND I HAVE NOT ISOLATED WHY.**
 `make check-save` passes the save half and fails the load half on six fields. The load reaches its
-end - it stamps `sv_done`, which is how the gate knows a 198,272-byte read finished - and most of
+end - it stamps `sv_done`, which is how the gate knows the read finished - and most of
 the state comes back. What does not match:
 
 ```
@@ -3775,18 +3820,19 @@ there - so none of it is reproducible outside our container. Real hardware still
 three things: the card's read time with interrupts off, the zxnDMA's byte rate, and whether
 CSpect's ~93% of real speed means the KS3 has headroom the emulator does not show.
 
-#### I12. A 320x256 build - built and gated, beside the 256x192 one (docs/plan-wide320.md)
+#### I12. 320x256 - the normal build since 2026-10-01 (docs/plan-wide320.md)
 
 256x192 merges five columns into four, so shapes a pixel or two wide are drawn and then painted
 over: Lester's head and arm. Layer 2's 320x256 mode holds the original's 320x200 unscaled, at the
-cost of a column-major page (`x * 256 + y`), spans that cannot use the zxnDMA and 80K pages. It is
-`make asm320` (build/aw320.nex, `-DWIDE320`); without the define every build is byte-identical to
-before. Everything is pixel-exact against `RefVideo320`, the engine's own picture at one byte a pixel
-(`make check-wide` proves that against the engine's pages), and the intro runs at **100.3%** of the
-original in CSpect with the same two-second catch-up. Gameplay costs 0.6-3.9 points more than
-256x192, which was already 72-85% in the parts measured. The plan, the measurements and the five
-optimisations that took the first working build from 86.8% to 100.3% are in
-`preflight/wide320/README.md`. Whether it replaces 256x192 is W5's decision, David's.
+cost of a column-major page (`x * 256 + y`), spans that cannot use the zxnDMA and 80K pages. It was
+built behind `-DWIDE320` (W0-W4, tags wide-w0 .. wide-w4), and on David's W5 call it is the
+default: `make asm` writes it as build/aw.nex, and `make asm256` (`-DSCREEN256`) writes the
+256x192 game as build/aw256.nex, byte-identical to the one before. Everything is pixel-exact
+against `RefVideo320`, the engine's own picture at one byte a pixel (`make check-wide` proves that
+against the engine's pages), and the intro runs at **100.3%** of the original in CSpect with the
+same two-second catch-up. Gameplay costs 0.6-3.9 points more than 256x192, which was already
+72-85% in the parts measured. The plan, the measurements and the five optimisations that took the
+first working build from 86.8% to 100.3% are in `preflight/wide320/README.md`.
 
 #### H1. Real hardware
 
@@ -3927,7 +3973,7 @@ chain and were about to be lost. Each one says who owns it and what it blocks.
 |---|---|---|
 | **the PUSH-versus-stores crossover, re-measured against GAMEPLAY's span distribution.** The 12-byte crossover was established on the intro, where 88% of spans are longer. In gameplay 96% are under 47 bytes and the median is far shorter, so *the fallback may be the common path, not the exception* - this document already says to re-check it before trusting it | mine | nothing until the budget is tight; then it decides whether the two optional optimisations help or hurt |
 | **F4, the palette question.** RGB444 to RGB333: 44.4% of palettes lose nothing, 35.1% lose one colour, the worst loses five of sixteen. A quantiser that nudged colliding entries apart would trade hue for separation at no run-time cost | **David's** | not a gate - page comparisons are on indices, not colours - but it decides what a player actually sees, so it wants settling before I10 |
-| **F5, the 320x256 mode**, decided against in decision 1 | **David's** | a re-read, not a task. It would change the rasteriser's geometry, so it must stay decided-against or be reopened before I2, not after |
+| ~~**F5, the 320x256 mode**, decided against in decision 1~~ **DONE** as I12, the default since 2026-10-01 | **David's** | nothing: `make asm` is 320x256, `make asm256` keeps 256x192 |
 
 ### What could still stop this, worst first
 

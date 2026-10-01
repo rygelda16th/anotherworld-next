@@ -11,14 +11,14 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX                          # noqa: E402
+from checksave import symbols, NEX, EXP                          # noqa: E402
 
 FRAMES_DONE, NR_MMU7, DWIN = 0xC008, 0x57, 0xE000
 SEG = "build/assets/RES1C.BIN"
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     want = open(SEG, "rb").read()
     z = Zrcp()
 

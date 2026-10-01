@@ -7,10 +7,11 @@ and every gate's trace is input-free so the opcode streams stay reproducible. Wi
 on the protection screen draws 2,378 glyphs in 400 frames, so text is reachable, just not
 where anything else measures.
 
-Both sides use the same 6x8 font and the same 40-cells-of-six geometry, so this is a real
-comparison and not a tautology: the machine reads font6.bin out of a banked page and walks
-the dictionary by bisection, while the reference indexes Python dicts. Only the pixels are
-shared.
+Both sides use the same font and the same geometry, so this is a real comparison and not a
+tautology. The default 320x256 build (check-text) draws the engine's own 8x8 font.bin in 40
+cells of eight pixels; AW_SCREEN=256 (check-text256) draws font6.bin in 40 cells of six, 240
+of the 256. The machine reads its font out of memory and walks the dictionary by bisection,
+while the reference indexes Python dicts. Only the pixels are shared.
 """
 import os
 import re
@@ -21,13 +22,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                       # noqa: E402
 from refvideo import RefVideo8, RefVideo320  # noqa: E402
 
-# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W3) - the engine's 8x8 font, no scale, a page of
+# THE SCREEN: 320x256 unless AW_SCREEN=256 asks for the earlier 256x192 build (docs/plan-wide320.md W3) - the engine's 8x8 font, no scale, a page of
 # ten 8K column strips.
-WIDE = bool(os.environ.get("AW_WIDE"))
+WIDE = os.environ.get("AW_SCREEN", "320") != "256"
 from mkstrings import ENTRY, unescape       # noqa: E402
 
-NEX = "build/aw320.nex" if WIDE else "build/aw.nex"
-EXP_ASM, EXP_C = ("build/aw320.exp" if WIDE else "build/aw.exp"), "build/aw_vm_c.exp"
+NEX = "build/aw.nex" if WIDE else "build/aw256.nex"
+EXP_ASM, EXP_C = ("build/aw.exp" if WIDE else "build/aw256.exp"), "build/aw_vm_c.exp"
 STR_BLOCK = 0xC3A0
 W, H = (320, 200) if WIDE else (256, 192)
 PAGE = W * H
@@ -35,12 +36,13 @@ NR_MMU7, DWIN = 0x57, 0xE000
 
 # Chosen to exercise the cases that break: a plain string, one with a newline, the longest
 # one in the table, a lowercase-heavy one for the hand-drawn m and w, and cell 34 to prove
-# the right-hand cells are reachable at all - which is the whole reason for a six-pixel cell.
+# the right-hand cells are reachable at all - which, at 256x192, is the whole reason for a
+# six-pixel cell.
 CASES = [
     (0x001, 9, 0, 16),
     (0x002, 12, 2, 24),      # three newlines
     (0x264, 7, 0, 40),       # the longest, 174 characters
-    (0x003, 15, 34, 64),     # far right: impossible with eight-pixel cells
+    (0x003, 15, 34, 64),     # far right: impossible with eight-pixel cells in 256
     (0x006, 3, 20, 100),
     (0x192, 5, 22, 16),      # "IDENTIFICATION", as the intro draws it at blit 1,123
 ]
@@ -152,10 +154,12 @@ def main():
     if bad:
         print("\n  " + "\n  ".join(bad[:6]))
         raise SystemExit(f"FAIL: {len(bad)} problem(s) drawing text")
+    far = ("cell 34" if WIDE else
+           "cell 34, which no eight-pixel cell could have reached in 256 columns")
     print(f"""
 PASS: all {done} strings pixel-identical to the reference - including one with three
-      newlines, the longest in the table at 174 characters, and one at cell 34, which
-      no eight-pixel cell could have reached. I4 is closed.""")
+      newlines, the longest in the table at 174 characters, and one at {far}.
+      I4 is closed ({'320x256' if WIDE else '256x192'}).""")
 
 
 if __name__ == "__main__":

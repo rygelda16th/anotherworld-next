@@ -15,12 +15,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX                          # noqa: E402
+from checksave import symbols, NEX, EXP                          # noqa: E402
 
 FRAMES_DONE, FAULT, BAD_OP = 0xC008, 0xC00D, 0xC00C
 SECONDS = int(os.environ.get("AW_SECONDS", "26"))
 BUDGET_MS = 80.0
-T_PER_POLY = 2974.0      # make check-polycost, measured
+T_PER_POLY = 2974.0      # check-polycost's first figure, on the 256x192 harness (polycost.asm);
+                         # the 320x256 rasteriser's setup cost is not measured
 NAMES = ["protection", "introduction", "gameplay", "gameplay", "gameplay",
          "battlechar", "gameplay", "gameplay", "password", "password"]
 
@@ -36,7 +37,7 @@ def reference():
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     sym.update(symbols("build/aw_vm_c.exp"))
     ref = reference()
     z = Zrcp()
@@ -81,7 +82,8 @@ def main():
         # whether the drawing fits. It marked the INTRO over budget, which check-draw proves
         # renders correctly and which this project measured at a quarter of its available time.
         #
-        # check-polycost measured 2,974 T a polygon. At 28 MHz that is 106.2 us, so a frame of
+        # check-polycost measured 2,974 T a polygon on the 256x192 harness - an ESTIMATE for the
+        # 320x256 build, not a measure of it. At 28 MHz that is 106.2 us, so a frame of
         # n polygons costs n * 106.2 us of rasteriser SETUP - the floor, before span fill.
         ms = per * T_PER_POLY / 28_000.0
         bad = ms > BUDGET_MS
@@ -93,7 +95,8 @@ def main():
               + (f"  FAULT {flt:#04x}" if flt else ""))
 
     print(f"\n  the scripts ask for {BUDGET_MS:.0f} ms a frame; ms/frame is the RASTERISER'S"
-          f"\n  setup floor at {T_PER_POLY:.0f} T a polygon on a 28 MHz Z80N, before span fill."
+          f"\n  setup floor at {T_PER_POLY:.0f} T a polygon on a 28 MHz Z80N, before span fill"
+          f"\n  (measured on the 256x192 harness; an estimate for the 320x256 build)."
           f"\n  polys/s is wall clock under the emulator and bounds nothing.")
     print("  " + (f"parts whose AVERAGE frame does not fit: {over}" if over
                   else "every part's average frame fits its budget"))

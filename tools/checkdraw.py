@@ -24,13 +24,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp            # noqa: E402
 from refvideo import RefVideo8, RefVideo320, replay   # noqa: E402
 
-# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W3): build/aw320.nex, pages of ten 8K column
+# THE SCREEN: 320x256 unless AW_SCREEN=256 asks for the earlier 256x192 build (docs/plan-wide320.md W3): build/aw.nex (aw256.nex for 256x192), pages of ten 8K column
 # strips turned back into 320x200 rows, against RefVideo320 with the engine's own 8x8 font.
-WIDE = bool(os.environ.get("AW_WIDE"))
+WIDE = os.environ.get("AW_SCREEN", "320") != "256"
 REF = RefVideo320 if WIDE else RefVideo8
 
-NEX = "build/aw320.nex" if WIDE else "build/aw.nex"
-EXP_ASM, EXP_C = ("build/aw320.exp" if WIDE else "build/aw.exp"), "build/aw_vm_c.exp"
+NEX = "build/aw.nex" if WIDE else "build/aw256.nex"
+EXP_ASM, EXP_C = ("build/aw.exp" if WIDE else "build/aw256.exp"), "build/aw_vm_c.exp"
 # AW_PROBE_DIR points the gate at a different probe run - a longer trace, say - without
 # touching the committed one. The default is the committed run.
 PROBE = os.environ.get("AW_PROBE_DIR") or "preflight/hostprobe/probe"

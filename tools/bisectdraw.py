@@ -17,10 +17,18 @@ binary search over that number finds the first divergence.
 import os, sys, time
 sys.path.insert(0, "tools")
 from zrcp import Zrcp
-from refvideo import RefVideo8, replay, read_trace
+from refvideo import RefVideo8, RefVideo320, replay, read_trace
 
-CTL, W, H = 0xC000, 256, 192
+# THE SCREEN: 320x256 unless AW_SCREEN=256 asks for the earlier 256x192 build (docs/plan-wide320.md).
+WIDE = os.environ.get("AW_SCREEN", "320") != "256"
+NEX = "build/aw.nex" if WIDE else "build/aw256.nex"
+EXP = "build/aw.exp" if WIDE else "build/aw256.exp"
+REF = RefVideo320 if WIDE else RefVideo8
+FONT = "preflight/hostprobe/probe/font.bin" if WIDE else "build/font6.bin"
+CTL = 0xC000
+W, H = (320, 200) if WIDE else (256, 192)
 PAGE = W * H
+PAGE_BANKS, BANDS = (5, 10) if WIDE else (3, 6)
 NR_MMU7, DWIN = 0x57, 0xE000
 
 def symbols(*paths):
@@ -31,7 +39,7 @@ def symbols(*paths):
             if "0x" in v: out[n.strip()] = int(v.split("0x")[1], 16)
     return out
 
-sym = symbols("build/aw.exp", "build/aw_vm_c.exp")
+sym = symbols(EXP, "build/aw_vm_c.exp")
 trace = "preflight/hostprobe/probe/trace.bin"
 seed = next(int(l.split()[1]) & 0xFFFF
             for l in open("preflight/hostprobe/probe/ops.txt") if l.startswith("seed"))
@@ -49,7 +57,7 @@ def read(a, n):
 
 def machine(n):
     """Page 0 after the machine's first n draws."""
-    z.cmd("smartload /work/build/aw.nex")
+    z.cmd(f"smartload /work/{NEX}")
     time.sleep(3.2)
     z.cmd("set-memory-zone -1")
     hdr = seed.to_bytes(2,"little") + (2000).to_bytes(2,"little") + (60000).to_bytes(2,"little")
@@ -66,9 +74,11 @@ def machine(n):
     pages = []
     for pg in range(4):
         out = bytearray()
-        for band in range(6):
-            z.cmd(f"tbblue-set-register {NR_MMU7} {(12 + pg * 3) * 2 + band}")
+        for band in range(BANDS):
+            z.cmd(f"tbblue-set-register {NR_MMU7} {(12 + pg * PAGE_BANKS) * 2 + band}")
             out += read(DWIN, 8192)
+        if WIDE:                        # column-major strips back into 320x200 rows
+            out = bytes(out[x * 256 + y] for y in range(H) for x in range(W))
         pages.append(bytes(out[:PAGE]))
     return got, pages
 
@@ -76,7 +86,7 @@ def same(n):
     """ALL FOUR pages, not just page 0 - a copy that goes wrong leaves page 0 perfect and
     the fault somewhere the comparison was not looking."""
     got, mp = machine(n)
-    ref, _ = replay(trace, cls=RefVideo8, stop_draws=n)
+    ref, _ = replay(trace, cls=REF, stop_draws=n, font=open(FONT, "rb").read())
     ds = [sum(1 for i in range(PAGE) if mp[p][i] != bytes(ref.pages[p])[i])
           for p in range(4)]
     print(f"  after {n:>3} draws (machine dispatched {got}): "

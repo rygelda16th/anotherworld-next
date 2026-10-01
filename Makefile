@@ -26,7 +26,10 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
         check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-save check-bitmap \
-        toolchain-diff play record check-sndcalls gus-assets check-gus check-card play-gus
+        toolchain-diff play record check-sndcalls gus-assets check-gus check-card play-gus \
+        asm256 check-wide check-poly256 check-readmachine256 check-draw256 check-intro256 \
+        check-text256 check-bmp256 check-save256 check-part256 check-res256 check-aw256 \
+        measure-wide320 measure-wide320-isr
 
 help:
 	@echo "make certs          extract the corporate TLS-inspection CA for the image"
@@ -38,12 +41,14 @@ help:
 	@echo "make frame-load     model every frame against the pause the script asked for"
 	@echo "make voices         how many mixer voices are live, and at what rates"
 	@echo "make cc             compile the C to a raw binary + .exp"
-	@echo "make asm            assemble src/ -> $(BUILD)/*.nex"
+	@echo "make asm            assemble src/ -> $(BUILD)/*.nex; the game, aw.nex, is 320x256"
+	@echo "make asm256         the earlier 256x192 game -> $(BUILD)/aw256.nex (its gates: check-*256)"
 	@echo "make check-span     Step 0: what one polygon span costs, measured"
 	@echo "make check-cc       Gate B: C calls assembly at a fixed address and returns"
-	@echo "make check-poly     Gate C: the rasteriser, pixel-exact vs the reference"
+	@echo "make check-poly     Gate C: the rasteriser, pixel-exact vs the reference (320x256)"
+	@echo "make check-wide     W1: RefVideo320 is the engine's picture at one byte a pixel. Host only"
 	@echo "make check-mix      Step 1: what one output sample of the mixer costs"
-	@echo "make check-polycost Step 2: T a polygon and T a span, fitted apart"
+	@echo "make check-polycost Step 2: T a polygon and T a span, fitted apart (256x192 harness)"
 	@echo "make check-reader   Gate C4: the reference reader IS the engine's"
 	@echo "make check-readmachine  Gate C4: the Z80N reader, pixel-exact"
 	@echo "make check-load     Step 5: how fast esxDOS reads, and what a part costs"
@@ -215,10 +220,13 @@ cc: | $(BUILD)
 		python3 tools/mkexp.py $(BUILD)/$$b.map $(BUILD)/$${b}_c.exp; \
 	done
 
-# Extra assembler defines. The only one that exists is the code-wheel bypass, which is a
-# STARTING PART NUMBER and not a feature - see START_PART in src/aw.asm:
+# Extra assembler defines. The code-wheel bypass is a STARTING PART NUMBER and not a feature - see
+# START_PART in src/aw.asm:
 #
 #     make asm ASMDEF=-DBYPASS_PROTECTION            the game starts at part 1, the intro
+#
+# The screen is the other: the game is 320x256 unless SCREEN256 is defined, and `make asm256` does
+# that, writing build/aw256.nex (docs/plan-wide320.md).
 #
 # Use the short form. `--define=KEY` with no value swallows the next argument, which is
 # --exp, and the symbol file then lands next to the source instead of in build/.
@@ -231,6 +239,11 @@ asm: | $(BUILD)
 	python3 tools/mksndfreq.py $(PROBE) $(BUILD)/sndfreq.inc
 	@test -f $(BUILD)/gusdata.inc || python3 tools/mkgusdata.py $(NEXTPI_GUS) $(BUILD) $(PROBE)
 	python3 tools/mkparts.py $(PROBE) $(BUILD)/parts.inc
+	@# src/polytest.asm's own default is the 256x192 harness, which INCLUDEs this vector; only the
+	@# 256-suffixed Gate C targets write it now, so a clean build makes one here.
+	@test -f $(BUILD)/interp.inc || python3 tools/mktables.py $(BUILD)/interp.inc
+	@test -f $(BUILD)/csteps.inc || python3 tools/mkcsteps.py $(BUILD)/csteps.inc $(BUILD)/csteps.txt
+	@test -f $(BUILD)/polytest.inc || AW_SCREEN=256 python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest.inc $(BUILD)/expected.bin
 	$(RUN) sh -c 'set -e; for f in src/*.asm; do \
 		b=$$(basename "$$f" .asm); echo "  ASM $$f"; \
 		sjasmplus --zxnext=cspect --fullpath $(ASMDEF) --exp="$(BUILD)/$$b.exp" \
@@ -275,10 +288,20 @@ TRACE ?= preflight/hostprobe/probe/trace.bin
 check-poly: | $(BUILD)
 	python3 tools/mktables.py $(BUILD)/interp.inc
 	python3 tools/mkcsteps.py $(BUILD)/csteps.inc $(BUILD)/csteps.txt
-	python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest.inc $(BUILD)/expected.bin
-	@$(MAKE) --no-print-directory asm
+	python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest320.inc $(BUILD)/expected320.bin
+	$(RUN) sjasmplus --zxnext=cspect --fullpath -DWIDE320 --exp=$(BUILD)/polytest320.exp \
+		--lst=$(BUILD)/polytest320.lst src/polytest.asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkpoly.py'
+
+# Gate C for the earlier 256x192 build (make asm256): the harness's own default, polytest.nex.
+check-poly256: | $(BUILD)
+	python3 tools/mktables.py $(BUILD)/interp.inc
+	python3 tools/mkcsteps.py $(BUILD)/csteps.inc $(BUILD)/csteps.txt
+	AW_SCREEN=256 python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest.inc $(BUILD)/expected.bin
+	@$(MAKE) --no-print-directory asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; AW_SCREEN=256 python3 tools/checkpoly.py'
 
 check-cc: cc asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
@@ -288,7 +311,7 @@ check-cc: cc asm
 check-polycost: | $(BUILD)
 	python3 tools/mktables.py $(BUILD)/interp.inc
 	python3 tools/mkcsteps.py $(BUILD)/csteps.inc $(BUILD)/csteps.txt
-	python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest.inc $(BUILD)/expected.bin
+	AW_SCREEN=256 python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest.inc $(BUILD)/expected.bin
 	@$(MAKE) --no-print-directory asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkpolycost.py'
@@ -319,6 +342,12 @@ check-aw: cc-game
 	$(MAKE) asm
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkaw.py'
+
+check-aw256: cc-game
+	python3 tools/mkexpected.py $(PROBE)/ops.txt $(BUILD)/expected_ops.inc
+	$(MAKE) asm asm256
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; AW_SCREEN=256 python3 tools/checkaw.py'
 
 # I9, first half: the save, against the machine's own state.
 check-save: cc-game
@@ -366,7 +395,7 @@ check-res: cc-game
 # A scratch target for one-off diagnostics: tools/_mixdiag.py and friends. Not a gate, and
 # nothing depends on it - it exists so a focused question does not need a whole gate's run.
 diag:
-	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+	@$(DC) run --rm -e PYTHONUNBUFFERED=1 -e AW_SCREEN=$(AW_SCREEN) tools sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/$(D).py'
 
 # Which record first draws wrongly. The companion to check-draw: it says the pages
@@ -490,13 +519,17 @@ check-load: asm
 		sleep 3; python3 tools/checkload.py'
 
 # Gate C4 on the machine: the Z80N reader against the reference reader.
-check-readmachine: | $(BUILD)
-	python3 tools/mktables.py $(BUILD)/interp.inc
-	python3 tools/mkcsteps.py $(BUILD)/csteps.inc $(BUILD)/csteps.txt
-	python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest.inc $(BUILD)/expected.bin
-	@$(MAKE) --no-print-directory asm
+check-readmachine: check-poly
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkreadmachine.py'
+
+check-readmachine256: | $(BUILD)
+	python3 tools/mktables.py $(BUILD)/interp.inc
+	python3 tools/mkcsteps.py $(BUILD)/csteps.inc $(BUILD)/csteps.txt
+	AW_SCREEN=256 python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest.inc $(BUILD)/expected.bin
+	@$(MAKE) --no-print-directory asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; AW_SCREEN=256 python3 tools/checkreadmachine.py'
 
 # Gate C4: the reference reader against the engine's, call for call. Host only.
 check-reader:
@@ -582,73 +615,57 @@ measure-wide320: $(INTRO_REF)/trace.bin
 check-wide: $(INTRO_REF)/trace.bin
 	python3 tools/checkwide.py $(INTRO_REF) $(INTRO_BLITS)
 
-# W2 of docs/plan-wide320.md: Gate C in the 320x256 build - the same coverage polygons, unscaled,
-# drawn by raster.inc under WIDE320 and compared with RefVideo320, pixel for pixel.
-check-poly320: | $(BUILD)
-	python3 tools/mktables.py $(BUILD)/interp.inc
-	python3 tools/mkcsteps.py $(BUILD)/csteps.inc $(BUILD)/csteps.txt
-	AW_WIDE=1 python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest320.inc $(BUILD)/expected320.bin
-	$(RUN) sjasmplus --zxnext=cspect --fullpath -DWIDE320 --exp=$(BUILD)/polytest320.exp \
-		--lst=$(BUILD)/polytest320.lst src/polytest.asm
-	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
-		sleep 3; AW_WIDE=1 python3 tools/checkpoly.py'
+# THE EARLIER 256x192 BUILD (docs/plan-wide320.md). 320x256 is the normal build since 2026-10-01 and
+# every plain target above is about it; the same sources with -DSCREEN256 build the 256x192 game as
+# build/aw256.nex, and these gates check it. Each checker takes AW_SCREEN=256.
+asm256: | $(BUILD)
+	$(RUN) sjasmplus --zxnext=cspect --fullpath -DSCREEN256 $(ASMDEF) --exp=$(BUILD)/aw256.exp \
+		--lst=$(BUILD)/aw256.lst src/aw.asm
 
-# W2, the reader on the machine in the 320x256 build: real draws from the engine's trace, unscaled.
-check-readmachine320: check-poly320
-	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
-		sleep 3; AW_WIDE=1 python3 tools/checkreadmachine.py'
-
-# W3 of docs/plan-wide320.md: the game in 320x256 - build/aw320.nex, from the same sources with WIDE320.
-asm320: | $(BUILD)
-	$(RUN) sjasmplus --zxnext=cspect --fullpath -DWIDE320 $(ASMDEF) --exp=$(BUILD)/aw320.exp \
-		--lst=$(BUILD)/aw320.lst src/aw.asm
-
-# W3: check-draw and the intro gate on the 320x256 build, against RefVideo320.
-check-draw320: cc-game
-	$(MAKE) asm asm320
-	@$(DC) run --rm -e PYTHONUNBUFFERED=1 -e AW_WIDE=1 -e AW_PART=$(AW_PART) \
+check-draw256: cc-game
+	$(MAKE) asm asm256
+	@$(DC) run --rm -e PYTHONUNBUFFERED=1 -e AW_SCREEN=256 -e AW_PART=$(AW_PART) \
 		-e AW_BLITS=$(AW_BLITS) -e AW_PROBE_DIR=$(AW_PROBE_DIR) -e AW_AUTOPLAY=$(AW_AUTOPLAY) -e AW_TEXTPAGE=$(AW_TEXTPAGE) tools \
 		sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; python3 tools/checkdraw.py'
 
-check-intro320: $(INTRO_REF)/trace.bin
+check-intro256: $(INTRO_REF)/trace.bin
 	@bad=0; for b in $(INTRO_BLITS); do \
-		if $(MAKE) --no-print-directory check-draw320 AW_BLITS=$$b AW_PROBE_DIR=$(INTRO_REF) \
-				>$(BUILD)/intro320-$$b.log 2>&1; then echo "  blit $$b: PASS"; \
-		else echo "  blit $$b: FAIL"; grep -E "page [0-3]: [0-9]|first at" $(BUILD)/intro320-$$b.log; bad=1; fi; \
+		if $(MAKE) --no-print-directory check-draw256 AW_BLITS=$$b AW_PROBE_DIR=$(INTRO_REF) \
+				>$(BUILD)/intro256-$$b.log 2>&1; then echo "  blit $$b: PASS"; \
+		else echo "  blit $$b: FAIL"; grep -E "page [0-3]: [0-9]|first at" $(BUILD)/intro256-$$b.log; bad=1; fi; \
 	done; test $$bad -eq 0
 
-# W3: the other game gates on the 320x256 build (each tool takes AW_WIDE=1).
-check-text320: cc-game
+check-text256: cc-game
 	python3 tools/mkfont6.py $(PROBE)/font.bin $(BUILD)/font6.bin
 	python3 tools/mkstrings.py $(PROBE)/staticres.cpp $(BUILD)/strings.inc
-	$(MAKE) asm asm320
+	$(MAKE) asm asm256
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
-		sleep 3; AW_WIDE=1 python3 tools/checktext.py'
+		sleep 3; AW_SCREEN=256 python3 tools/checktext.py'
 
-check-bmp320: cc-game
+check-bmp256: cc-game
 	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
-	$(MAKE) asm asm320
+	$(MAKE) asm asm256
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
-		sleep 3; AW_WIDE=1 python3 tools/checkbmp.py'
+		sleep 3; AW_SCREEN=256 python3 tools/checkbmp.py'
 
-check-save320: cc-game
+check-save256: cc-game
 	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
-	$(MAKE) asm asm320
+	$(MAKE) asm asm256
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
-		sleep 3; AW_WIDE=1 python3 tools/checksave.py'
+		sleep 3; AW_SCREEN=256 python3 tools/checksave.py'
 
-check-part320: cc-game
+check-part256: cc-game
 	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
-	$(MAKE) asm asm320
+	$(MAKE) asm asm256
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
-		sleep 3; AW_WIDE=1 python3 tools/checkpart.py'
+		sleep 3; AW_SCREEN=256 python3 tools/checkpart.py'
 
-check-res320: cc-game
+check-res256: cc-game
 	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
-	$(MAKE) asm asm320
+	$(MAKE) asm asm256
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
-		sleep 3; AW_WIDE=1 python3 tools/checkres.py'
+		sleep 3; AW_SCREEN=256 python3 tools/checkres.py'
 
 # W0 of docs/plan-wide320.md: the sound interrupt's share of the machine, sampled in ZEsarUX, for the
 # intro (part index 1) and two gameplay parts with the synthetic player, at the reference runs' seeds.

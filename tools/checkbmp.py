@@ -21,9 +21,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                   # noqa: E402
 
-# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W3): ten strips a page, BMWnn.BIN, the heap at 90.
-WIDE = bool(os.environ.get("AW_WIDE"))
-NEX, ASSETS = ("build/aw320.nex" if WIDE else "build/aw.nex"), "build/assets"
+# THE SCREEN: 320x256 unless AW_SCREEN=256 asks for the earlier 256x192 build (docs/plan-wide320.md W3): ten strips a page, BMWnn.BIN, the heap at 90.
+WIDE = os.environ.get("AW_SCREEN", "320") != "256"
+NEX, ASSETS = ("build/aw.nex" if WIDE else "build/aw256.nex"), "build/assets"
 L2_BASE_BANK, BANDS, BAND, DWIN, NR_MMU7 = 12, (10 if WIDE else 6), 8192, 0xE000, 0x57
 PAGE = BANDS * BAND                     # 49,152: one Layer 2 page (81,920 in 320x256)
 
@@ -44,7 +44,7 @@ def symbols(path):
 
 
 def main():
-    sym = symbols("build/aw320.exp" if WIDE else "build/aw.exp")
+    sym = symbols("build/aw.exp" if WIDE else "build/aw256.exp")
     z = Zrcp()
     print(f"emulator: {z.cmd('get-version')}")
 

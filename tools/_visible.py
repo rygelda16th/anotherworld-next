@@ -15,14 +15,15 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX                          # noqa: E402
+from checksave import symbols, NEX, EXP, WIDE                    # noqa: E402
 
-NR_MMU7, DWIN, L2_BASE_BANK, BANDS = 0x57, 0xE000, 12, 6
+NR_MMU7, DWIN, L2_BASE_BANK = 0x57, 0xE000, 12
+BANDS, PAGE_BANKS = (10, 5) if WIDE else (6, 3)     # 320x256: ten 8K strips, five banks a page
 FRAMES_DONE = 0xC008
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     sym.update(symbols("build/aw_vm_c.exp"))
     z = Zrcp()
 
@@ -53,14 +54,14 @@ def main():
     p2 = read(sym["pg_ptr2"], 1)[0]
     p3 = read(sym["pg_ptr3"], 1)[0]
     bank = nr(0x12)
-    shown = (bank - L2_BASE_BANK) // 3
+    shown = (bank - L2_BASE_BANK) // PAGE_BANKS
     print(f"  frames={w(FRAMES_DONE)} blits={w(sym['_aw_blits'])} "
           f"selects={w(sym['n_select'])}")
     print(f"  pg_ptr1(draw)={p1}  pg_ptr2(shown)={p2}  pg_ptr3={p3}   "
           f"NextReg $12={bank} -> Layer 2 page {shown}")
     print()
     for page in range(4):
-        p0 = (L2_BASE_BANK + page * 3) * 2
+        p0 = (L2_BASE_BANK + page * PAGE_BANKS) * 2
         nz = 0
         vals = set()
         for band in range(BANDS):
@@ -73,7 +74,7 @@ def main():
             tag += "  <-- ON SCREEN"
         if page == p1:
             tag += "  (the work page)"
-        print(f"    Layer 2 page {page}: {nz:>7,} of 49,152 bytes non-zero, "
+        print(f"    Layer 2 page {page}: {nz:>7,} of {BANDS * 8192:,} bytes non-zero, "
               f"{len(vals):>3} distinct{tag}")
     z.close()
 

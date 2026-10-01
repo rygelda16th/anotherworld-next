@@ -14,18 +14,18 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX                          # noqa: E402
+from checksave import symbols, NEX, EXP, WIDE                    # noqa: E402
 
 FRAMES_DONE, FINISHED, OUT_OF_BUDGET, BAD_OP, FAULT = (
     0xC008, 0xC00A, 0xC00B, 0xC00C, 0xC00D)
-RES_FIRST_PAGE = 72
+RES_FIRST_PAGE = 90 if WIDE else 72     # = the EQU in src/aw.asm, as checkres.py keeps it
 SECONDS = int(os.environ.get("AW_SECONDS", "14"))
 NAMES = ["protection", "introduction", "gameplay", "gameplay", "gameplay",
          "battlechar", "gameplay", "gameplay", "password", "password"]
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     sym.update(symbols("build/aw_vm_c.exp"))
     z = Zrcp()
 

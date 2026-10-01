@@ -29,6 +29,10 @@
 ;   $E000-$FFFF  MMU7    time-shared - the Layer 2 band being drawn, a sample page,
 ;                        and the loader's staging. Whoever borrows it puts it back.
 ;
+; IN THE DEFAULT 320x256 BUILD a polygon fill draws through MMU2/3 instead (a 64-column
+; strip, WWIN) and reads a copy fill's source through MMU0/1 (WSWIN); aw_draw_poly saves
+; all four slots and puts them back. MMU7 keeps fills, text and save/load.
+;
 ; WHAT IS INSIDE MMU6's PAGE, which is the crowded one:
 ;
 ;   $C000-$C01F  the control block the C writes its verdict into
@@ -42,6 +46,13 @@
 ;-----------------------------------------------------------------------------
 
         DEVICE ZXSPECTRUMNEXT
+
+; THE SCREEN. 320x256 is the normal build since 2026-10-01 (docs/plan-wide320.md, David's W5 call):
+; the original's 320x200 unscaled, so no shape is lost to the scale. -DSCREEN256 builds the earlier
+; 256x192 game instead, as build/aw256.nex; every WIDE320 block below is the difference.
+    IFNDEF SCREEN256
+        DEFINE WIDE320
+    ENDIF
 
 ; $9600, not $8C00. The rasteriser and the reader are 1,248 lines and their data, and
 ; with them in the resident region the assembly now ends at $95D4. What that leaves the
@@ -125,7 +136,7 @@ CARD_PAGE       EQU 11
 CARD_GATES      EQU $BACA               ; CC_TOP: past the C's heap header (tools/mkexp.py)
     IFDEF WIDE320
 RES_FIRST_PAGE  EQU 90
-RES_MAX_PAGES   EQU 85                  ; pages 90..174
+RES_MAX_PAGES   EQU 78                  ; pages 90..167: see the ASSERT below the stream's pages
     ELSE
 RES_FIRST_PAGE  EQU 72
 RES_MAX_PAGES   EQU 96                  ; pages 72..167; banks 40-111 stay free
@@ -136,6 +147,12 @@ DST_WIN         EQU $E000               ; the loader's staging, MMU7
 ; empties. See st_block and st_music.
 ST_TABLE_PAGE   EQU 175
 ST_RING_PAGE    EQU 176                 ; sixteen pages, to 191
+; THE HEAP MUST STOP SEVEN PAGES SHORT OF THE STREAM. load_code clears eight pages from ld_page
+; whatever the resource's size (clear_code, vmhost.inc), so a load at the heap's last page zeroes
+; the seven after it. The 320x256 map first gave the heap 90-174 and a load at its top would have
+; cleared the stream's event table and ring; the review that found it never saw it happen (the
+; measured peak is 55 pages, the top load at 145), so this keeps it from ever happening.
+        ASSERT RES_FIRST_PAGE + RES_MAX_PAGES + 7 <= ST_TABLE_PAGE
 
 CTL             EQU $C000
 STACK_TOP       EQU $D400               ; grows down to $D0A0: 864 bytes
@@ -261,11 +278,15 @@ DRAW_LOG        EQU $C4A0
 DRAW_LOG_MAX    EQU 8                   ; 8 x 10 bytes: the stack took the rest, and
                                         ; check-draw only ever prints the first eight
 
-; Layer 2. The destination band goes at MMU7, because MMU2/MMU3 are the polygon window
-; and the reader is reading it at the moment the rasteriser writes a band. The source
-; band for a page copy borrows MMU2, which is safe only because no copy happens during
-; a draw.
-L2_BASE_BANK    EQU 12                  ; page 0 = banks 12,13,14
+; Layer 2. DWIN (MMU7) is where page fills, text and save/load map a band, in both builds.
+; Under SCREEN256 the rasteriser draws there too, because MMU2/MMU3 are the polygon window
+; and the reader is reading it at the moment the rasteriser writes a band; the source band
+; for a page copy borrows MMU2, which is safe only because no copy happens during a draw.
+; The default 320x256 build draws through WWIN instead - a 64-column strip on the segment
+; window's two slots, which aw_draw_poly saves and puts back - and reads a copy's source
+; through WSWIN (MMU0/MMU1).
+L2_BASE_BANK    EQU 12                  ; page 0 = banks 12..16 (5 a page) in 320x256,
+                                        ; 12..14 (3 a page) with SCREEN256
     IFDEF WIDE320
 BANDS           EQU 10                  ; 8K strips of 32 columns
 L2_PAGE_BANKS   EQU 5
@@ -1177,8 +1198,9 @@ resolve_page:
         xor     a                       ; page 0, as the reference warns and does
         ret
 
-; page_to_p0 - A = 0..3, out as the first of that page's six 8K pages.
-; A Layer 2 page is three 16K banks from L2_BASE_BANK, so six 8K pages from
+; page_to_p0 - A = 0..3, out as the first 8K page of that Layer 2 page. A page is five 16K
+; banks from L2_BASE_BANK in the default 320x256 build, so ten 8K pages from
+; (L2_BASE_BANK + page * 5) * 2; with SCREEN256 it is three banks, six 8K pages from
 ; (L2_BASE_BANK + page * 3) * 2.
 page_to_p0:
     IFDEF WIDE320
@@ -1695,17 +1717,15 @@ voice_locate:
 ;
 ; The reference DEPLANES here: four planes 8,000 bytes apart, eight bits at a time, into 320x200
 ; at four bits a pixel. mkassets.py has already done that at build time and written the result as
-; OUR page - 256x192 at 8bpp, 49,152 bytes - which check-bitmap proves pixel for pixel against
-; the engine's own deplaner on real resources. So the machine's half is a copy, and the deplaning
+; OUR page, which check-bitmap proves pixel for pixel against the engine's own deplaner on real
+; resources. In the default 320x256 build that is BMWnn.BIN, 81,920 bytes in column-major order
+; (x * 256 + y), ten 8K strips from BMP_PAGE 80; with SCREEN256 it is BMPnn.BIN, 256x192 at 8bpp,
+; 49,152 bytes, six 8K bands from BMP_PAGE 64. So the machine's half is a copy, and the deplaning
 ; never has to happen at 28 MHz.
 ;
-; Into PAGE 0 always: video.cpp:554 takes _pages[0] and not a page id. Six 8K bands, through MMU2
-; and MMU3 - the polygon segment window, which every draw re-maps from seg_base before it reads,
-; so clobbering it between opcodes costs nothing.
-;
-; 49,152 bytes of LDIR is about 1.8 frames at 28 MHz. The reference's deplane of 32,000 bytes is
-; not cheap either, and this is the path nothing has ever measured: part 7 loads seventy of these
-; and parts 2 and 3 load none, so no budget so far has paid for it.
+; Into PAGE 0 always: video.cpp:554 takes _pages[0] and not a page id. BANDS 8K pieces, each one
+; a dma_mem of 8K. Part 7 loads seventy of these and parts 2 and 3 load none, so no budget so far
+; has paid for it.
 ;-----------------------------------------------------------------------------
 present_bitmap:
         xor     a
@@ -2809,7 +2829,9 @@ sv_load:
         ld      (sv_byte), a
         ld      (sv_ferr), a
         ld      (sv_done), a            ; cleared here, stamped at the end: a checker has no other
-                                        ; way to know a 198,272-byte read has finished
+                                        ; way to know the read has finished: 329,344 bytes
+                                        ; (AWS2, 40 strips) by default, 198,272 (AWS1, 24
+                                        ; bands) under SCREEN256
         ld      hl, sv_name
         ld      de, fname
         ld      bc, 11
@@ -4270,6 +4292,10 @@ mus_last_tick:  dw 0
 ; draw_char6 (text), aw_fill_page, aw_copy_page itself, present_bitmap and the save's page
 ; restore. Simulated against the reference on the intro's 700 blits first: every page identical
 ; at every blit, and 50.6% of the bytes copied.
+;
+; That is the 256x192 build. The default 320x256 build keeps the same rule per 32-column strip:
+; ten bits, so dt_dirty is a word a page, and the polygon marks its whole box once (dirty_box)
+; rather than a band at a time. Those routines are in src/inc/wide.inc.
 ;-----------------------------------------------------------------------------
 
     IFNDEF WIDE320                      ; the 320x256 build's are in src/inc/wide.inc
@@ -5189,7 +5215,10 @@ auto_input:
 ; In MMU6 rather than resident because the resident block has three bytes left and this needs
 ; twelve; MMU6 is never remapped, so a call into it is always valid.
 ;
-; NR_L2_CFG = 0 is 256x192 at 8bpp, which is what decision 1 chose and what every harness sets.
+; NR_L2_CFG gets L2_CFG. By default that is %00010000, 320x256 at 8bpp, and wide_display then
+; sets the Y offset ($17) and the clip window ($18) so the picture's 200 rows sit at screen rows
+; 28-227. Under SCREEN256 it is 0, 256x192 at 8bpp, decision 1's choice until W5
+; (docs/plan-wide320.md) reopened it. ctest and span still set 0; polytest sets its own.
 ; $123B is WRITE-ONLY on this machine - the project learned that when it tried to read it back -
 ; so bit 1 is written blind and cannot be verified from the port. `make check-screen` asks the
 ; emulator instead.
@@ -5389,9 +5418,9 @@ card_jp_hl:
         ASSERT $ < VEC_TABLE
 
     IFDEF WIDE320
-        SAVENEX OPEN "build/aw320.nex", start, $BF00
-    ELSE
         SAVENEX OPEN "build/aw.nex", start, $BF00
+    ELSE
+        SAVENEX OPEN "build/aw256.nex", start, $BF00
     ENDIF
         SAVENEX CORE 3, 0, 0
         SAVENEX CFG  0, 0, 0, 1

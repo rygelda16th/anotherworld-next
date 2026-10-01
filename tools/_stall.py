@@ -10,13 +10,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX                          # noqa: E402
+from checksave import symbols, NEX, EXP                          # noqa: E402
 
 FRAMES_DONE, RECORDS, BUDGET = 0xC008, 0xC006, 0xC004
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     sym.update(symbols("build/aw_vm_c.exp"))
     # nearest-preceding-symbol lookup, for anything in the resident/C region
     table = sorted((v, k) for k, v in sym.items() if 0x4000 <= v <= 0xFFFF)

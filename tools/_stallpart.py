@@ -10,7 +10,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                                       # noqa: E402
-from checksave import symbols, NEX                          # noqa: E402
+from checksave import symbols, NEX, EXP                          # noqa: E402
 
 PART = 5
 FRAMES_DONE, RECORDS, FINISHED, OUT_OF_BUDGET, BAD_OP, FAULT, FAULT_PC = (
@@ -19,7 +19,7 @@ DRAW_BLOCK, VEC_TRAMP = 0xC390, 0xCECE
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols(EXP)
     sym.update(symbols("build/aw_vm_c.exp"))
     z = Zrcp()
 
