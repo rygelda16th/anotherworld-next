@@ -77,6 +77,14 @@ fill_page:
     ENDIF
 
 poly_draw:
+    IFDEF WIDE320
+        ; WWIN HELD THE POLYGON SEGMENT until now - the reader maps it there for every record - so
+        ; nothing of ours is mapped, whatever cur_band says. Before the point test, which draws too:
+        ; a point drawn through a stale cur_band wrote into the segment's pages and the shapes read
+        ; after it came out wrong (blit 30 of the intro, 61 pixels, the first sign).
+        ld      a, 255
+        ld      (cur_band), a
+    ENDIF
         ; ---- parse the record ----
         ld      a, (hl)
         ld      (p_colour), a
@@ -175,6 +183,11 @@ poly_draw:
         ld      hl, (p_y2)
         bit     7, h
         jp      nz, .ret
+    IFDEF WIDE320
+    IFDEF DIRTY_BANDS
+        call    dirty_box               ; the strips the box covers, once a polygon: see src/inc/wide.inc
+    ENDIF
+    ENDIF
 
         ; hliney = y1
         ld      hl, (p_y1)
@@ -215,12 +228,26 @@ poly_draw:
         jr      c, .opaque
         jr      z, .blend
         ld      hl, span_copy
+    IFDEF WIDE320
+        ld      de, span_copy_b
+    ENDIF
         jr      .setfn
 .blend: ld      hl, span_blend
+    IFDEF WIDE320
+        ld      de, span_blend_b
+    ENDIF
         jr      .setfn
 .opaque:
         ld      hl, span_opaque
+    IFDEF WIDE320
+        ld      de, span_opaque_b
+    ENDIF
 .setfn: ld      (.span_call + 1), hl    ; patch the CALL, once a polygon
+    IFDEF WIDE320
+        ld      (.span_back + 1), de    ; and the right-to-left one
+        ld      a, (p_colour)
+        ld      (.colour_b + 1), a
+    ENDIF
 
 ;-----------------------------------------------------------------------------
 ; The trapezoid walk.
@@ -398,8 +425,28 @@ poly_draw:
         ; nothing; x1 below 0 clamps to 0 and x2 above 319 to 319. The memory runs down the columns,
         ; so the 8K page is the STRIP x1 >> 5, the address DWIN + ((x1 & 31) << 8) + y, and the
         ; fill crosses a strip every 32 columns (span_opaque's .seg).
-        ld      a, l
-        ld      (.wy + 1), a            ; y, 0..199, for the address
+        ; L IS y, 0..199, for the address, and the common path keeps it there; the others take it
+        ; back from hliney.
+        ; THE COMMON CASE FIRST: both edges between 0 and 255, so nothing clips and the order and
+        ; the length are eight-bit sums. About 80 T a row less than the general path below.
+        ld      a, ixh
+        or      iyh
+        jr      nz, .wslow
+        ld      b, a                    ; x1's high byte: 0
+        ld      d, a
+        ld      c, ixl
+        ld      a, iyl
+        sub     c
+        jr      nc, .wf_len
+        neg                             ; crossed: x1 is IYL
+        ld      c, iyl
+.wf_len:
+        inc     a                       ; the length, 1..256 (x2 is not kept: see .x2)
+        ld      e, a
+        jr      nz, .w_have
+        inc     d                       ; 256
+        jr      .w_have
+.wslow:
         ; sx1 = IX, clipped
         ld      a, ixh
         bit     7, a
@@ -450,26 +497,60 @@ poly_draw:
 .wordered:
         inc     hl
         ex      de, hl                  ; DE = the length, 1..320
-        ; the strip, x1 >> 5: (x1h << 3) | (x1l >> 5)
-        ld      a, b
-        add     a, a
-        add     a, a
-        add     a, a
-        ld      h, a
+        ld      a, (hliney)
+        ld      l, a                    ; y again
+.w_have:
+        ; WHICH END TO START FROM. A span that crosses strips leaves the last one it reached mapped,
+        ; and the next row's span usually starts in the strip this one ended in - at its RIGHT end
+        ; when this one went left to right. So a row starts from whichever end is already mapped:
+        ; the strips are walked back and forth, and a span costs a NextReg per strip it crosses
+        ; and not one more for the next row as well. The order of a span's pixels changes nothing.
+        ; x1's strip, x1 >> 6: B is 0 or 1, so (C & $C0) | B rotated left twice
         ld      a, c
+        and     $C0
+        or      b
         rlca
         rlca
-        rlca
-        and     7
-        or      h
 .bcmp:  cp      0
-        call    nz, band_set
+        jr      z, .band_ok             ; x1's strip is mapped: left to right, nothing more to know
+        push    af
+        ; x2's strip, only now: most rows start in the strip already mapped. .x2: x2 = x1 + length - 1
+        ld      h, b
+        ld      l, c
+        add     hl, de
+        dec     hl
+        ld      a, l
+        and     $C0
+        or      h
+        rlca
+        rlca
+        ld      h, a
+        ld      a, (.bcmp + 1)
+        cp      h
+        jr      z, .back_pop            ; x2's strip is mapped: right to left
+        pop     af
+        call    band_set                ; neither: map x1's, left to right
+        ld      a, (hliney)
+        ld      l, a                    ; y again: x2's sum took L
+        jr      .band_ok
+.back_pop:
+        pop     af
+        ld      a, l
+        and     63
+        add     a, WW_H
+        ld      h, a                    ; x2's column in its strip
+        ld      a, (hliney)
+        ld      l, a
+.colour_b:
+        ld      a, 0                    ; p_colour (patched once a polygon)
+.span_back:
+        call    0000                    ; patched per polygon: the fill, right to left
+        jp      .step
 .band_ok:
         ld      a, c
-        and     31
-        add     a, DWIN >> 8
-        ld      h, a
-.wy:    ld      l, 0                    ; y (patched above)
+        and     63
+        add     a, WW_H
+        ld      h, a                    ; L is y: and on into .colour
     ENDIF
 .colour:
         ld      a, 0                    ; p_colour (patched once a polygon)
@@ -1287,17 +1368,23 @@ copy_end:
         ret
 
     ELSE
-; THE 320x256 FILLS (docs/plan-wide320.md W2). HL = the first pixel, DE = the length 1..320, A = the
-; colour. A strip is 32 columns, one 8K page at DWIN: `inc h` is the next column, and when H leaves
-; the window the next strip is mapped through band_set and H goes back to its top. WIN_END is the
-; high byte one past the window - 0 when DWIN is $E000, so `sub h` is the room left.
-WIN_END         EQU ((DWIN >> 8) + 32) & $FF
+; THE 320x256 FILLS (docs/plan-wide320.md W2-W4). HL = the first pixel, DE = the length 1..320, A = the
+; colour. A STRIP IS 64 COLUMNS: two 8K pages side by side in the includer's 16K window WWIN, on
+; NR_WWIN_LO and NR_WWIN_HI. `inc h` is the next column; when H leaves the window the next strip is
+; mapped and H goes back to its first column. Thirty-two-column strips through one 8K slot crossed
+; twice as often, and the profile of the intro's worst stretch put the crossings at a quarter of it.
+; The game's WWIN is the polygon segment's window, which nothing reads while a polygon is drawn: the
+; reader has the whole record in rd_record by then, and a parent maps its own pages back after a
+; child returns. WSWIN is page 0's same strip, for the copy fill, on NR_WSWIN_LO and NR_WSWIN_HI.
+WW_H            EQU WWIN >> 8
+WW_END          EQU (WW_H + 64) & $FF   ; the high byte one past the window
+WS_DIFF         EQU ((WWIN - WSWIN) >> 8) & $FF
 
 span_opaque:
         and     $0F
         ld      c, a                    ; C = the colour for the whole span
-.seg:   ld      a, WIN_END
-        sub     h                       ; room in this strip, 1..32
+.seg:   ld      a, WW_END
+        sub     h                       ; room in this strip, 1..64
         ld      b, a
         ld      a, d
         or      a
@@ -1316,28 +1403,28 @@ span_opaque:
         call    next_strip
         jr      .seg
 .last:  ld      a, e
-opaque_run:                             ; A = pixels, 1..32. Keeps BC and DE.
+        jp      opaque_run              ; not a fall-through: a pad may sit between
+    IF high ($ + 11) != high ($ + 11 + 129)
+        ALIGN 256                       ; the unrolled block must not cross a 256-byte page
+    ENDIF
+opaque_run:                             ; A = pixels, 1..64. Keeps BC, DE and L.
+        ; THE ENTRY IS A BYTE SUM: the block sits inside one 256-byte page (ASSERTed), so its high
+        ; byte never changes and the low byte is low(opaque_end) - 2 * A.
         add     a, a                    ; two bytes a pixel
-        push    de
-        ld      e, a
-        ld      d, 0
-        push    hl
-        ld      hl, opaque_end
-        or      a
-        sbc     hl, de
-        ld      (.jp + 1), hl
-        pop     hl
-        pop     de
-.jp:    jp      0
-        DUP 32
+        neg
+        add     a, low opaque_end
+        ld      (.jp + 1), a
+.jp:    jp      opaque_end
+        DUP 64
         ld      (hl), c
         inc     h
         EDUP
 opaque_end:
         ret
+        ASSERT high (opaque_end - 128) == high opaque_end
 
 span_blend:
-.seg:   ld      a, WIN_END
+.seg:   ld      a, WW_END
         sub     h
         ld      b, a
         ld      a, d
@@ -1357,56 +1444,242 @@ span_blend:
         call    next_strip
         jr      .seg
 .last:  ld      a, e
-blend_run:                              ; A = pixels, 1..32. Keeps BC and DE.
+        jp      blend_run
+    IF high ($ + 13) != high ($ + 13 + 193)
+        ALIGN 256
+    ENDIF
+blend_run:                              ; A = pixels, 1..64. Keeps C, DE and L.
         ld      b, a
         add     a, a
         add     a, b                    ; three bytes a pixel
-        push    de
-        ld      e, a
-        ld      d, 0
-        push    hl
-        ld      hl, blend_end
-        or      a
-        sbc     hl, de
-        ld      (.jp + 1), hl
-        pop     hl
-        pop     de
-.jp:    jp      0
-        DUP 32
+        neg
+        add     a, low blend_end
+        ld      (.jp + 1), a
+.jp:    jp      blend_end
+        DUP 64
         set     3, (hl)
         inc     h
         EDUP
 blend_end:
         ret
+        ASSERT high (blend_end - 192) == high blend_end
 
-; Colour above 0x10: page 0's pixel at the same place, through SWIN, which band_set maps to the same
-; strip of page 0. A pixel at a time: 0.1% of the intro's pixels are drawn this way.
+; Colour above 0x10: page 0's pixel at the same place, through WSWIN, which swin_set maps to the same
+; strip of page 0. Unrolled like the others: 0.1% of the intro's pixels but 1.3 million of part
+; index 4's, where a pixel at a time cost a twelfth of the part's time.
 span_copy:
-        ld      a, h
-        sub     (DWIN - SWIN) >> 8
+        call    swin_set
+.seg:   ld      a, WW_END
+        sub     h
         ld      b, a
-        ld      c, l
-        ld      a, (bc)
-        ld      (hl), a
-        inc     h
-        ld      a, h
-        cp      WIN_END
-        call    z, next_strip
-        dec     de
         ld      a, d
-        or      e
-        jr      nz, span_copy
+        or      a
+        jr      nz, .full
+        ld      a, e
+        cp      b
+        jr      c, .last
+        jr      z, .last
+.full:  ld      a, e
+        sub     b
+        ld      e, a
+        jr      nc, .nb
+        dec     d
+.nb:    ld      a, b
+        call    copy_run
+        call    next_strip
+        call    swin_set
+        jr      .seg
+.last:  ld      a, e
+copy_run:                               ; A = pixels, 1..64. Keeps DE and L.
+        push    de
+        add     a, a
+        add     a, a                    ; four bytes a pixel
+        ld      e, a
+        ld      d, 0
+        jr      nz, .short
+        inc     d                       ; 64 pixels: 256 bytes
+.short: push    hl
+        ld      hl, copy_end
+        or      a
+        sbc     hl, de
+        ld      (.jp + 1), hl
+        pop     hl
+        ld      a, h
+        sub     WS_DIFF
+        ld      d, a
+        ld      e, l                    ; DE = the same pixel in page 0
+.jp:    jp      copy_end
+        DUP 64
+        ld      a, (de)
+        ld      (hl), a
+        inc     d
+        inc     h
+        EDUP
+copy_end:
+        pop     de
         ret
 
 ; next_strip - the span carries on into the strip to the right: map it, and H back to the
-; window's top. Keeps BC, DE and L.
+; window's first column. band_set's work inline: this runs at every strip a span crosses.
+; Keeps BC, DE and L.
 next_strip:
-        push    hl
         ld      a, (cur_band)
         inc     a
-        call    band_set
+strip_to:
+        ld      (cur_band), a
+        ld      (poly_draw.bcmp + 1), a
+        add     a, a
+        ld      h, a
+        ld      a, (dst_p0)
+        add     a, h
+        nextreg NR_WWIN_LO, a
+        inc     a
+        nextreg NR_WWIN_HI, a
+        ld      h, WW_H
+        ret
+
+; prev_strip - the same, leftwards, and H to the window's last column. Keeps BC, DE, L.
+prev_strip:
+        ld      a, (cur_band)
+        dec     a
+        call    strip_to
+        ld      h, WW_H + 63
+        ret
+
+; RIGHT TO LEFT: the same fills from x2 down to x1, which poly_draw's row uses when x2's strip is the
+; one mapped. HL = x2's pixel, DE = the length, A = the colour.
+span_opaque_b:
+        and     $0F
+        ld      c, a
+.seg:   ld      a, h
+        sub     WW_H - 1                ; room, 1..64
+        ld      b, a
+        ld      a, d
+        or      a
+        jr      nz, .full
+        ld      a, e
+        cp      b
+        jr      c, .last
+        jr      z, .last
+.full:  ld      a, e
+        sub     b
+        ld      e, a
+        jr      nc, .nb
+        dec     d
+.nb:    ld      a, b
+        call    opaque_brun
+        call    prev_strip
+        jr      .seg
+.last:  ld      a, e
+        jp      opaque_brun
+    IF high ($ + 11) != high ($ + 11 + 129)
+        ALIGN 256
+    ENDIF
+opaque_brun:                            ; A = pixels, 1..64, leftwards. Keeps BC, DE and L.
+        add     a, a
+        neg
+        add     a, low opaque_bend
+        ld      (.jp + 1), a
+.jp:    jp      opaque_bend
+        DUP 64
+        ld      (hl), c
+        dec     h
+        EDUP
+opaque_bend:
+        ret
+        ASSERT high (opaque_bend - 128) == high opaque_bend
+
+span_blend_b:
+.seg:   ld      a, h
+        sub     WW_H - 1
+        ld      b, a
+        ld      a, d
+        or      a
+        jr      nz, .full
+        ld      a, e
+        cp      b
+        jr      c, .last
+        jr      z, .last
+.full:  ld      a, e
+        sub     b
+        ld      e, a
+        jr      nc, .nb
+        dec     d
+.nb:    ld      a, b
+        call    blend_brun
+        call    prev_strip
+        jr      .seg
+.last:  ld      a, e
+        jp      blend_brun
+    IF high ($ + 13) != high ($ + 13 + 193)
+        ALIGN 256
+    ENDIF
+blend_brun:                             ; A = pixels, 1..64, leftwards. Keeps C, DE and L.
+        ld      b, a
+        add     a, a
+        add     a, b
+        neg
+        add     a, low blend_bend
+        ld      (.jp + 1), a
+.jp:    jp      blend_bend
+        DUP 64
+        set     3, (hl)
+        dec     h
+        EDUP
+blend_bend:
+        ret
+        ASSERT high (blend_bend - 192) == high blend_bend
+
+span_copy_b:
+        call    swin_set
+.seg:   ld      a, h
+        sub     WW_H - 1
+        ld      b, a
+        ld      a, d
+        or      a
+        jr      nz, .full
+        ld      a, e
+        cp      b
+        jr      c, .last
+        jr      z, .last
+.full:  ld      a, e
+        sub     b
+        ld      e, a
+        jr      nc, .nb
+        dec     d
+.nb:    ld      a, b
+        call    copy_brun
+        call    prev_strip
+        call    swin_set
+        jr      .seg
+.last:  ld      a, e
+copy_brun:                              ; A = pixels, 1..64, leftwards. Keeps DE and L.
+        push    de
+        add     a, a
+        add     a, a
+        ld      e, a
+        ld      d, 0
+        jr      nz, .short
+        inc     d
+.short: push    hl
+        ld      hl, copy_bend
+        or      a
+        sbc     hl, de
+        ld      (.jp + 1), hl
         pop     hl
-        ld      h, DWIN >> 8
+        ld      a, h
+        sub     WS_DIFF
+        ld      d, a
+        ld      e, l
+.jp:    jp      copy_bend
+        DUP 64
+        ld      a, (de)
+        ld      (hl), a
+        dec     d
+        dec     h
+        EDUP
+copy_bend:
+        pop     de
         ret
 
     ENDIF
@@ -1426,8 +1699,40 @@ band_set:
         ld      (cur_band), a
         ld      (poly_draw.bcmp + 1), a ; the row walk's copy of it
     IFDEF DIRTY_BANDS
+    IFNDEF WIDE320                      ; the 320x256 build marks a polygon's strips once: dirty_box
         call    dirty_band              ; the includer's: this band of this page is being drawn on
     ENDIF
+    ENDIF
+    IFDEF WIDE320
+        push    af                      ; a 64-column strip: two 8K pages, side by side
+        add     a, a
+        ld      hl, dst_p0
+        add     a, (hl)
+        nextreg NR_WWIN_LO, a
+        inc     a
+        nextreg NR_WWIN_HI, a
+        pop     af
+        ; NOT THE SOURCE STRIP. A span crossing strips calls this at every crossing and the next
+        ; row's first strip calls it again, so it is on the row walk's path; only the copy fill
+        ; (0x11) reads page 0, and it maps its own strip through swin_set. The profile of the intro's
+        ; heaviest stretch put band_set and the dirty-strip rule at 38% of the time.
+        ret
+
+; swin_set - page 0's strip under WSWIN, the same strip as the destination's. Keeps BC, DE, HL.
+swin_set:
+        push    hl
+        push    af
+        ld      a, (cur_band)
+        add     a, a
+        ld      hl, src_p0
+        add     a, (hl)
+        nextreg NR_WSWIN_LO, a
+        inc     a
+        nextreg NR_WSWIN_HI, a
+        pop     af
+        pop     hl
+        ret
+    ELSE
         push    af
         ld      hl, dst_p0
         add     a, (hl)
@@ -1439,6 +1744,7 @@ band_set:
         nextreg NR_SWIN_MMU, a          ; the copy mode's source band
         pop     af
         ret
+    ENDIF
 
 draw_point:
         ld      hl, (p_ptx)
@@ -1459,9 +1765,10 @@ draw_point:
         ret     nz
 
     IFDEF WIDE320
-        ; 320x256: the strip is x >> 5 and the address DWIN + ((x & 31) << 8) + y
-        ld      a, (p_ptx + 1)
-        add     a, a
+        ; 320x256: the strip is x >> 6 and the address WWIN + ((x & 63) << 8) + y
+    IFDEF DIRTY_BANDS
+        ld      a, (p_ptx + 1)          ; the dirty rule's 32-column strip, x >> 5: band_set does
+        add     a, a                    ; not mark it, in this build
         add     a, a
         add     a, a
         ld      e, a
@@ -1471,12 +1778,23 @@ draw_point:
         rlca
         and     7
         or      e
+        call    dirty_band
+    ENDIF
+        ld      a, (p_ptx + 1)
+        add     a, a
+        add     a, a
+        ld      e, a
+        ld      a, (p_ptx)
+        rlca
+        rlca
+        and     3
+        or      e
         ld      hl, cur_band
         cp      (hl)
         call    nz, band_set
         ld      a, (p_ptx)
-        and     31
-        add     a, DWIN >> 8
+        and     63
+        add     a, WW_H
         ld      h, a
         ld      a, (p_pty)
         ld      l, a
@@ -1512,8 +1830,14 @@ draw_point:
         cp      $10
         jr      c, .flat
         jr      z, .bl
+    IFDEF WIDE320
+        call    swin_set                ; band_set leaves the source to the copy paths
+        ld      a, h
+        sub     WS_DIFF
+    ELSE
         ld      a, h                    ; copy from page 0
         sub     (DWIN - SWIN) >> 8
+    ENDIF
         ld      d, a
         ld      e, l
         ld      a, (de)

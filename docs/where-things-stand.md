@@ -3775,6 +3775,19 @@ there - so none of it is reproducible outside our container. Real hardware still
 three things: the card's read time with interrupts off, the zxnDMA's byte rate, and whether
 CSpect's ~93% of real speed means the KS3 has headroom the emulator does not show.
 
+#### I12. A 320x256 build - built and gated, beside the 256x192 one (docs/plan-wide320.md)
+
+256x192 merges five columns into four, so shapes a pixel or two wide are drawn and then painted
+over: Lester's head and arm. Layer 2's 320x256 mode holds the original's 320x200 unscaled, at the
+cost of a column-major page (`x * 256 + y`), spans that cannot use the zxnDMA and 80K pages. It is
+`make asm320` (build/aw320.nex, `-DWIDE320`); without the define every build is byte-identical to
+before. Everything is pixel-exact against `RefVideo320`, the engine's own picture at one byte a pixel
+(`make check-wide` proves that against the engine's pages), and the intro runs at **100.3%** of the
+original in CSpect with the same two-second catch-up. Gameplay costs 0.6-3.9 points more than
+256x192, which was already 72-85% in the parts measured. The plan, the measurements and the five
+optimisations that took the first working build from 86.8% to 100.3% are in
+`preflight/wide320/README.md`. Whether it replaces 256x192 is W5's decision, David's.
+
 #### H1. Real hardware
 
 Card boot, the joystick's physical wiring, and timing on metal without the three

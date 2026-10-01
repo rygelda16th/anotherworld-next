@@ -578,7 +578,7 @@ measure-wide320: $(INTRO_REF)/trace.bin
 
 # W1 of docs/plan-wide320.md: RefVideo320 - the engine's picture at one byte a pixel, no scale - against
 # RefVideo (Gate A's) at every check-intro blit and the engine's own pages, and the 320x256 bitmaps
-# (BMPnn.WID, from make assets) against the engine's own deplaned pages. Host only.
+# (BMWnn.BIN, from make assets) against the engine's own deplaned pages. Host only.
 check-wide: $(INTRO_REF)/trace.bin
 	python3 tools/checkwide.py $(INTRO_REF) $(INTRO_BLITS)
 
@@ -597,6 +597,58 @@ check-poly320: | $(BUILD)
 check-readmachine320: check-poly320
 	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
 		sleep 3; AW_WIDE=1 python3 tools/checkreadmachine.py'
+
+# W3 of docs/plan-wide320.md: the game in 320x256 - build/aw320.nex, from the same sources with WIDE320.
+asm320: | $(BUILD)
+	$(RUN) sjasmplus --zxnext=cspect --fullpath -DWIDE320 $(ASMDEF) --exp=$(BUILD)/aw320.exp \
+		--lst=$(BUILD)/aw320.lst src/aw.asm
+
+# W3: check-draw and the intro gate on the 320x256 build, against RefVideo320.
+check-draw320: cc-game
+	$(MAKE) asm asm320
+	@$(DC) run --rm -e PYTHONUNBUFFERED=1 -e AW_WIDE=1 -e AW_PART=$(AW_PART) \
+		-e AW_BLITS=$(AW_BLITS) -e AW_PROBE_DIR=$(AW_PROBE_DIR) -e AW_AUTOPLAY=$(AW_AUTOPLAY) -e AW_TEXTPAGE=$(AW_TEXTPAGE) tools \
+		sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; python3 tools/checkdraw.py'
+
+check-intro320: $(INTRO_REF)/trace.bin
+	@bad=0; for b in $(INTRO_BLITS); do \
+		if $(MAKE) --no-print-directory check-draw320 AW_BLITS=$$b AW_PROBE_DIR=$(INTRO_REF) \
+				>$(BUILD)/intro320-$$b.log 2>&1; then echo "  blit $$b: PASS"; \
+		else echo "  blit $$b: FAIL"; grep -E "page [0-3]: [0-9]|first at" $(BUILD)/intro320-$$b.log; bad=1; fi; \
+	done; test $$bad -eq 0
+
+# W3: the other game gates on the 320x256 build (each tool takes AW_WIDE=1).
+check-text320: cc-game
+	python3 tools/mkfont6.py $(PROBE)/font.bin $(BUILD)/font6.bin
+	python3 tools/mkstrings.py $(PROBE)/staticres.cpp $(BUILD)/strings.inc
+	$(MAKE) asm asm320
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; AW_WIDE=1 python3 tools/checktext.py'
+
+check-bmp320: cc-game
+	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
+	$(MAKE) asm asm320
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; AW_WIDE=1 python3 tools/checkbmp.py'
+
+check-save320: cc-game
+	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
+	$(MAKE) asm asm320
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; AW_WIDE=1 python3 tools/checksave.py'
+
+check-part320: cc-game
+	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
+	$(MAKE) asm asm320
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; AW_WIDE=1 python3 tools/checkpart.py'
+
+check-res320: cc-game
+	python3 tools/mkreslist.py $(DATA_DIR) $(BUILD)/reslist.inc
+	$(MAKE) asm asm320
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; AW_WIDE=1 python3 tools/checkres.py'
 
 # W0 of docs/plan-wide320.md: the sound interrupt's share of the machine, sampled in ZEsarUX, for the
 # intro (part index 1) and two gameplay parts with the synthetic player, at the reference runs' seeds.

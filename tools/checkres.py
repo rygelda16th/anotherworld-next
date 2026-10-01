@@ -23,8 +23,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp  # noqa: E402
 from memlist import entries, memlist_path  # noqa: E402
 
-NEX = "build/aw.nex"
-EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
+# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W3): the heap starts at 90 and keeps 85 pages.
+WIDE = bool(os.environ.get("AW_WIDE"))
+NEX = "build/aw320.nex" if WIDE else "build/aw.nex"
+EXP_ASM, EXP_C = ("build/aw320.exp" if WIDE else "build/aw.exp"), "build/aw_vm_c.exp"
 PROBE = "preflight/hostprobe/probe"
 ASSETS = "build/assets"
 CTL = 0xC000
@@ -32,7 +34,7 @@ CTL = 0xC000
 # the reservation was exceeded without trusting the machine's own flag - and RES_MAX_PAGES
 # went 40 -> 96 the day part 2 was first run, so a stale copy would have reported a pass
 # against the wrong ceiling.
-RES_FIRST_PAGE, RES_MAX_PAGES = 72, 96
+RES_FIRST_PAGE, RES_MAX_PAGES = (90, 85) if WIDE else (72, 96)
 NR_MMU7, DWIN = 0x57, 0xE000
 FRAMES = int(os.environ.get("AW_FRAMES", "45"))
 

@@ -37,6 +37,14 @@ DST_P0          EQU (L2_BASE_BANK + DST_PAGE * 5) * 2
 SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * 5) * 2
 L2_CFG          EQU %00010000           ; NextReg $70: 320x256, 8bpp
 L2_BANKS        EQU 5
+; the 320x256 rasteriser's 16K windows: it draws through the segment's ($0000, MMU0 and MMU1) and
+; reads page 0 for the copy fill through $4000 (MMU2 and MMU3)
+WWIN            EQU $0000
+NR_WWIN_LO      EQU $50
+NR_WWIN_HI      EQU $51
+WSWIN           EQU $4000
+NR_WSWIN_LO     EQU $52
+NR_WSWIN_HI     EQU $53
     ELSE
 SCR_W           EQU 256
 SCR_H           EQU 192

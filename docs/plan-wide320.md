@@ -1,6 +1,15 @@
 # Plan: the 320x256 drawing mode
 
-Written 2026-10-01, before any code. Nothing here is built yet.
+Written 2026-10-01, before any code. **Status, 2026-10-01: W0-W4 done, gates passed; W5 is
+David's.** Tags `wide-w0` .. `wide-w4`; numbers in `preflight/wide320/README.md`.
+
+| step | gate | result |
+|---|---|---|
+| W0 | the gameplay table | part index 3: 70% today; 320x256 projected 1-6 points slower |
+| W1 | `make check-wide` | RefVideo320 identical to RefVideo at all 17 intro blits and to the engine's pages; 5 bitmaps identical |
+| W2 | `make check-poly320 check-readmachine320` | 64,000 of 64,000 pixels, every bucket; 17 real draws |
+| W3 | `make check-intro320` and the rest | all 17 intro blits, text, bitmaps, save, parts, resources; the 256x192 sweep unchanged |
+| W4 | speed.py, measured-part | intro 100.3%; part index 3 71.8% (256x192: 72.4%), part index 4 81.1% (85.0%) |
 
 ## Why
 

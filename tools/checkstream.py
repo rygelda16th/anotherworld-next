@@ -86,7 +86,7 @@ def main():
     while time.time() < t_end:
         time.sleep(0.37)
         z.cmd("enter-cpu-step")
-        reg = z.registers()
+        regs_raw = z.cmd("get-registers")
         on = read(sym["st_on"], 1)[0]
         played, avail = u24(sym["st_played"]), u24(sym["st_avail"])
         eof = read(sym["st_eof"], 1)[0]
@@ -98,7 +98,10 @@ def main():
         f4 = int.from_bytes(read(sym["_aw_vars"] + 0xF4 * 2, 2), "little")
         voices = read(VOICES, 4 * V_SIZE)
         active = any(voices[i * V_SIZE + V_ACTIVE] for i in range(4))
-        in_irq = not reg.get("IFF1", 1) if "IFF1" in reg else False
+        # ZEsarUX prints "IFF12" with both enabled and "IFF--" with neither; the interrupt runs with
+        # them off. Read from the raw line: z.registers() keeps only name=value pairs, so this test
+        # was always false and a stop inside the interrupt compared a half-written block.
+        in_irq = ("IFF--" in regs_raw) or ("IFF-2" in regs_raw)
         cop = read(COP_BUF, COP_LINES * 4)
         ring_wr = int.from_bytes(read(sym["ring_wr"], 2), "little")
         z.cmd("exit-cpu-step")

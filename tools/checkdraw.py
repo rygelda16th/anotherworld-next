@@ -22,10 +22,15 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp            # noqa: E402
-from refvideo import RefVideo8, replay   # noqa: E402
+from refvideo import RefVideo8, RefVideo320, replay   # noqa: E402
 
-NEX = "build/aw.nex"
-EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
+# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W3): build/aw320.nex, pages of ten 8K column
+# strips turned back into 320x200 rows, against RefVideo320 with the engine's own 8x8 font.
+WIDE = bool(os.environ.get("AW_WIDE"))
+REF = RefVideo320 if WIDE else RefVideo8
+
+NEX = "build/aw320.nex" if WIDE else "build/aw.nex"
+EXP_ASM, EXP_C = ("build/aw320.exp" if WIDE else "build/aw.exp"), "build/aw_vm_c.exp"
 # AW_PROBE_DIR points the gate at a different probe run - a longer trace, say - without
 # touching the committed one. The default is the committed run.
 PROBE = os.environ.get("AW_PROBE_DIR") or "preflight/hostprobe/probe"
@@ -63,9 +68,9 @@ def blits_before_part_change(path):
             n += 1
     return 0
 CTL = 0xC000
-W, H = 256, 192
+W, H = (320, 200) if WIDE else (256, 192)
 PAGE = W * H
-BANDS, BAND = 6, 8192
+BANDS, BAND = (10 if WIDE else 6), 8192
 L2_BASE_BANK = 12
 NR_MMU7 = 0x57
 DWIN = 0xE000
@@ -101,11 +106,13 @@ def read(z, addr, n):
 
 def machine_page(z, page):
     """One whole Layer 2 page off the machine, through the band window."""
-    p0 = (L2_BASE_BANK + page * 3) * 2
+    p0 = (L2_BASE_BANK + page * (5 if WIDE else 3)) * 2
     out = bytearray()
     for band in range(BANDS):
         z.cmd(f"tbblue-set-register {NR_MMU7} {p0 + band}")
         out += read(z, DWIN, BAND)
+    if WIDE:
+        return bytes(out[x * 256 + y] for y in range(H) for x in range(W))
     return bytes(out[:PAGE])
 
 
@@ -152,9 +159,9 @@ def main():
     # of them redrawn by hand (tools/mkfont6.py); replay's default is the original 8x8 font.bin,
     # whose first six columns differ for exactly those glyphs. check-text already compares this way.
     # No trace reached text until the intro gate went past frame 1,122.
-    ref, blits = replay(trace, cls=RefVideo8, stop_after=BLITS,
+    ref, blits = replay(trace, cls=REF, stop_after=BLITS,
                         start_at_part=2 if AW_PART else None,
-                        font=open("build/font6.bin", "rb").read())
+                        font=open("preflight/hostprobe/probe/font.bin" if WIDE else "build/font6.bin", "rb").read())
     if blits < BLITS:
         raise SystemExit(f"the trace only holds {blits} blits after the part change, fewer "
                          f"than the {BLITS} asked for - lower AW_BLITS or lengthen the trace")
@@ -371,7 +378,7 @@ def main():
             n = BLITS + delta
             if n < 1:
                 continue
-            alt, got_n = replay(trace, cls=RefVideo8, stop_after=n, start_at_part=2)
+            alt, got_n = replay(trace, cls=REF, stop_after=n, start_at_part=2)
             if got_n < n:
                 continue
             same = [q for q in range(4) if bytes(alt.pages[q]) == pages[q]]

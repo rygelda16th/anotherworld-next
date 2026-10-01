@@ -22,7 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                   # noqa: E402
 from mkparts import table as part_table  # noqa: E402
 
-NEX = "build/aw.nex"
+# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W3).
+WIDE = bool(os.environ.get("AW_WIDE"))
+NEX = "build/aw320.nex" if WIDE else "build/aw.nex"
 ASSETS = "build/assets"
 PROBE = os.environ.get("PROBE", "preflight/hostprobe/probe")
 PAL_BASE, TEXT_PAGE, NR_MMU7, DWIN = 0xEE00, 1, 0x57, 0xE000
@@ -54,7 +56,7 @@ def symbols(path):
 
 def main():
     parts = part_table(open(f"{PROBE}/parts.cpp").read())
-    sym = symbols("build/aw.exp")
+    sym = symbols("build/aw320.exp" if WIDE else "build/aw.exp")
     z = Zrcp()
     print(f"emulator: {z.cmd('get-version')}")
 

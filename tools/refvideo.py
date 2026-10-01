@@ -788,4 +788,4 @@ class RefVideo320(RefVideo8):
             base = (y + j) * self.STRIDE + cx * 8
             for i in range(8):
                 if row & (0x80 >> i):
-                    buf[base + i] = colour & 0x0F
+                    buf[base + i] = colour        # as the machine stores it, and RefVideo8

@@ -21,11 +21,13 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                   # noqa: E402
 
-NEX, ASSETS = "build/aw.nex", "build/assets"
-L2_BASE_BANK, BANDS, BAND, DWIN, NR_MMU7 = 12, 6, 8192, 0xE000, 0x57
-PAGE = BANDS * BAND                     # 49,152: one Layer 2 page
+# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W3): ten strips a page, BMWnn.BIN, the heap at 90.
+WIDE = bool(os.environ.get("AW_WIDE"))
+NEX, ASSETS = ("build/aw320.nex" if WIDE else "build/aw.nex"), "build/assets"
+L2_BASE_BANK, BANDS, BAND, DWIN, NR_MMU7 = 12, (10 if WIDE else 6), 8192, 0xE000, 0x57
+PAGE = BANDS * BAND                     # 49,152: one Layer 2 page (81,920 in 320x256)
 
-RES_FIRST_PAGE = 72                     # = the EQU in src/aw.asm, as checkres.py keeps it
+RES_FIRST_PAGE = 90 if WIDE else 72     # = the EQU in src/aw.asm, as checkres.py keeps it
 CASES = [0x12, 0x43, 0x91]              # the first, one from the arena's run, and the last
 
 
@@ -42,7 +44,7 @@ def symbols(path):
 
 
 def main():
-    sym = symbols("build/aw.exp")
+    sym = symbols("build/aw320.exp" if WIDE else "build/aw.exp")
     z = Zrcp()
     print(f"emulator: {z.cmd('get-version')}")
 
@@ -85,7 +87,7 @@ def main():
             z.cmd(f"tbblue-set-register {NR_MMU7} {p0 + band}")
             got += read(DWIN, BAND)
         got = bytes(got)
-        want = open(os.path.join(ASSETS, f"BMP{rid:02X}.BIN"), "rb").read()
+        want = open(os.path.join(ASSETS, f"{'BMW' if WIDE else 'BMP'}{rid:02X}.BIN"), "rb").read()
 
         fails = []
         if err:

@@ -79,6 +79,46 @@ player and seed in CSpect.
   4's figures as a lower bound on the time.
 - The sound share is the Z80 path's (no Pi). With the GUS card on it is not measured.
 
+## W1-W4: built, and measured again (2026-10-01)
+
+The 320x256 build is `make asm320` (build/aw320.nex, the same sources with `-DWIDE320`); the
+256x192 build is unchanged byte for byte. Its gates are `make check-wide check-poly320
+check-readmachine320 check-intro320 check-text320 check-bmp320 check-save320 check-part320
+check-res320`, every one pixel-exact against RefVideo320 or the engine's own pages.
+
+| CSpect, emulated time | the original | 256x192 | 320x256 |
+|---|---|---|---|
+| the intro, blits 5-2613 (speed.py) | 151.9 s | 100.2% | **100.3%** |
+| part index 3, autoplay (measured-part) | 257.6 s | 72.4% | **71.8%** |
+| part index 4, autoplay (measured-part) | 167.5 s | 85.0% | **81.1%** |
+
+    python3 tools/wide320.py measured-part build/ref_gun3/frames.txt build/wide320/idle3.txt build/wide320/idle320_3.txt
+
+W4's gate holds: the intro at 99.5% or more, and gameplay no worse than W0's projection (part index
+3 loses 0.6 points where 1.1-1.2 were projected; part index 4 loses 3.9 where 4.0 were projected for
+the 64-column window). The first working build was nowhere near: **86.8%** on the intro. What took it
+to 100.3%, each found by profiling the intro's worst stretch through awprobe's AWPROBE_PROF:
+
+1. **The dirty rule off the row path.** band_set marked a strip dirty at every strip a span crossed and
+   again at the next row's first; dirty_band and its unmirror loop were 28% of the time. A polygon's
+   strips are now marked once, from its box (`dirty_box`), one column past the box's right edge -
+   a point's offset can reach bbw where the box ends at ptx + bbw / 2 (check-intro320's blit 180, one
+   pixel). 86.8% to 91.4%.
+2. **Run entries as a byte sum** (the unrolled block inside one 256-byte page). 95.2%.
+3. **Rows start from whichever end is mapped.** A span crossing strips leaves its last strip mapped,
+   and the next row starts there, so each row is drawn left to right or right to left to match.
+   96.4%, then 97.7% with a cheaper strip change.
+4. **64-column strips**: two 8K pages side by side in the polygon segment's 16K window, which nothing
+   reads while a polygon is drawn (the reader has the record by then and a parent maps its pages back
+   after a child). Half the crossings. The copy fill reads page 0 through the bytecode window, MMU0
+   and MMU1, both saved and put back by aw_draw_poly. 100.3%. Text keeps its own window (MMU7).
+5. **The copy fill unrolled** (part index 4: 73.7% to 81.1%) and **the row's common path** - both
+   edges under 256, y kept in L - for part index 3 (70.0% to 71.8%).
+
+**What the 320x256 build still costs:** gameplay is 0.6-3.9 points slower than 256x192, from page
+fills and copies that are 80K, not 48K, and spans the zxnDMA cannot fill. Gameplay was already slow
+on the machine in 256x192 (72-85%), which the 320x256 mode neither causes nor fixes.
+
 ## What this leaves out, and which way it leans
 
 - No 320x256 code was optimised: the crossing (318 T) is a first version.

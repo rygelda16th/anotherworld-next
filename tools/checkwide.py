@@ -59,17 +59,17 @@ def main():
             same = want == got
             print(f"the engine's own page {p} at the end: {'IDENTICAL' if same else 'DIFFERENT'}")
             bad += not same
-    # the full-screen bitmaps: mkassets.py's 320x256 copy (BMPnn.WID, column-major) against the
+    # the full-screen bitmaps: mkassets.py's 320x256 copy (BMWnn.BIN, column-major) against the
     # engine's own page 0 straight after it loaded each one (the probe's bmp_engine_NN.bin)
     import glob
     dumps = sorted(glob.glob("preflight/hostprobe/probe/bmp_engine_*.bin"))
     for path in dumps:
         rid = os.path.basename(path)[11:13]
         want = nibbles(open(path, "rb").read())
-        wid = open(f"build/assets/BMP{rid}.WID", "rb").read()
+        wid = open(f"build/assets/BMW{rid}.BIN", "rb").read()
         got = bytes(wid[x * 256 + y] for y in range(200) for x in range(320))
         same = want == got
-        print(f"bitmap {rid}: BMP{rid}.WID {'IDENTICAL to' if same else 'DIFFERENT from'} the engine's page 0")
+        print(f"bitmap {rid}: BMW{rid}.BIN {'IDENTICAL to' if same else 'DIFFERENT from'} the engine's page 0")
         bad += not same
     if bad:
         raise SystemExit("FAIL check-wide")

@@ -353,8 +353,13 @@ def idle(out, part=None, seed=None, blits=2613):
     import subprocess
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "cspect"))
     import speed
-    sym = speed.symbols("build/aw.exp")
-    lst = open("build/aw.lst").read().split("\n")
+    wide = bool(os.environ.get("AW_WIDE"))           # the 320x256 build itself (W4)
+    nex, exp, lstf = (("build/aw320.nex", "build/aw320.exp", "build/aw320.lst") if wide
+                      else ("build/aw.nex", "build/aw.exp", "build/aw.lst"))
+    if os.environ.get("AW_NEX"):                    # a copy, while a gate rebuilds the originals
+        nex, exp, lstf = os.environ["AW_NEX"], os.environ["AW_EXP"], os.environ["AW_LST"]
+    sym = speed.symbols(exp)
+    lst = open(lstf).read().split("\n")
 
     def at(label):
         for line in lst:
@@ -378,7 +383,7 @@ def idle(out, part=None, seed=None, blits=2613):
         ctl = 0xC000
         env["AWPROBE_POKE"] = (f"{sym['start_part']:X}={part + 1:X},{sym['autoplay']:X}=1,"
                                f"{ctl:X}={seed & 255:X},{ctl + 1:X}={seed >> 8:X}")
-    pace = speed.run("build/aw.nex", "build/aw.exp", blits, 900, env)
+    pace = speed.run(nex, exp, blits, 900, env)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     shutil.copy(log, out)
     shutil.copy(pace, out + ".pace")
@@ -553,7 +558,37 @@ def project_part(counts, coeff, idle_log, frames, isr_json):
     return out
 
 
+def measured_part(frames, *idle_logs):
+    """A gameplay part's MEASURED speed, from CSpect runs' pace logs (tools/wide320.py idle --part):
+    the original's pauses over the part's blits against the machine's ticks over the same blits,
+    aligned on the first picture as project_part does. One line a log, so builds compare."""
+    rows = [l.split() for l in open(frames) if not l.startswith("#")]
+    pauses = [int(r[6]) for r in rows if r[0] != "1"]
+    ref_first = next(i for i, r in enumerate(r for r in rows if r[0] != "1") if int(r[2]) > 0)
+    for log in idle_logs:
+        pace_rows = [l.split() for l in open(log + ".pace") if not l.startswith("#")]
+        ticks, polys = {}, {}
+        for p in pace_rows:
+            ticks.setdefault(int(p[0]), int(p[1]))
+            polys.setdefault(int(p[0]), int(p[3]))
+        mach_first = min(b for b in polys if polys[b] > polys[min(polys)])
+        off = mach_first - ref_first
+        last = min(len(pauses) - 1, max(ticks) - off - 1)
+        first = ref_first + 1
+        ref = sum(pauses[first + 1:last + 1])
+        def at(b):                      # the log skips a blit when two land in one frame
+            while b not in ticks:
+                b += 1
+            return ticks[b]
+        got = at(last + off) - at(first + off)
+        print(f"{log}: blits {first}-{last}: the original {ref * 0.02:.1f} s, the machine {got * 0.02:.1f} s, "
+              f"{100 * ref / got:.1f}% of the original")
+
+
 def main():
+    if len(sys.argv) >= 4 and sys.argv[1] == "measured-part":
+        measured_part(sys.argv[2], *sys.argv[3:])
+        return
     if len(sys.argv) >= 7 and sys.argv[1] == "project-part":
         project_part(*sys.argv[2:7])
         return

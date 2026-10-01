@@ -58,7 +58,15 @@ NR_MMU6         EQU $56
 NR_MMU7         EQU $57
 
 CODE_WIN        EQU $0000               ; what vmhost.inc slides the bytecode through
+    IFDEF WIDE320
+; THE 320x256 MAP (docs/plan-wide320.md W3). Four Layer 2 pages of five 16K banks fill banks 12-31
+; (8K pages 24-63), so everything that sat there moves up: the two segments, the bitmap staging (ten
+; pages now, a column-major 81,920-byte BMWnn.BIN) and the heap, which keeps 85 pages (90-174) below
+; the music stream at 175. The heap's measured peak is 55.
+CODE_PAGE       EQU 64
+    ELSE
 CODE_PAGE       EQU 48                  ; eight 8K pages for the bytecode segment
+    ENDIF
 ; I8. WHERE THE GAME STARTS. engine.cpp:71-73 - the protection screen IS GAME_PART1, and the
 ; bypass is `part = GAME_PART2` instead. Both are ordinary parts, so this is a starting index
 ; and not a feature: 0 is the wheel screen, 1 is the introduction cinematic. Build with
@@ -68,7 +76,11 @@ START_PART      EQU 1
     ELSE
 START_PART      EQU 0
     ENDIF
+    IFDEF WIDE320
+POLY_PAGE       EQU 72
+    ELSE
 POLY_PAGE       EQU 56                  ; and eight for the cinematic segment
+    ENDIF
 ; I3's heap: resources the bytecode asks for at runtime, allocated a page at a time.
 ;
 ; NINETY-SIX PAGES, NOT FORTY, and the forty was sized against the wrong number. The
@@ -85,7 +97,11 @@ POLY_PAGE       EQU 56                  ; and eight for the cinematic segment
 ; A full-screen bitmap is never resident: loadMarkedAsNeeded loads an RT_POLY_ANIM into a scratch
 ; pointer, presents it at once and marks it NOT_NEEDED (resource.cpp:193, :211-214). Part 7 loads
 ; seventy of them, and seventy times six pages is more memory than the machine has.
+    IFDEF WIDE320
+BMP_PAGE        EQU 80
+    ELSE
 BMP_PAGE        EQU 64
+    ENDIF
 ; THE PROGRAM RAN OUT OF THE 48K IT CAN ADDRESS AT ONCE, and this is where the room comes from.
 ; Every ORG in this file is at $8000 or above, so $4000-$7FFF - pages 10 and 11, bank 5, sixteen
 ; kilobytes - is empty in the .nex image and SAVENEX never writes it. Code ORGed there lands in
@@ -107,8 +123,13 @@ NR_PAGED_MMU    EQU $52                 ; MMU2, page 10's own slot at boot
 ; that reaches it, between the C's variables and MUSIC_CODE.
 CARD_PAGE       EQU 11
 CARD_GATES      EQU $BACA               ; CC_TOP: past the C's heap header (tools/mkexp.py)
+    IFDEF WIDE320
+RES_FIRST_PAGE  EQU 90
+RES_MAX_PAGES   EQU 85                  ; pages 90..174
+    ELSE
 RES_FIRST_PAGE  EQU 72
 RES_MAX_PAGES   EQU 96                  ; pages 72..167; banks 40-111 stay free
+    ENDIF
 DST_WIN         EQU $E000               ; the loader's staging, MMU7
 ; THE STREAMED MUSIC'S MEMORY, in pages 168-223, which nothing else uses: its event table, and a
 ; 128K ring - eight seconds at 15,600 Hz - the main code fills from MUSIC.PCM and the interrupt
@@ -245,7 +266,15 @@ DRAW_LOG_MAX    EQU 8                   ; 8 x 10 bytes: the stack took the rest,
 ; band for a page copy borrows MMU2, which is safe only because no copy happens during
 ; a draw.
 L2_BASE_BANK    EQU 12                  ; page 0 = banks 12,13,14
+    IFDEF WIDE320
+BANDS           EQU 10                  ; 8K strips of 32 columns
+L2_PAGE_BANKS   EQU 5
+L2_CFG          EQU %00010000           ; NextReg $70: 320x256, 8bpp
+    ELSE
 BANDS           EQU 6                   ; 8K pages of 32 scanlines each
+L2_PAGE_BANKS   EQU 3
+L2_CFG          EQU 0                   ; NextReg $70: 256x192, 8bpp
+    ENDIF
 DWIN            EQU $E000
 NR_DWIN_MMU     EQU $57
 ; The polygon/cinematic segment's sliding window: $4000-$7FFF, MMU2 and MMU3. polytest
@@ -278,6 +307,17 @@ NR_SEG_MMU_HI   EQU $53
 ; pages. Nothing is at risk today: aw_draw_poly still only counts.
 SWIN            EQU $0000
 NR_SWIN_MMU     EQU $50
+    IFDEF WIDE320
+; The 320x256 rasteriser's 16K windows (src/inc/raster.inc): it draws through the polygon segment's
+; window, which nothing reads while a polygon is drawn, and the copy fill reads page 0 through the
+; bytecode window, which aw_draw_poly saves and puts back - both slots, in this build.
+WWIN            EQU SEG_WIN
+NR_WWIN_LO      EQU NR_SEG_MMU_LO
+NR_WWIN_HI      EQU NR_SEG_MMU_HI
+WSWIN           EQU $0000
+NR_WSWIN_LO     EQU $50
+NR_WSWIN_HI     EQU $51
+    ENDIF
 
 ; AND copyVideoPage GETS ITS OWN SLOT, which is not that one.
 ;
@@ -293,8 +333,13 @@ NR_L2_BANK      EQU $12
 NR_L2_CFG       EQU $70
 L2_PORT         EQU $123B
 L2_VISIBLE      EQU %00000010           ; $123B bit 1: show Layer 2 at all
+    IFDEF WIDE320
+SCR_W           EQU 320
+SCR_H           EQU 200
+    ELSE
 SCR_W           EQU 256
 SCR_H           EQU 192
+    ENDIF
 ; The engine keeps FOUR pages and selects among them, so DST_P0 is only a starting value -
 ; dst_p0 tracks selectVideoPage from then on.
 ;
@@ -307,8 +352,8 @@ SCR_H           EQU 192
 ; is why a one-record probe into a blank page came out identical.
 DST_PAGE        EQU 1
 SRC_PAGE        EQU 0
-DST_P0          EQU (L2_BASE_BANK + DST_PAGE * 3) * 2
-SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * 3) * 2
+DST_P0          EQU (L2_BASE_BANK + DST_PAGE * L2_PAGE_BANKS) * 2
+SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * L2_PAGE_BANKS) * 2
 ; $DE00 HELD A 256-BYTE RAMP and now holds code. It was I1's scaffolding: init_voices used to
 ; start four voices ACTIVE on it and ramp_sample filled it; check-snd's synthetic voices are
 ; sndtest's own, not these. The game starts silent, so nothing has read it since - and MMU6 is
@@ -1136,10 +1181,18 @@ resolve_page:
 ; A Layer 2 page is three 16K banks from L2_BASE_BANK, so six 8K pages from
 ; (L2_BASE_BANK + page * 3) * 2.
 page_to_p0:
+    IFDEF WIDE320
+        add     a, a                    ; page * 2
+        ld      b, a
+        add     a, a
+        add     a, a                    ; page * 8
+        add     a, b                    ; page * 10
+    ELSE
         add     a, a                    ; page * 2
         ld      b, a
         add     a, a                    ; page * 4
         add     a, b                    ; page * 6
+    ENDIF
         add     a, L2_BASE_BANK * 2
         ret
 
@@ -1256,7 +1309,10 @@ aw_blit:
         ld      a, (pg_ptr2)
         ld      b, a
         add     a, a
-        add     a, b                    ; page * 3
+    IFDEF WIDE320
+        add     a, a                    ; page * 4
+    ENDIF
+        add     a, b                    ; page * 3, or * 5
         add     a, L2_BASE_BANK
         nextreg NR_L2_BANK, a
         ret
@@ -1381,6 +1437,11 @@ aw_draw_poly:
         ld      a, NR_MMU0
         call    nr_read                 ; the select and the read, safe from the interrupt: see nr_read
         ld      (saved_mmu0), a
+    IFDEF WIDE320
+        ld      a, NR_MMU1              ; the copy fill's 16K source window is MMU0 AND MMU1 here
+        call    nr_read
+        ld      (saved_mmu1), a
+    ENDIF
         ; AND FORGET WHICH BAND IS MAPPED. The rasteriser writes NR_SWIN_MMU only when the
         ; band number changes, so its cache is a claim about what MMU0 holds - and .restore
         ; below makes that claim false by putting the bytecode page back. The next draw that
@@ -1430,6 +1491,10 @@ aw_draw_poly:
 .restore:
         ld      a, (saved_mmu0)
         nextreg NR_MMU0, a
+    IFDEF WIDE320
+        ld      a, (saved_mmu1)
+        nextreg NR_MMU1, a
+    ENDIF
         ret
 
 ;-----------------------------------------------------------------------------
@@ -1649,7 +1714,7 @@ present_bitmap:
         ld      (bmp_src), a
         ld      a, L2_BASE_BANK * 2     ; page 0's first 8K band
         ld      (bmp_dst), a
-        ld      b, 6
+        ld      b, BANDS
 .band:
         push    bc
         ld      a, (bmp_src)
@@ -2261,6 +2326,7 @@ aw_draw_string:
 ; rather than per glyph - cheap, and it is the only way a glyph that straddles row 32 comes
 ; out whole.
 ;-----------------------------------------------------------------------------
+    IFNDEF WIDE320                      ; the 320x256 build's is in src/inc/wide.inc
 draw_char6:
         sub     $20
         ret     c                       ; below space: nothing to draw
@@ -2346,6 +2412,7 @@ draw_char6:
         dec     b
         jp      nz, .row
         ret
+    ENDIF
 
         DISPLAY "> the upper block ends at ", /H, $
         ASSERT $ < $BF00
@@ -2358,6 +2425,9 @@ draw_char6:
         DEFINE RASTER_DMA_SPANS         ; long opaque spans are filled by the DMA: see span_dma
 RASTER_DMA_MIN  EQU 96
         INCLUDE "src/inc/raster.inc"
+    IFDEF WIDE320
+        INCLUDE "src/inc/wide.inc"
+    ENDIF
 
 ; The ring is resident in MMU6's page, so nothing needs mapping for it - but from I5 each
 ; voice plays out of its OWN sample page, which does. This runs once per voice, with IX on
@@ -2462,6 +2532,9 @@ probe_draw: db 0            ; 1 = do one draw from DRAW_BLOCK and stop, no VM
         EXPORT stop_draw
 stop_draw:  dw $FFFF        ; refuse the draw once this many have happened; $FFFF = no limit
 saved_mmu0: db 0
+    IFDEF WIDE320
+saved_mmu1: db 0
+    ENDIF
         EXPORT n_video2
 n_video2:   dw 0        ; draws that wanted a video2 segment the part does not have
         EXPORT cin_base
@@ -2678,7 +2751,7 @@ res_page:   ds RES_COUNT    ; the first page of each loaded resource, 0 = absent
 ; as the reference's is.
 ;-----------------------------------------------------------------------------
 SV_HDR          EQU PAGED_WIN + $1000   ; 256 bytes of header, built here before it is written
-SV_BANDS        EQU 24                  ; four Layer 2 pages of six 8K bands
+SV_BANDS        EQU 4 * BANDS           ; four Layer 2 pages of six 8K bands (ten strips in 320x256)
 
 ; save_req carries the mode so that a second byte does not have to exist: the resident block has
 ; four spare and MMU6's last gap has four. Clearing it here rather than in the caller makes the
@@ -3285,7 +3358,11 @@ sv_close:
         db      F_CLOSE
         ret
 
+    IFDEF WIDE320
+sv_magic:   db "AWS2"               ; a 320x256 save: forty strips. Neither build reads the other's.
+    ELSE
 sv_magic:   db "AWS1"
+    ENDIF
 sv_name:    db "AWSAVE.BIN", 0
 sv_src:     dw 0
 sv_left:    dw 0
@@ -4195,6 +4272,7 @@ mus_last_tick:  dw 0
 ; at every blit, and 50.6% of the bytes copied.
 ;-----------------------------------------------------------------------------
 
+    IFNDEF WIDE320                      ; the 320x256 build's are in src/inc/wide.inc
 ; dirty_band - A = a band about to be drawn into, on the page pg_ptr1 names. Keeps AF, BC, DE.
 dirty_band:
         push    af
@@ -4295,6 +4373,7 @@ dt_dirty:       db 0, 0, 0, 0
         ASSERT (dt_dirty & $FF) <= 252   ; dirty_band indexes it by adding to the low byte
 cp_sidx:        db 0
 cp_didx:        db 0
+    ENDIF
 
 ;-----------------------------------------------------------------------------
 ; pace_blit - the pause a script asks for, vm.cpp:285-297, as a deadline carried forward.
@@ -4613,6 +4692,7 @@ mb_stored:      db 0
 ; byte held fixed, so the colour goes into sd_col first. Measured in CSpect the DMA costs about 4 T a
 ; byte against the CPU loop's 11 and about 520 T to programme, so the break-even is near 63 pixels;
 ; 96 leaves room for real hardware being slower than the emulator, which nothing documents.
+    IFNDEF WIDE320                      ; the 320x256 build's spans cannot use the DMA: no stride
 span_dma:
         ld      (sd_col), a
         ld      b, d
@@ -4622,6 +4702,7 @@ span_dma:
         ld      a, 1                    ; a fill
         jp      dma_mem
 sd_col:         db 0
+    ENDIF
 
 ; aw_copy_page lives up here with the copper code, out of the resident block: only the C's jump
 ; table calls it, and nothing it touches cares where it runs from.
@@ -4670,7 +4751,14 @@ aw_copy_page:
         ld      d, BANDS
         ld      e, 0
 .cband:
+    IFDEF WIDE320
+        ld      hl, (cp_mask)           ; ten strips: dt_copy_mask left a word (src/inc/wide.inc)
+        srl     h
+        rr      l
+        ld      (cp_mask), hl
+    ELSE
         srl     b                       ; dt_copy_mask left the band mask in B
+    ENDIF
         jr      nc, .cskip
         ld      a, (cp_src)
         add     a, e
@@ -4938,7 +5026,11 @@ pal_name:   db "PAL17.BIN", 0
 poly_name:  db "RES19.BIN", 0
 nm_res:     db "RES", 0
 nm_pal:     db "PAL", 0
+    IFDEF WIDE320
+nm_bmp:     db "BMW", 0             ; the 320x256 build's bitmaps: column-major, 81,920 bytes (mkassets.py)
+    ELSE
 nm_bmp:     db "BMP", 0
+    ENDIF
 nm_tail:    db ".BIN", 0
         ASSERT $ <= VEC_TRAMP
         DISPLAY "> pitches at ", /H, SND_FREQ, ", leaf log to ", /H, $
@@ -5169,11 +5261,14 @@ l2_display:
         nextreg NR_TURBO, 3                         ; 28 MHz - folded in from the boot path,
                                                     ; which had three resident bytes left and
                                                     ; needed three for the call. Same order.
-        nextreg NR_L2_CFG, 0                        ; 256x192, 8bpp
-        nextreg NR_L2_BANK, L2_BASE_BANK + 2 * 3    ; pg_ptr2 starts at 2
+        nextreg NR_L2_CFG, L2_CFG                   ; 256x192 or 320x256, 8bpp
+        nextreg NR_L2_BANK, L2_BASE_BANK + 2 * L2_PAGE_BANKS    ; pg_ptr2 starts at 2
         ld      bc, L2_PORT
         ld      a, L2_VISIBLE
         out     (c), a
+    IFDEF WIDE320
+        call    wide_display            ; the picture's 200 rows in the middle of the 256
+    ENDIF
     IFDEF DIAG_BORDER
         call    diag_palette
     ENDIF
@@ -5223,7 +5318,11 @@ auto_47:    db 0
 
         ; I4's font and dictionary, in bank 0's second half. Mapped at MMU2 during text.
         ORG FONT6_AT
+    IFDEF WIDE320
+        INCBIN  "preflight/hostprobe/probe/font.bin"    ; the engine's own 8x8 font, 768 bytes
+    ELSE
         INCBIN  "build/font6.bin"
+    ENDIF
         ASSERT $ <= STR_INDEX_AT
         ORG STR_INDEX_AT
         INCLUDE "build/strings.inc"
@@ -5289,7 +5388,11 @@ card_jp_hl:
         DISPLAY "> the C is ", /D, $ - CC_ORG, " bytes at ", /H, CC_ORG
         ASSERT $ < VEC_TABLE
 
+    IFDEF WIDE320
+        SAVENEX OPEN "build/aw320.nex", start, $BF00
+    ELSE
         SAVENEX OPEN "build/aw.nex", start, $BF00
+    ENDIF
         SAVENEX CORE 3, 0, 0
         SAVENEX CFG  0, 0, 0, 1
         SAVENEX AUTO

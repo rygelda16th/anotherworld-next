@@ -19,13 +19,17 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp                       # noqa: E402
-from refvideo import RefVideo8              # noqa: E402
+from refvideo import RefVideo8, RefVideo320  # noqa: E402
+
+# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W3) - the engine's 8x8 font, no scale, a page of
+# ten 8K column strips.
+WIDE = bool(os.environ.get("AW_WIDE"))
 from mkstrings import ENTRY, unescape       # noqa: E402
 
-NEX = "build/aw.nex"
-EXP_ASM, EXP_C = "build/aw.exp", "build/aw_vm_c.exp"
+NEX = "build/aw320.nex" if WIDE else "build/aw.nex"
+EXP_ASM, EXP_C = ("build/aw320.exp" if WIDE else "build/aw.exp"), "build/aw_vm_c.exp"
 STR_BLOCK = 0xC3A0
-W, H = 256, 192
+W, H = (320, 200) if WIDE else (256, 192)
 PAGE = W * H
 NR_MMU7, DWIN = 0x57, 0xE000
 
@@ -77,7 +81,7 @@ def ref_draw_string(v, font, colour, cx, y, s):
 
 def main():
     sym = symbols(EXP_ASM, EXP_C)
-    font = open("build/font6.bin", "rb").read()
+    font = open("preflight/hostprobe/probe/font.bin" if WIDE else "build/font6.bin", "rb").read()
     tbl = strings()
     z = Zrcp()
     print(f"emulator: {z.cmd('get-version')}")
@@ -111,14 +115,16 @@ def main():
                 break
             time.sleep(0.05)
         got = bytearray()
-        for band in range(6):
+        for band in range(10 if WIDE else 6):
             z.cmd(f"tbblue-set-register {NR_MMU7} {24 + band}")
             got += read(DWIN, 8192)
+        if WIDE:
+            got = bytes(got[x * 256 + y] for y in range(H) for x in range(W))
         got = bytes(got[:PAGE])
         n_str = int.from_bytes(read(sym["n_str"], 2), "little")
         miss = int.from_bytes(read(sym["n_str_miss"], 2), "little")
 
-        v = RefVideo8()
+        v = RefVideo320() if WIDE else RefVideo8()
         v.cur1 = 0
         ref_draw_string(v, font, colour, cx, y, s)
         want = bytes(v.pages[0])
