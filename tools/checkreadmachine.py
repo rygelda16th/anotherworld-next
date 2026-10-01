@@ -23,15 +23,19 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp  # noqa: E402
-from refvideo import RefVideo8, read_trace  # noqa: E402
+from refvideo import RefVideo8, RefVideo320, read_trace  # noqa: E402
 
-NEX, EXP = "build/polytest.nex", "build/polytest.exp"
+# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W2): no scale, ten 8K column strips.
+WIDE = bool(os.environ.get("AW_WIDE"))
+REF = RefVideo320 if WIDE else RefVideo8
+
+NEX, EXP = ("build/polytest320.nex", "build/polytest320.exp") if WIDE else ("build/polytest.nex", "build/polytest.exp")
 PROBE = "preflight/hostprobe/probe"
-W, H = 256, 192
-BANDS, BAND_BYTES = 6, 8192
+W, H = (320, 200) if WIDE else (256, 192)
+BANDS, BAND_BYTES = (10 if WIDE else 6), 8192
 PAGE0_SEED = 0x0B
 L2_BASE_BANK, DST_PAGE = 12, 1
-DST_P0 = (L2_BASE_BANK + DST_PAGE * 3) * 2
+DST_P0 = (L2_BASE_BANK + DST_PAGE * (5 if WIDE else 3)) * 2
 NR_MMU3, NR_MMU0 = 0x53, 0x50
 # Stage the poke through the READER'S OWN window at $0000, not through $C000.
 # $C000 is where the program's generated tables and the draw list live, so paging
@@ -91,7 +95,7 @@ def main():
           f"other than the identity")
 
     # ---- what the reference produces ------------------------------------
-    ref = RefVideo8()
+    ref = REF()
     for i in range(ref.PAGE):
         ref.pages[0][i] = PAGE0_SEED
     ref.cur1 = 1
@@ -105,7 +109,7 @@ def main():
 
     def render(n, plimit=0):
         """The reference's page 1 after n draws, at most plimit polygons."""
-        r = RefVideo8()
+        r = REF()
         r.reader_limit = plimit
         for k in range(r.PAGE):
             r.pages[0][k] = PAGE0_SEED
@@ -166,6 +170,8 @@ def main():
                 chunk += bytes.fromhex(raw)
                 addr += k
             page += chunk[:BAND_BYTES]
+        if WIDE:
+            page = bytes(page[x * 256 + y] for y in range(H) for x in range(W))
         return bytes(page), bad, deep
 
     got, bad, deep = run(len(draws))
@@ -259,7 +265,7 @@ def main():
     # number the machine stops with it in rd_record, so it can be compared
     # against the reference's own call - which says which field is wrong rather
     # than which pixels are.
-    class Rec(RefVideo8):
+    class Rec(REF):
         def __init__(self):
             super().__init__()
             self.calls = []
@@ -272,7 +278,7 @@ def main():
     # The inputs, before any geometry: which record did the reader reach, with what
     # colour and centre? A wrong field in a built record and a wrong record
     # entirely look identical from the pixels.
-    class Inp(RefVideo8):
+    class Inp(REF):
         def __init__(self):
             super().__init__()
             self.inputs = []

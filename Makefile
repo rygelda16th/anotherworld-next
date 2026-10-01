@@ -582,6 +582,22 @@ measure-wide320: $(INTRO_REF)/trace.bin
 check-wide: $(INTRO_REF)/trace.bin
 	python3 tools/checkwide.py $(INTRO_REF) $(INTRO_BLITS)
 
+# W2 of docs/plan-wide320.md: Gate C in the 320x256 build - the same coverage polygons, unscaled,
+# drawn by raster.inc under WIDE320 and compared with RefVideo320, pixel for pixel.
+check-poly320: | $(BUILD)
+	python3 tools/mktables.py $(BUILD)/interp.inc
+	python3 tools/mkcsteps.py $(BUILD)/csteps.inc $(BUILD)/csteps.txt
+	AW_WIDE=1 python3 tools/mkpolytest.py $(TRACE) $(BUILD)/polytest320.inc $(BUILD)/expected320.bin
+	$(RUN) sjasmplus --zxnext=cspect --fullpath -DWIDE320 --exp=$(BUILD)/polytest320.exp \
+		--lst=$(BUILD)/polytest320.lst src/polytest.asm
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; AW_WIDE=1 python3 tools/checkpoly.py'
+
+# W2, the reader on the machine in the 320x256 build: real draws from the engine's trace, unscaled.
+check-readmachine320: check-poly320
+	@$(RUN) sh -c '$(ZESARUX) >/tmp/z.log 2>&1 & \
+		sleep 3; AW_WIDE=1 python3 tools/checkreadmachine.py'
+
 # W0 of docs/plan-wide320.md: the sound interrupt's share of the machine, sampled in ZEsarUX, for the
 # intro (part index 1) and two gameplay parts with the synthetic player, at the reference runs' seeds.
 measure-wide320-isr: asm

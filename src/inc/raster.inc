@@ -328,6 +328,7 @@ poly_draw:
         ld      a, h
         or      a
         jp      nz, .step               ; above the top edge: step, do not draw
+    IFNDEF WIDE320
         ld      e, l                    ; E = y, 0..191, for band and address
 
         ; sx1 = the integer half of cpt1 (IX), clipped to 0
@@ -392,6 +393,84 @@ poly_draw:
         ld      e, a
         ld      d, 0
         inc     de                      ; DE = 1..256
+    ELSE
+        ; 320x256 (docs/plan-wide320.md W2). The same clip, at 320: x1 above 319 or x2 below 0 is
+        ; nothing; x1 below 0 clamps to 0 and x2 above 319 to 319. The memory runs down the columns,
+        ; so the 8K page is the STRIP x1 >> 5, the address DWIN + ((x1 & 31) << 8) + y, and the
+        ; fill crosses a strip every 32 columns (span_opaque's .seg).
+        ld      a, l
+        ld      (.wy + 1), a            ; y, 0..199, for the address
+        ; sx1 = IX, clipped
+        ld      a, ixh
+        bit     7, a
+        jr      z, .w1pos
+        ld      bc, 0                   ; negative: clamp left
+        jr      .w1ok
+.w1pos: cp      2
+        jp      nc, .step               ; 512 or more: nothing visible
+        ld      b, a
+        ld      c, ixl
+        or      a
+        jr      z, .w1ok
+        ld      a, c
+        cp      SCR_W - 256
+        jp      nc, .step               ; 320..511: nothing visible
+.w1ok:
+        ; sx2 = IY, clipped
+        ld      a, iyh
+        bit     7, a
+        jp      nz, .step               ; negative: nothing visible
+        ld      d, a
+        ld      e, iyl
+        cp      2
+        jr      nc, .w2clamp
+        or      a
+        jr      z, .w2ok
+        ld      a, e
+        cp      SCR_W - 256
+        jr      c, .w2ok
+.w2clamp:
+        ld      de, SCR_W - 1
+.w2ok:
+        ; crossed edges: the original's drawLine takes the minimum and the maximum
+        ld      h, d
+        ld      l, e
+        or      a
+        sbc     hl, bc                  ; x2 - x1
+        jr      nc, .wordered
+        ld      h, b
+        ld      l, c
+        ld      b, d
+        ld      c, e
+        ex      de, hl                  ; swapped: BC = the smaller, DE = the larger
+        ld      h, d
+        ld      l, e
+        or      a
+        sbc     hl, bc
+.wordered:
+        inc     hl
+        ex      de, hl                  ; DE = the length, 1..320
+        ; the strip, x1 >> 5: (x1h << 3) | (x1l >> 5)
+        ld      a, b
+        add     a, a
+        add     a, a
+        add     a, a
+        ld      h, a
+        ld      a, c
+        rlca
+        rlca
+        rlca
+        and     7
+        or      h
+.bcmp:  cp      0
+        call    nz, band_set
+.band_ok:
+        ld      a, c
+        and     31
+        add     a, DWIN >> 8
+        ld      h, a
+.wy:    ld      l, 0                    ; y (patched above)
+    ENDIF
 .colour:
         ld      a, 0                    ; p_colour (patched once a polygon)
         ; A LOCAL label. As a global one it reparented every local label after it
@@ -577,6 +656,14 @@ mul_hl_a:
         ld      h, b
         ret
 
+    IFDEF WIDE320
+; 320x256 HAS NO SCALE: the original's coordinates are the screen's (docs/plan-wide320.md W2).
+scale_ux:
+scale_uy:
+scale_sx:
+scale_sy:
+        ret
+    ELSE
 scale_ux:
         ld      a, X_MUL
         jp      mul_hl_a
@@ -614,6 +701,7 @@ scale_s_neg:
         sub     h
         ld      h, a
         ret
+    ENDIF
 
 ;-----------------------------------------------------------------------------
 ; poly_read - one record, recursive. All of its state is in memory because of
@@ -744,6 +832,22 @@ poly_read:
         ld      hl, (rd_src)
         ld      bc, rd_record + 10
 .fast_pt:
+    IFDEF WIDE320
+        ld      a, (hl)                 ; no scale at all: the byte is the coordinate
+        inc     hl
+        ld      (bc), a
+        inc     bc
+        xor     a
+        ld      (bc), a
+        inc     bc
+        ld      a, (hl)
+        inc     hl
+        ld      (bc), a
+        inc     bc
+        xor     a
+        ld      (bc), a
+        inc     bc
+    ELSE
         ld      d, (hl)
         inc     hl
         ld      e, X_MUL
@@ -764,6 +868,7 @@ poly_read:
         xor     a
         ld      (bc), a
         inc     bc
+    ENDIF
         ld      a, (rd_n)
         dec     a
         ld      (rd_n), a
@@ -804,6 +909,29 @@ poly_read:
 
 ; D = the byte, E = the zoom, A = the scale; stores the scaled coordinate as a word at BC.
 .zscale:
+    IFDEF WIDE320
+        ; no scale: R = (b * zoom) >> 6 is the coordinate. R's low byte is D's six low bits over E's
+        ; two high ones, its high byte D's two high bits.
+        mul     d, e                    ; DE = b * zoom
+        ld      a, e
+        rlca
+        rlca
+        and     3                       ; E >> 6
+        ld      e, a
+        ld      a, d
+        add     a, a
+        add     a, a                    ; D << 2, low byte
+        or      e
+        ld      (bc), a
+        inc     bc
+        ld      a, d
+        rlca
+        rlca
+        and     3                       ; D >> 6
+        ld      (bc), a
+        inc     bc
+        ret
+    ELSE
         ld      (.zm1 + 1), a
         ld      (.zm2 + 1), a
         mul     d, e                    ; DE = b * zoom
@@ -833,6 +961,7 @@ poly_read:
         ld      (bc), a
         inc     bc
         ret
+    ENDIF
 .each_pt:
         call    .next_byte
         call    zoom_byte
@@ -1059,6 +1188,7 @@ poly_read:
 ; No end masking at all: at one byte a pixel every span is whole bytes, which is
 ; the masking the 4bpp original needs at both ends of all three of these.
 ;-----------------------------------------------------------------------------
+    IFNDEF WIDE320
 span_opaque:
         and     $0F                     ; index in the low nibble, top clear
     IFDEF RASTER_DMA_SPANS
@@ -1156,6 +1286,130 @@ copy_jp:
 copy_end:
         ret
 
+    ELSE
+; THE 320x256 FILLS (docs/plan-wide320.md W2). HL = the first pixel, DE = the length 1..320, A = the
+; colour. A strip is 32 columns, one 8K page at DWIN: `inc h` is the next column, and when H leaves
+; the window the next strip is mapped through band_set and H goes back to its top. WIN_END is the
+; high byte one past the window - 0 when DWIN is $E000, so `sub h` is the room left.
+WIN_END         EQU ((DWIN >> 8) + 32) & $FF
+
+span_opaque:
+        and     $0F
+        ld      c, a                    ; C = the colour for the whole span
+.seg:   ld      a, WIN_END
+        sub     h                       ; room in this strip, 1..32
+        ld      b, a
+        ld      a, d
+        or      a
+        jr      nz, .full
+        ld      a, e
+        cp      b
+        jr      c, .last                ; fewer than the room: the last piece
+        jr      z, .last                ; exactly the room: the last piece, no next strip
+.full:  ld      a, e                    ; DE -= room
+        sub     b
+        ld      e, a
+        jr      nc, .nb
+        dec     d
+.nb:    ld      a, b
+        call    opaque_run
+        call    next_strip
+        jr      .seg
+.last:  ld      a, e
+opaque_run:                             ; A = pixels, 1..32. Keeps BC and DE.
+        add     a, a                    ; two bytes a pixel
+        push    de
+        ld      e, a
+        ld      d, 0
+        push    hl
+        ld      hl, opaque_end
+        or      a
+        sbc     hl, de
+        ld      (.jp + 1), hl
+        pop     hl
+        pop     de
+.jp:    jp      0
+        DUP 32
+        ld      (hl), c
+        inc     h
+        EDUP
+opaque_end:
+        ret
+
+span_blend:
+.seg:   ld      a, WIN_END
+        sub     h
+        ld      b, a
+        ld      a, d
+        or      a
+        jr      nz, .full
+        ld      a, e
+        cp      b
+        jr      c, .last
+        jr      z, .last
+.full:  ld      a, e
+        sub     b
+        ld      e, a
+        jr      nc, .nb
+        dec     d
+.nb:    ld      a, b
+        call    blend_run
+        call    next_strip
+        jr      .seg
+.last:  ld      a, e
+blend_run:                              ; A = pixels, 1..32. Keeps BC and DE.
+        ld      b, a
+        add     a, a
+        add     a, b                    ; three bytes a pixel
+        push    de
+        ld      e, a
+        ld      d, 0
+        push    hl
+        ld      hl, blend_end
+        or      a
+        sbc     hl, de
+        ld      (.jp + 1), hl
+        pop     hl
+        pop     de
+.jp:    jp      0
+        DUP 32
+        set     3, (hl)
+        inc     h
+        EDUP
+blend_end:
+        ret
+
+; Colour above 0x10: page 0's pixel at the same place, through SWIN, which band_set maps to the same
+; strip of page 0. A pixel at a time: 0.1% of the intro's pixels are drawn this way.
+span_copy:
+        ld      a, h
+        sub     (DWIN - SWIN) >> 8
+        ld      b, a
+        ld      c, l
+        ld      a, (bc)
+        ld      (hl), a
+        inc     h
+        ld      a, h
+        cp      WIN_END
+        call    z, next_strip
+        dec     de
+        ld      a, d
+        or      e
+        jr      nz, span_copy
+        ret
+
+; next_strip - the span carries on into the strip to the right: map it, and H back to the
+; window's top. Keeps BC, DE and L.
+next_strip:
+        push    hl
+        ld      a, (cur_band)
+        inc     a
+        call    band_set
+        pop     hl
+        ld      h, DWIN >> 8
+        ret
+
+    ENDIF
 ;-----------------------------------------------------------------------------
 ; draw_point - the degenerate polygon. Video::drawPoint, at one byte a pixel.
 ;-----------------------------------------------------------------------------
@@ -1204,6 +1458,29 @@ draw_point:
         bit     7, h
         ret     nz
 
+    IFDEF WIDE320
+        ; 320x256: the strip is x >> 5 and the address DWIN + ((x & 31) << 8) + y
+        ld      a, (p_ptx + 1)
+        add     a, a
+        add     a, a
+        add     a, a
+        ld      e, a
+        ld      a, (p_ptx)
+        rlca
+        rlca
+        rlca
+        and     7
+        or      e
+        ld      hl, cur_band
+        cp      (hl)
+        call    nz, band_set
+        ld      a, (p_ptx)
+        and     31
+        add     a, DWIN >> 8
+        ld      h, a
+        ld      a, (p_pty)
+        ld      l, a
+    ELSE
         ld      a, (p_pty)
         ld      e, a
         ; y >> 5, the 8K band. THREE RLCA, not RRCA: rotating a byte right
@@ -1229,6 +1506,7 @@ draw_point:
         ld      h, a
         ld      a, (p_ptx)
         ld      l, a
+    ENDIF
 
         ld      a, (p_colour)
         cp      $10

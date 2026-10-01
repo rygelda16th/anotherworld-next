@@ -25,6 +25,19 @@
 
         DEVICE ZXSPECTRUMNEXT
 
+    IFDEF WIDE320
+; The 320x256 build (docs/plan-wide320.md W2): five banks a page, ten 8K strips of 32 columns.
+SCR_W           EQU 320
+SCR_H           EQU 200
+L2_BASE_BANK    EQU 12
+BANDS           EQU 10
+DST_PAGE        EQU 1
+SRC_PAGE        EQU 0
+DST_P0          EQU (L2_BASE_BANK + DST_PAGE * 5) * 2
+SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * 5) * 2
+L2_CFG          EQU %00010000           ; NextReg $70: 320x256, 8bpp
+L2_BANKS        EQU 5
+    ELSE
 SCR_W           EQU 256
 SCR_H           EQU 192
 L2_BASE_BANK    EQU 12                  ; page 0 = banks 12,13,14
@@ -33,6 +46,9 @@ DST_PAGE        EQU 1                   ; draw into Layer 2 page 1
 SRC_PAGE        EQU 0                   ; fill mode 0x11 copies from page 0
 DST_P0          EQU (L2_BASE_BANK + DST_PAGE * 3) * 2
 SRC_P0          EQU (L2_BASE_BANK + SRC_PAGE * 3) * 2
+L2_CFG          EQU 0                   ; NextReg $70: 256x192, 8bpp
+L2_BANKS        EQU 3
+    ENDIF
 DWIN            EQU $6000               ; MMU3: the destination band
 SWIN            EQU $4000               ; MMU2: the source band, copy mode only
 NR_MMU0         EQU $50
@@ -56,8 +72,8 @@ start:
         di
         ld      sp, $BF00
         nextreg NR_TURBO, 3
-        nextreg NR_L2_CFG, 0            ; 256x192, 8bpp
-        nextreg NR_L2_BANK, L2_BASE_BANK + DST_PAGE * 3
+        nextreg NR_L2_CFG, L2_CFG
+        nextreg NR_L2_BANK, L2_BASE_BANK + DST_PAGE * L2_BANKS
         ld      bc, L2_PORT
         ld      a, L2_VISIBLE
         out     (c), a
@@ -292,10 +308,18 @@ rd_log:         ds 8 * RD_LOG_RECS       ; off, colour, ptx, pty per leaf, as re
         ALIGN 2
         INCLUDE "build/csteps.inc"
         INCLUDE "build/interp.inc"
+    IFDEF WIDE320
+        INCLUDE "build/polytest320.inc"
+    ELSE
         INCLUDE "build/polytest.inc"
+    ENDIF
 
         ASSERT $ < $FF00
+    IFDEF WIDE320
+        SAVENEX OPEN "build/polytest320.nex", start, $BF00
+    ELSE
         SAVENEX OPEN "build/polytest.nex", start, $BF00
+    ENDIF
         SAVENEX CORE 3, 0, 0
         SAVENEX CFG  0, 0, 0, 1
         SAVENEX AUTO

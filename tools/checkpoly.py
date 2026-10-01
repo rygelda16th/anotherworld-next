@@ -22,18 +22,21 @@ import struct
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zrcp import Zrcp  # noqa: E402
-from refvideo import RefVideo8  # noqa: E402
+from refvideo import RefVideo8, RefVideo320  # noqa: E402
 
-NEX = "build/polytest.nex"
-EXP = "build/polytest.exp"
-EXPECTED = "build/expected.bin"
-W, H = 256, 192
-BANDS = 6
+# AW_WIDE=1: the 320x256 build (docs/plan-wide320.md W2). Its page is ten 8K strips of 32 columns,
+# column-major (x * 256 + y), and is turned back into 320x200 rows before it is compared.
+WIDE = bool(os.environ.get("AW_WIDE"))
+NEX = "build/polytest320.nex" if WIDE else "build/polytest.nex"
+EXP = "build/polytest320.exp" if WIDE else "build/polytest.exp"
+EXPECTED = "build/expected320.bin" if WIDE else "build/expected.bin"
+W, H = (320, 200) if WIDE else (256, 192)
+BANDS = 10 if WIDE else 6
 BAND_BYTES = 8192
 PAGE0_SEED = 0x0B
 L2_BASE_BANK = 12
 DST_PAGE = 1
-DST_P0 = (L2_BASE_BANK + DST_PAGE * 3) * 2      # first 8K page of the target
+DST_P0 = (L2_BASE_BANK + DST_PAGE * (5 if WIDE else 3)) * 2      # first 8K page of the target
 NR_MMU3 = 0x53
 WIN = 0x6000
 
@@ -102,8 +105,7 @@ def load_polys(path):
 
 def render(polys, limit, seed):
     """The reference's page 1 after drawing the first `limit` polygons."""
-    from refvideo import RefVideo8
-    v = RefVideo8()
+    v = RefVideo320() if WIDE else RefVideo8()
     for i in range(v.PAGE):
         v.pages[0][i] = seed
     v.cur1 = 1
@@ -135,6 +137,8 @@ def run_machine(z, sym, limit, settle=4.0):
             chunk += bytes(int(raw[i:i + 2], 16) for i in range(0, len(raw), 2))
             addr += n
         got += chunk[:BAND_BYTES]
+    if WIDE:
+        return bytes(got[x * 256 + y] for y in range(H) for x in range(W))
     return bytes(got)
 
 
@@ -195,7 +199,7 @@ def main():
         raise SystemExit(f"{EXPECTED} is {len(want)} bytes, expected {W*H}")
     sym = symbols(EXP)
 
-    polys = load_polys("build/polytest.txt")
+    polys = load_polys("build/polytest320.txt" if WIDE else "build/polytest.txt")
     z = Zrcp()
     print(f"emulator: {z.cmd('get-version')}")
     # The unit test runs before the draw, so check it before believing any pixel.
