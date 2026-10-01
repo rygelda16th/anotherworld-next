@@ -30,6 +30,12 @@ bytecode segment mapped there). It reports:
 setup entirely. `AWPROBE_MAX` caps the number of one-second reports before the plugin
 quits the emulator, so an unattended run cleans up after itself.
 
+The low-window execution traps (a jump into data at `$0000`-`$3FFF`) are off unless
+`AWPROBE_LOWTRAP=<hex clear_code>:<hex load_code's rst $08>` is set, with both addresses taken
+from the build's `.exp`. They were hard-coded once, and the code moved under them: in the
+320x256 build they landed in the input code, the probe armed at once, counted esxDOS's own
+`RST $08` as faults and quit CSpect after 24 file calls.
+
 ## The speed tool
 
     python3 tools/cspect/speed.py --blits 2613

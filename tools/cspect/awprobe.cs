@@ -36,7 +36,14 @@ namespace AWProbe
         // machine running inside the bytecode window, which is MMU0/MMU1 at $0000-$3FFF - not
         // ROM. Trapping execution of every address in that window catches the jump into data on
         // its FIRST instruction, with the stack still holding whatever put it there.
+        //
+        // OPT-IN, AWPROBE_LOWTRAP=<hex arm>:<hex mark> (clear_code and load_code's rst $08, from the
+        // .exp). They were hard-coded as $8731 and $876E, which the code moved under: in the 320x256
+        // build they are the input code, run every frame, so the probe armed at once, counted
+        // esxDOS's own RST $08 at $0008 as faults and quit CSpect after 24 file calls (the Pi card's
+        // upload; found by the GUS session, 2026-10-01). Unset, there are no low-window traps at all.
         const int WIN_TOP = 0x4000;
+        int lowArm = -1, lowMark = -1;
         bool off = false;
         int goAddr = 0;
         int blitAddr = 0, blitAt = 0; bool blitDumped = false;
@@ -117,15 +124,22 @@ namespace AWProbe
             if (!string.IsNullOrEmpty(pf)) { var q = pf.Split(':'); profLo = int.Parse(q[0]); profHi = int.Parse(q[1]); }
             string va = Environment.GetEnvironmentVariable("AWPROBE_VOICES");
             if (!string.IsNullOrEmpty(va)) voicesAddr = Convert.ToInt32(va, 16);
+            string lt = Environment.GetEnvironmentVariable("AWPROBE_LOWTRAP");
+            if (!string.IsNullOrEmpty(lt))
+            {
+                string[] q = lt.Split(':');
+                lowArm = Convert.ToInt32(q[0], 16);
+                lowMark = q.Length > 1 ? Convert.ToInt32(q[1], 16) : -1;
+            }
             string m = Environment.GetEnvironmentVariable("AWPROBE_MAX");
             if (!string.IsNullOrEmpty(m)) int.TryParse(m, out maxReports);
             log.WriteLine("# AWProbe up");
             sw.Start();
 
             var io = new List<sIO>();
-            for (int a = 0; a < WIN_TOP; a++) io.Add(new sIO(a, eAccess.Memory_EXE, 0, 0));
             // Arm only once our own code is running: the NEX loader and the ROM execute the
             // low window legitimately before that, and those hits are not the fault.
+            if (lowArm >= 0) for (int a = 0; a < WIN_TOP; a++) io.Add(new sIO(a, eAccess.Memory_EXE, 0, 0));
             if (nrReg >= 0) io.Add(new sIO(nrReg, eAccess.NextReg_Write, 2, 0));
             if (textWatch) for (int a = 0xE000; a < 0xEE00; a++) io.Add(new sIO(a, eAccess.Memory_Write, 4, 0));
             // THE PROFILER SAMPLES AT THE IM2 TRAMPOLINE, from an execution trap: with the copper
@@ -134,8 +148,8 @@ namespace AWProbe
             // interrupted, so it is the word at SP.
             if (profLo >= 0) io.Add(new sIO(0xCECE, eAccess.Memory_EXE, 3, 0));
             for (int a = stackLo; stackHi != 0 && a < stackHi; a++) io.Add(new sIO(a, eAccess.Memory_Write, 1, 0));
-            io.Add(new sIO(0x8731, eAccess.Memory_EXE, 0, 0));   // clear_code
-            io.Add(new sIO(0x876E, eAccess.Memory_EXE, 0, 0));   // load_code's rst $08
+            if (lowArm >= 0) io.Add(new sIO(lowArm, eAccess.Memory_EXE, 0, 0));    // clear_code
+            if (lowMark >= 0) io.Add(new sIO(lowMark, eAccess.Memory_EXE, 0, 0));  // load_code's rst $08
             return io;
         }
 
@@ -331,8 +345,9 @@ namespace AWProbe
                 }
                 return 0;
             }
-            if (_p == 0x8731) { if (!armed) log.WriteLine("# armed at clear_code"); armed = true; return 0; }
-            if (_p == 0x876E) { log.WriteLine("# load_code rst $08 reached"); return 0; }
+            if (lowArm < 0) return 0;
+            if (_p == lowArm) { if (!armed) log.WriteLine("# armed at clear_code"); armed = true; return 0; }
+            if (_p == lowMark) { log.WriteLine("# load_code rst $08 reached"); return 0; }
             if (!armed || _p >= WIN_TOP || trapped >= 24) return 0;
 
             Z80Regs r = CSpect.GetRegs();
