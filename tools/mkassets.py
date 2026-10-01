@@ -110,6 +110,18 @@ def resample(px):
     return out
 
 
+def columns(px):
+    """320x200 indexed -> Layer 2's 320x256 layout: column x is 256 bytes at x * 256, rows 0-199
+    the picture's and 200-255 zero. 81,920 bytes, ten 8K strips, so the machine copies it straight
+    into a screen page (docs/plan-wide320.md, W1)."""
+    out = bytearray(SRC_W * 256)
+    for y in range(SRC_H):
+        row = y * SRC_W
+        for x in range(SRC_W):
+            out[x * 256 + y] = px[row + x]
+    return out
+
+
 def main():
     data_dir = sys.argv[1] if len(sys.argv) > 1 else "data"
     out_dir = sys.argv[2] if len(sys.argv) > 2 else "build/assets"
@@ -193,6 +205,8 @@ def main():
         print(f"  res 0x{e['id']:02X} -> {os.path.basename(path)}  "
               f"{len(small):,} bytes  ({DST_W}x{DST_H}, "
               f"{len(used)} of 16 indices used)")
+        # and the 320x256 build's copy, unscaled: BMPnn.WID
+        open(os.path.join(out_dir, f"BMP{e['id']:02X}.WID"), "wb").write(bytes(columns(px)))
 
     # ---- every other resource, decompressed and flat ---------------------
     # Phase D's decision: the Next never runs byte-killer. Decoding here trades

@@ -742,3 +742,50 @@ class RefVideo8(RefVideo):
     def fill_polygon_scaled(self, colour, ptx, pty, bbw, bbh, points):
         """Scale a polygon out of 320x200 space and draw it. See scale_record."""
         return self.fill_polygon(colour, *self.scale_record(ptx, pty, bbw, bbh, points))
+
+
+class RefVideo320(RefVideo8):
+    """320x200, one byte a pixel, NO SCALE: what Layer 2's 320x256 mode holds (docs/plan-wide320.md).
+
+    The engine's own geometry at RefVideo8's depth. The span loops, points, fills and copies are
+    RefVideo8's - they are written against W, H and STRIDE - so only three things change: the
+    geometry, the scale (none, so the one-row rule has nothing to do), and the text, which goes back
+    to the engine's own 8x8 font in forty cells of eight pixels (video.cpp:299-330), because there is
+    room for it at last.
+
+    This is the layout of the PICTURE, row-major, so it compares against RefVideo directly. The
+    machine's memory is column-major (x * 256 + y); tools/checkdraw.py turns one into the other.
+    """
+
+    W, H = 320, 200
+    STRIDE = 320
+    PAGE = 320 * 200
+    PPB = 1
+
+    @staticmethod
+    def _scale(v, mul):
+        return v
+
+    @classmethod
+    def scale_record(cls, ptx, pty, bbw, bbh, points):
+        return ptx, pty, bbw, bbh, list(points)
+
+    def _draw_polygon(self, colour, ptx, pty, bbw, bbh, points):
+        self.n_reader_polys = getattr(self, "n_reader_polys", 0) + 1
+        if self.reader_limit and self.n_reader_polys > self.reader_limit:
+            return
+        self.fill_polygon(colour, ptx, pty, bbw, bbh, points)
+
+    def draw_char(self, ch, cx, y, colour, font):
+        """drawChar, video.cpp:299: cx a character cell, y a pixel row, both tested as the engine
+        tests them (x <= 39, y <= 192), eight pixels a glyph row, most significant bit first."""
+        if not (cx <= 39 and y <= 192):
+            return
+        buf = self.pages[self.cur1]
+        ft = (ch - 0x20) * 8
+        for j in range(8):
+            row = font[ft + j]
+            base = (y + j) * self.STRIDE + cx * 8
+            for i in range(8):
+                if row & (0x80 >> i):
+                    buf[base + i] = colour & 0x0F

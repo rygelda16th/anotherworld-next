@@ -576,6 +576,12 @@ measure-wide320: $(INTRO_REF)/trace.bin
 		sleep 3; python3 tools/wide320.py machine $(BUILD)/wide320/coeff.json'
 	python3 tools/wide320.py count $(INTRO_REF)/trace.bin $(BUILD)/wide320/intro.json
 
+# W1 of docs/plan-wide320.md: RefVideo320 - the engine's picture at one byte a pixel, no scale - against
+# RefVideo (Gate A's) at every check-intro blit and the engine's own pages, and the 320x256 bitmaps
+# (BMPnn.WID, from make assets) against the engine's own deplaned pages. Host only.
+check-wide: $(INTRO_REF)/trace.bin
+	python3 tools/checkwide.py $(INTRO_REF) $(INTRO_BLITS)
+
 # W0 of docs/plan-wide320.md: the sound interrupt's share of the machine, sampled in ZEsarUX, for the
 # intro (part index 1) and two gameplay parts with the synthetic player, at the reference runs' seeds.
 measure-wide320-isr: asm
