@@ -10,6 +10,8 @@ page?.bin
 font.bin
 sound.txt
 frames.txt
+# The probe's kept copies (keep/) are dumps of the game too: the intro's segment and its traces.
+preflight/hostprobe/keep/
 # The reference engine is cloned at a pinned commit and patched, never vendored -
 # see preflight/hostprobe/README.md. Both trees are build products.
 preflight/hostprobe/awbi/
