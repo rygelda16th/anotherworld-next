@@ -29,6 +29,10 @@ namespace AwSnd
 {
     public class Probe : iPlugin
     {
+        // CSpect 4's iPlugin asks for these; CSpect 3 never calls them
+        public string GetName() { return "awsnd"; }
+        public string GetDescription() { return "anotherworld-next's awsnd check plugin"; }
+
         iCSpect CSpect;
         StreamWriter log;
         bool off = true;

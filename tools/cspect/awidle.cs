@@ -25,6 +25,10 @@ namespace AwIdle
 {
     public class Probe : iPlugin
     {
+        // CSpect 4's iPlugin asks for these; CSpect 3 never calls them
+        public string GetName() { return "awidle"; }
+        public string GetDescription() { return "anotherworld-next's awidle check plugin"; }
+
         iCSpect CSpect;
         StreamWriter log;
         bool off = true;
