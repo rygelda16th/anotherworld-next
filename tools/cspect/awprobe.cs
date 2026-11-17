@@ -55,9 +55,9 @@ namespace AWProbe
         // report, and once as the ENTER wait is released, so a run that pokes ddma_have to 0 shows
         // the fills that went by the zxnDDMA before the poke and none after.
         int ddmaHave = 0, ddmaN = -1;
-        // AWPROBE_PEEK=<hex addr>:<decimal length> logs those bytes of the CPU's map in every report
-        // (preflight/ddma's bench results).
-        int peekAddr = -1, peekLen = 0;
+        // AWPROBE_PEEK=<hex addr>:<decimal length>[,...] logs those bytes of the CPU's map in every
+        // report, one `# peek@<addr>` line a range (preflight/ddma's bench: its results, its screen).
+        List<int[]> peeks = new List<int[]>();
         int paceTicks = 0, paceBlit = 0, pacePoly = 0, lastBlit = -1;
         StreamWriter pace;
         int streamPlayed = 0, streamAvail = 0;
@@ -108,7 +108,12 @@ namespace AWProbe
                 blitAts.Sort();
             }
             string pe = Environment.GetEnvironmentVariable("AWPROBE_PEEK");
-            if (!string.IsNullOrEmpty(pe)) { var q = pe.Split(':'); peekAddr = Convert.ToInt32(q[0], 16); peekLen = int.Parse(q[1]); }
+            if (!string.IsNullOrEmpty(pe))
+                foreach (var r in pe.Split(','))
+                {
+                    var q = r.Split(':');
+                    peeks.Add(new int[] { Convert.ToInt32(q[0], 16), int.Parse(q[1]) });
+                }
             string dd = Environment.GetEnvironmentVariable("AWPROBE_DDMA");
             if (!string.IsNullOrEmpty(dd)) { var q = dd.Split(':'); ddmaHave = Convert.ToInt32(q[0], 16); ddmaN = Convert.ToInt32(q[1], 16); }
             // AWPROBE_PACE=<ticks>:<n_blit>:<n_poly> writes one line per blit to <log>.pace:
@@ -205,10 +210,10 @@ namespace AWProbe
                 sb.AppendFormat(" ${0:X4}={1:0.0}%", top[i].Key, 100.0 * top[i].Value / samples);
             log.WriteLine(sb.ToString());
             if (ddmaN >= 0) log.WriteLine(DdmaLine());
-            if (peekAddr >= 0)
+            foreach (var pr in peeks)
             {
-                var pk = new System.Text.StringBuilder("# peek");
-                for (int i = 0; i < peekLen; i++) pk.AppendFormat(" {0:X2}", CSpect.Peek((ushort)(peekAddr + i)));
+                var pk = new System.Text.StringBuilder(string.Format("# peek@{0:X4}", pr[0]));
+                for (int i = 0; i < pr[1]; i++) pk.AppendFormat(" {0:X2}", CSpect.Peek((ushort)(pr[0] + i)));
                 log.WriteLine(pk.ToString());
             }
             hist.Clear();

@@ -10,7 +10,8 @@
 ; Each test starts on raster line 0 and reads the line it ends on (NextRegs $1E and $1F), the
 ; guide's own method (zxnddma_compare.asm): a line is 64 us, 1,792 T-states at 28 MHz. Every test
 ; is about 4,096 pixels, inside one frame. The results are words at `results`, line counts, and
-; `checks` holds what the CPU found in memory after the 2D tests (see count). awprobe's AWPROBE_PEEK reads both.
+; `checks` holds what the CPU found in memory after the 2D tests (see count). On a real Next, with
+; no probe to read them, `show` puts both on the screen: one line a test. awprobe's AWPROBE_PEEK reads both.
 ;
 ;   0  nothing                                        the method's own cost
 ;   1  CPU, `ld (hl), a / inc h`, 64 spans of 64      the game's span, unrolled, as raster.inc's
@@ -82,9 +83,138 @@ start:
         ld      de, 64
         ld      b, 64
         call    t_2d_run
+        call    show                    ; the numbers on the ULA screen, for a machine with no probe
         ld      a, $5A
         ld      (ready), a
         jr      $
+
+; THE NUMBERS ON THE SCREEN, so the bench says something on a real Next. One line a test, in its
+; order: the test number, its raster lines, and for the 2D tests (4-9) the two counts from `count` -
+; COLOUR in the spans, and anything set anywhere - which match, and equal the spans' pixels, when
+; the fill wrote what it was told. The ULA, white on black, in its own 8x8 digits (no ROM font).
+show:
+        xor     a
+        out     ($FE), a
+        ld      hl, $4000
+        ld      de, $4001
+        ld      bc, $17FF
+        ld      (hl), a
+        ldir
+        ld      hl, $5800
+        ld      de, $5801
+        ld      bc, $02FF
+        ld      (hl), $47               ; bright white ink, black paper
+        ldir
+        ld      a, 0
+.test:  ld      (s_row), a
+        xor     a
+        ld      (s_col), a
+        ld      a, (s_row)
+        call    putd
+        ld      a, (s_row)
+        add     a, a
+        ld      e, a
+        ld      d, 0
+        ld      hl, results
+        add     hl, de
+        call    put5                    ; its lines
+        ld      a, (s_row)
+        sub     4
+        jr      c, .next                ; 0-3: no counts
+        add     a, a
+        add     a, a
+        ld      e, a
+        ld      d, 0
+        ld      hl, checks
+        add     hl, de
+        push    hl
+        call    put5                    ; COLOUR in the spans
+        pop     hl
+        inc     hl
+        inc     hl
+        call    put5                    ; set anywhere
+.next:  ld      a, (s_row)
+        inc     a
+        cp      10
+        jr      nz, .test
+        ret
+
+; the word at (HL) as five decimal digits, after a space
+put5:
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        ex      de, hl
+        ld      a, (s_col)
+        inc     a
+        ld      (s_col), a
+        ld      de, 10000
+        call    .digit
+        ld      de, 1000
+        call    .digit
+        ld      de, 100
+        call    .digit
+        ld      de, 10
+        call    .digit
+        ld      a, l
+        jp      putd
+.digit: xor     a
+.sub:   or      a
+        sbc     hl, de
+        jr      c, .done
+        inc     a
+        jr      .sub
+.done:  add     hl, de
+        push    hl
+        call    putd
+        pop     hl
+        ret
+
+; digit A at (s_row, s_col), and s_col on by one
+putd:
+        add     a, a
+        add     a, a
+        add     a, a
+        ld      e, a
+        ld      d, 0
+        ld      hl, digits
+        add     hl, de                  ; HL = its eight rows
+        ld      a, (s_row)
+        and     $18
+        or      $40
+        ld      d, a                    ; D = the screen third
+        ld      a, (s_row)
+        and     7
+        rrca
+        rrca
+        rrca
+        ld      e, a
+        ld      a, (s_col)
+        or      e
+        ld      e, a                    ; DE = the cell's top line
+        ld      b, 8
+.line:  ld      a, (hl)
+        ld      (de), a
+        inc     hl
+        inc     d
+        djnz    .line
+        ld      hl, s_col
+        inc     (hl)
+        ret
+
+s_row:      db 0
+s_col:      db 0
+digits:
+        db      $3C, $66, $6E, $76, $66, $66, $3C, 0
+        db      $18, $38, $18, $18, $18, $18, $7E, 0
+        db      $3C, $66, $06, $0C, $30, $60, $7E, 0
+        db      $3C, $66, $06, $1C, $06, $66, $3C, 0
+        db      $0C, $1C, $3C, $6C, $7E, $0C, $0C, 0
+        db      $7E, $60, $7C, $06, $06, $66, $3C, 0
+        db      $3C, $60, $7C, $66, $66, $66, $3C, 0
+        db      $7E, $06, $0C, $18, $30, $30, $30, 0
+        db      $3C, $66, $66, $3C, $66, $66, $3C, 0
+        db      $3C, $66, $66, $3E, $06, $0C, $38, 0
 
 ; one 2D test: DE pixels a span, B spans (0 = 256), the colour checked after
 t_2d_run:

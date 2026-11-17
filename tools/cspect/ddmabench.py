@@ -35,6 +35,27 @@ TESTS = [  # (name, pixels or bytes, span length, spans)
 ]
 
 
+SCREEN_BYTES = 4096             # the ULA's first two thirds: character rows 0-15
+DIGITS = [bytes(r) for r in (
+    (0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0), (0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0),
+    (0x3C, 0x66, 0x06, 0x0C, 0x30, 0x60, 0x7E, 0), (0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0),
+    (0x0C, 0x1C, 0x3C, 0x6C, 0x7E, 0x0C, 0x0C, 0), (0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0),
+    (0x3C, 0x60, 0x7C, 0x66, 0x66, 0x66, 0x3C, 0), (0x7E, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30, 0),
+    (0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0), (0x3C, 0x66, 0x66, 0x3E, 0x06, 0x0C, 0x38, 0))]
+
+
+def read_screen(scr, rows):
+    """The ULA bitmap from $4000 as text: bench.asm's digits, a space for an empty cell."""
+    out = []
+    for r in range(rows):
+        line = ""
+        for c in range(32):
+            cell = bytes(scr[((r & 0x18) << 8) + (k << 8) + ((r & 7) << 5) + c] for k in range(8))
+            line += str(DIGITS.index(cell)) if cell in DIGITS else (" " if not any(cell) else "?")
+        out.append(line.rstrip())
+    return out
+
+
 def main():
     sym = symbols(os.path.join(REPO, "build", "ddmabench.exp"))
     out = os.path.join(REPO, "build", "ddma")
@@ -46,14 +67,16 @@ def main():
     if os.path.exists(log):
         os.remove(log)
     n = sym["checks"] + 24 - sym["ready"]
-    env = dict(os.environ, AWPROBE_LOG=log, AWPROBE_MAX="12", AWPROBE_PEEK=f"{sym['ready']:X}:{n}")
+    env = dict(os.environ, AWPROBE_LOG=log, AWPROBE_MAX="12",
+               AWPROBE_PEEK=f"{sym['ready']:X}:{n},4000:{SCREEN_BYTES}")
     try:
         subprocess.run(["mono", "CSpect.exe", "-w2", "-sound", "-mouse", "-basickeys", "-zxnext",
                         "-mmc=../sd/aw/", "../sd/aw/" + name], cwd=CSPECT, env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
     finally:
         os.remove(os.path.join(SD, name))
-    rows = [l.split()[2:] for l in open(log) if l.startswith("# peek")]
+    rows = [l.split()[2:] for l in open(log) if l.startswith(f"# peek@{sym['ready']:04X}")]
+    scr = [l.split()[2:] for l in open(log) if l.startswith("# peek@4000")]
     if not rows or rows[-1][0] != "5A":
         raise SystemExit("the bench did not finish\nRESULT: FAIL")
     b = bytes(int(x, 16) for x in rows[-1])
@@ -73,8 +96,24 @@ def main():
         ok = good == want and tot == want
         bad += not ok
         print(f"  {label:46} in the spans {good:5}, anywhere {tot:5}, want {want:5}  {'ok' if ok else 'WRONG'}")
-    print("RESULT: " + ("PASS" if not bad else "FAIL"))
-    sys.exit(1 if bad else 0)
+
+    # what `show` put on the ULA screen, read back: the same numbers, one line a test
+    screen = bytes(int(x, 16) for x in scr[-1])
+    text = read_screen(screen, len(TESTS))
+    want = []
+    for t in range(len(TESTS)):
+        w = f"{t} {lines[t]:05d}"
+        if t >= 4:
+            w += f" {word(sym['checks'] + 4 * (t - 4)):05d} {word(sym['checks'] + 4 * (t - 4) + 2):05d}"
+        want.append(w)
+    shown = text == want
+    print("\non the screen (what the KS3 will show; test, lines, then for 4-9 the two counts):")
+    for line in text:
+        print("  " + line)
+    if not shown:
+        print("  NOT the numbers in memory: " + str(want))
+    print("RESULT: " + ("PASS" if not bad and shown else "FAIL"))
+    sys.exit(1 if bad or not shown else 0)
 
 
 if __name__ == "__main__":

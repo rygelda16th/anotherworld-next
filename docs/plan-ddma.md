@@ -8,7 +8,7 @@ measure the long-row fill and build it only if it wins.
 | D0 | find the zxnDDMA at boot (`ddma_have`) | ZEsarUX: 0, and every gate as before; CSpect 4.5.1.0: 1 | done: 1 in CSpect 4.5.1.0, both builds; the ZEsarUX sweep below |
 | D1 | every DMA fill by the zxnDDMA's fill where it is there | `make check-ddma` (CSpect 4.5.1.0, Xvfb): the intro's screens the same with it on and off, and the fills really took the new path; ZEsarUX: the sweep, both builds | done: `check-ddma` 13 of 13 screens the same, 70 fills the new way (`check-ddma256`: 13 of 13, 1,783, the long spans included), none with it off |
 | D2 | measure a 320x256 row by a 2D fill | a bench in CSpect 4.5.1.0: T-states a row, by length, against the CPU's 11 a pixel | **no price**: CSpect 4.5.1.0's 2D fill writes the wrong bytes (below) |
-| D3 | only if D2 wins: long rows in 320x256 by the 2D fill | as D1, and speed.py | **not built**: D2 showed no win it can be trusted for; the KS3 can run the bench |
+| D3 | only if D2 wins: long rows in 320x256 by the 2D fill | as D1, and speed.py | **not built**: CSpect shows no win it can be trusted for. The bench now shows its numbers on the screen; the KS3 run and its rule are under "Open for the KS3" |
 
 ## Why
 
@@ -102,8 +102,24 @@ that much, and it is not given here. D1's gain from the guide's figures is about
 
 ## Open for the KS3
 
-The bench (`build/ddmabench.nex`) on the machine: whether a 2D fill of 1-byte rows writes what it
-is told, and what it costs. Today it leaves its numbers in memory only, for awprobe. How long a fill
-takes on metal, and whether the sound (copper DAC, or the Pi card) stumbles with
+**D2 on the machine, which decides D3.** `make measure-ddma` writes `build/ddmabench.nex`; on the
+KS3 it runs by itself (no keys) and shows one line a test on the ULA screen: the test number, its
+raster lines (1,792 T-states each), and for tests 4-9 two counts - the pixels it filled inside its
+spans, and every pixel set anywhere. In CSpect 4.5.1.0 the screen reads:
+
+    0 00000          4 00010 02368 02368      7 00022 02368 02368
+    1 00026          5 00020 04160 11840      8 00276 00592 00592
+    2 00278          6 00008 00592 00592      9 00088 02368 02368
+    3 00009
+
+`make measure-ddma` reads that screen back and holds it to the numbers in memory, so what the KS3
+shows is what the bench measured. **The rule for D3:** the 2D fill writes what it is told - tests
+4 and 7 show 04096 04096, test 5 04160 04160, tests 6 and 8 04096 04096 - and test 4's lines are
+well under test 1's (the CPU's 64 spans of 64; 26 lines in CSpect, 11 T a pixel). Then the 2D
+row fill is worth building for spans of about 64 pixels and up, and test 6 against test 1 says
+whether short ones are too. Wrong counts on the machine, or test 4 near test 1: D3 stays unbuilt.
+Test 2 against test 3 is D1's gain, measured: the guide says 4 cycles a byte against 2.
+
+How long a fill takes on metal, and whether the sound (copper DAC, or the Pi card) stumbles with
 the zxnDDMA on that does not with it off. The off switch for a player is a build without it, or a
 core before 3.03.00.
