@@ -477,6 +477,7 @@ start:
         ; here, once the loader is done.
         ld      sp, STACK_TOP
         call    l2_display              ; 28 MHz, and Layer 2 actually on the screen
+        call    ddma_probe              ; plan-ddma.md D0: is the zxnDDMA there? (page 10)
 
         ; MMU6 is deliberately NOT touched: bank 0's first half is where the ring
         ; and the tables already are, loaded by the .nex.
@@ -2494,6 +2495,8 @@ n_select:   dw 0
 n_fill:     dw 0
         EXPORT n_copy
 n_copy:     dw 0
+        EXPORT ddma_have
+ddma_have:  db 0            ; 1: ddma_probe found the zxnDDMA at boot; and the probe's scratch
         EXPORT n_blit
 n_blit:     dw 0
         EXPORT n_pal
@@ -3403,6 +3406,114 @@ sv_done:    db 0            ; $5A once a load has finished; page 10, read by map
         EXPORT sv_stop
 sv_stop:    db 0            ; a checker sets this to have the save or load fault the VM on return
 sv_mmu7:    db 0
+
+;-----------------------------------------------------------------------------
+; ddma_probe - is the zxnDDMA there? Once, at boot, under the boot path's DI, before the copper or
+; anything else has programmed the DMA (plan-ddma.md D0).
+;
+; The guide's safe probe (docs/zxnDDMA/zxnddma.gde 2.5 and 3.4, zxnddma_compare.asm): the
+; zxnDDMA's bytes first and every data byte under $80, eight DISABLEs to finish whatever a plain
+; zxnDMA made of them, then one byte copied. A plain zxnDMA copies it to CPU ddma_have, in the
+; resident block, which is set properly after. A zxnDDMA, told the addresses are physical, copies
+; it to $0F:ddma_have - 8K page 92, a heap page nothing has loaded into yet - from the marker this
+; writes in that page.
+;-----------------------------------------------------------------------------
+DDMA_PAGE       EQU 92                  ; the heap's, in both builds, and empty at boot
+DDMA_MARK       EQU $1FF0               ; the marker's offset in it
+        ASSERT DDMA_PAGE >= RES_FIRST_PAGE
+        ASSERT (DDMA_PAGE * $2000 + $40000) == $0F8000  ; $0F, and slot 4's $8000
+        ASSERT ddma_have >= $8000 && ddma_have < $A000
+        ASSERT (ddma_have & $1FFF) != DDMA_MARK
+ddma_probe:
+        ld      bc, $243B               ; what MMU7 holds, to put back
+        ld      a, NR_MMU7
+        out     (c), a
+        inc     b
+        in      a, (c)
+        push    af
+        nextreg NR_MMU7, DDMA_PAGE
+        xor     a
+        ld      ($E000 + (ddma_have & $1FFF)), a
+        ld      a, $5A
+        ld      ($E000 + DDMA_MARK), a
+        ld      hl, ddma_probe_prog
+        ld      bc, ((ddma_probe_end - ddma_probe_prog) << 8) | DMA_PORT
+        otir
+        ld      a, ($E000 + (ddma_have & $1FFF))
+        cp      $5A
+        ld      a, 0
+        jr      nz, .set
+        inc     a
+.set:   ld      (ddma_have), a          ; over whatever a plain zxnDMA copied there
+        xor     a
+        ld      ($E000 + DDMA_MARK), a  ; the two bytes zero again
+        ld      ($E000 + (ddma_have & $1FFF)), a
+        pop     af
+        nextreg NR_MMU7, a
+        ret
+
+ddma_probe_prog:
+        db      $83, $C3                ; DISABLE, RESET
+        db      $D7, $0F                ; port A's bits 23:16
+        db      $DB, $0F                ; port B's
+        db      $DF, %00000001          ; physical
+        db      $83, $83, $83, $83, $83, $83, $83, $83
+        db      $7D                     ; WR0: A -> B, address and length follow
+        dw      $8000 + DDMA_MARK       ; physical $0F9FF0; a plain zxnDMA reads CPU $9FF0
+        dw      1
+        db      $14, $10                ; WR1, WR2: memory, incrementing
+        db      $AD                     ; WR4: continuous, port B address follows
+        dw      ddma_have               ; a plain zxnDMA's junk: overwritten below
+        db      $82                     ; WR5: stop at end of block
+        db      $CF, $87                ; LOAD, ENABLE
+        db      $83, $C3                ; and the flags down again
+ddma_probe_end:
+
+;-----------------------------------------------------------------------------
+; THE FILL BY THE zxnDDMA (docs/plan-ddma.md D1). dma_mem comes here for a fill (through
+; ddma_tramp and paged_call) when ddma_probe found the zxnDDMA at boot, with its arguments in
+; dm_src (the colour byte), dm_dst and dm_len. Core 3.03.00's fill mode ($DF bit 3) writes the $F7 value and reads nothing:
+; "Twice as fast as a fixed source address" (the core distribution's docs/zxnDDMA/zxnddma.gde,
+; 2.5), which is what dma_mem's own fill is. The programme is the guide's order (2.8), RESET
+; first and RESET again after the block: continuous mode holds the CPU until the block is done,
+; so the last two bytes go after it, and the mode flags - which stay until the next $DF or $C3
+; (2.9, note 1) - are down before the copper upload or anything else programmes the DMA again.
+;-----------------------------------------------------------------------------
+DDMA_FILL       EQU %00001000           ; $DF bit 3: nothing read, the $F7 value written
+ddma_fill:
+        ld      hl, (dm_src)
+        ld      a, (hl)
+        ld      (df_col), a
+        ld      hl, (dm_dst)
+        ld      (df_dst), hl
+        ld      hl, (dm_len)
+        ld      (df_len), hl
+        ld      hl, (n_ddma)
+        inc     hl
+        ld      (n_ddma), hl
+        ld      a, 1
+        ld      (dma_busy), a
+        ld      hl, df_prog
+        ld      bc, ((df_end - df_prog) << 8) | DMA_PORT
+        otir
+        ret
+
+df_prog:
+        db      $83, $C3                ; DISABLE, RESET
+        db      $DF, DDMA_FILL
+        db      $F7                     ; the fill value
+df_col: db      0
+        db      $7D                     ; WR0: A -> B, address and length follow
+        dw      0                       ; port A: never read
+df_len: dw      0
+        db      $54, $02                ; WR1: port A memory, incrementing, cycle length 2
+        db      $50, $22, 0             ; WR2: port B memory, incrementing, cycle length 2, prescalar 0
+        db      $AD                     ; WR4: continuous, port B address follows
+df_dst: dw      0
+        db      $82                     ; WR5: stop at end of block
+        db      $CF, $87                ; LOAD, ENABLE
+        db      $83, $C3                ; and the flags down again
+df_end:
         DISPLAY "> paged code at ", /H, PAGED_WIN, " ending ", /H, $
         ASSERT $ <= SV_HDR
 
@@ -4018,6 +4129,16 @@ probe_walk:
         pop     bc
         djnz    .tick
         ret
+
+; dma_mem's way to ddma_fill, in page 10: dm_src, dm_dst and dm_len are already stored. Here
+; because MMU6 is always mapped and the resident block has no room in the 256x192 build.
+ddma_tramp:
+        ld      hl, ddma_fill
+        call    paged_call
+        jp      dma_mem.sent            ; dma_busy down, and a waiting upload sent, as there
+        EXPORT n_ddma
+n_ddma:     dw 0            ; fills that went by the zxnDDMA (D1's gate). In MMU6, not beside ddma_fill
+                            ; in page 10: CSpect 4.5 keeps bank 5 out of what its plugins read as physical
         DISPLAY "> part code at ", /H, PART_CODE, " ending ", /H, $
         ASSERT $ <= VOLTAB_QUIET
 
@@ -4867,6 +4988,9 @@ dma_mem:
         or      a
         ld      a, $54                  ; WR1: port A memory, incrementing
         jr      z, .kind
+        ld      a, (ddma_have)
+        or      a
+        jp      nz, ddma_tramp          ; the core's own fill (plan-ddma.md D1)
         ld      a, $64                  ; WR1: port A memory, fixed - a fill
 .kind:
         ld      (dm_wr1), a
@@ -4875,6 +4999,7 @@ dma_mem:
         ld      hl, dm_prog
         ld      bc, ((dm_end - dm_prog) << 8) | DMA_PORT
         otir
+.sent:
         xor     a
         ld      (dma_busy), a
         ld      a, (cop_pending)

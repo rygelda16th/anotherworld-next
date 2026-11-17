@@ -26,7 +26,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
 .PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
         check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-save check-bitmap \
-        toolchain-diff play record check-sndcalls gus-assets check-gus check-card play-gus \
+        toolchain-diff play record check-sndcalls gus-assets check-gus check-card play-gus check-ddma check-ddma256 measure-ddma \
         asm256 check-wide check-poly256 check-readmachine256 check-draw256 check-intro256 \
         check-text256 check-bmp256 check-save256 check-part256 check-res256 check-aw256 \
         measure-wide320 measure-wide320-isr
@@ -64,6 +64,8 @@ help:
 	@echo "make gus-assets     plan-pi-gus A1: the Pi card's files, built by nextpi-gus (NEXTPI_GUS)"
 	@echo "make check-gus      plan-pi-gus A1: the card holds every sound byte for byte, the pins"
 	@echo "make check-card     plan-pi-gus A2/A3: the game with a fake Pi card in CSpect (windows, one at a time)"
+	@echo "make measure-ddma   plan-ddma.md D2: a 320x256 row by the zxnDDMA's 2D fill against the CPU, CSpect 4.5"
+	@echo "make check-ddma     plan-ddma.md D1: the zxnDDMA's fills against the plain ones, CSpect 4.5 on Xvfb (check-ddma256: 256x192)"
 	@echo "make play-gus       plan-pi-gus A4: play it in CSpect, the card on the Mac's speakers (CARD=0: the Z80 path)"
 
 certs:
@@ -557,6 +559,20 @@ gus-assets: | $(BUILD)
 check-gus:
 	$(MAKE) -C $(NEXTPI_GUS) build/mac/ngus
 	NEXTPI_GUS=$(NEXTPI_GUS) python3 tools/checkgus.py
+
+# plan-ddma.md D1: the intro in CSpect 4.5.1.0 (~/nextdev/cspect4, the one emulator with the zxnDDMA)
+# twice, the zxnDDMA's fill on and poked off, the screens compared at the same blit counts. On the
+# Deck it runs in the nextdev-gui image (mono) on Xvfb, so no window opens on the desktop.
+CSPECT_BOX := $(if $(wildcard $(HOME)/.local/bin/nextdev),$(HOME)/.local/bin/nextdev env ALSOFT_DRIVERS=null xvfb-run -a -s "-screen 0 1280x1024x24",)
+check-ddma: asm
+	$(CSPECT_BOX) python3 tools/cspect/checkddma.py
+check-ddma256: asm256
+	$(CSPECT_BOX) env AW_SCREEN=256 python3 tools/cspect/checkddma.py
+# plan-ddma.md D2: what a 320x256 row costs by the zxnDDMA's 2D fill, against the CPU, in CSpect 4.5.
+measure-ddma:
+	$(RUN) sjasmplus --zxnext=cspect --fullpath --exp=$(BUILD)/ddmabench.exp \
+		--lst=$(BUILD)/ddmabench.lst preflight/ddma/bench.asm
+	$(CSPECT_BOX) python3 tools/cspect/ddmabench.py
 
 # plan-pi-gus.md A2 and A3: the shipped image in CSpect with its Pi UART on nextpi-gus's fake NextPi -
 # the boot, the upload and %M (A2: sessions 1-3), the effects and music on the card, the markers, the

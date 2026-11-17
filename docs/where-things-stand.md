@@ -3834,6 +3834,16 @@ same two-second catch-up. Gameplay costs 0.6-3.9 points more than 256x192, which
 72-85% in the parts measured. The plan, the measurements and the five optimisations that took the
 first working build from 86.8% to 100.3% are in `preflight/wide320/README.md`.
 
+#### I13. The zxnDDMA's fill - built 2026-11-17 (docs/plan-ddma.md)
+
+Core 3.03.00's DMA can fill without reading, at half the cycles of the fixed-source fill the game
+used. The game looks for it once at boot (`ddma_have`) and sends every fill there when it is found;
+on any other core, and in ZEsarUX, nothing changes. `make check-ddma` and `check-ddma256` (CSpect
+4.5.1.0 on Xvfb) find it, and the intro's screens are the same with it on and off. The gain is in
+page clears, which are frequent only in part index 4: about 81% to 85% there by the guide's cycle
+counts, under a point elsewhere. A 2D fill of a 320x256 row was measured and not built: CSpect
+4.5.1.0 writes the wrong bytes for it, so only the KS3 can price it (`make measure-ddma`).
+
 #### H1. Real hardware
 
 Card boot, the joystick's physical wiring, and timing on metal without the three

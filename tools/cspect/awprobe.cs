@@ -50,7 +50,14 @@ namespace AWProbe
         int lowArm = -1, lowMark = -1;
         bool off = false;
         int goAddr = 0;
-        int blitAddr = 0, blitAt = 0; bool blitDumped = false;
+        int blitAddr = 0; List<int> blitAts = new List<int>();
+        // AWPROBE_DDMA=<hex ddma_have>:<hex n_ddma> (plan-ddma.md D1), both in the CPU's map: both in every
+        // report, and once as the ENTER wait is released, so a run that pokes ddma_have to 0 shows
+        // the fills that went by the zxnDDMA before the poke and none after.
+        int ddmaHave = 0, ddmaN = -1;
+        // AWPROBE_PEEK=<hex addr>:<decimal length> logs those bytes of the CPU's map in every report
+        // (preflight/ddma's bench results).
+        int peekAddr = -1, peekLen = 0;
         int paceTicks = 0, paceBlit = 0, pacePoly = 0, lastBlit = -1;
         StreamWriter pace;
         int streamPlayed = 0, streamAvail = 0;
@@ -89,11 +96,21 @@ namespace AWProbe
             log.AutoFlush = true;
             string g = Environment.GetEnvironmentVariable("AWPROBE_GO");
             if (!string.IsNullOrEmpty(g)) goAddr = Convert.ToInt32(g, 16);
-            // AWPROBE_BLIT=<hex addr of n_blit>:<decimal count> dumps the screen once, the
-            // first frame the game's own blit counter reaches that count - so a named scene
-            // is captured, rather than whatever happened to be up at a round number of seconds.
+            // AWPROBE_BLIT=<hex addr of n_blit>:<decimal count>[,<count>...] dumps the screen once for
+            // each count, the first frame the game's own blit counter reaches it - so a named scene
+            // is captured, rather than whatever happened to be up at a round number of seconds. The
+            // file is named by the counter as it was (100000 + n_blit): two blits in one frame skip one.
             string bl = Environment.GetEnvironmentVariable("AWPROBE_BLIT");
-            if (!string.IsNullOrEmpty(bl)) { var parts = bl.Split(':'); blitAddr = Convert.ToInt32(parts[0], 16); blitAt = int.Parse(parts[1]); }
+            if (!string.IsNullOrEmpty(bl))
+            {
+                var parts = bl.Split(':'); blitAddr = Convert.ToInt32(parts[0], 16);
+                foreach (var c in parts[1].Split(',')) blitAts.Add(int.Parse(c));
+                blitAts.Sort();
+            }
+            string pe = Environment.GetEnvironmentVariable("AWPROBE_PEEK");
+            if (!string.IsNullOrEmpty(pe)) { var q = pe.Split(':'); peekAddr = Convert.ToInt32(q[0], 16); peekLen = int.Parse(q[1]); }
+            string dd = Environment.GetEnvironmentVariable("AWPROBE_DDMA");
+            if (!string.IsNullOrEmpty(dd)) { var q = dd.Split(':'); ddmaHave = Convert.ToInt32(q[0], 16); ddmaN = Convert.ToInt32(q[1], 16); }
             // AWPROBE_PACE=<ticks>:<n_blit>:<n_poly> writes one line per blit to <log>.pace:
             // the game's own 50 Hz tick count, the VM's frame count and the polygon count at
             // the moment the blit counter moved. Emulated time throughout, so the host's speed
@@ -187,6 +204,13 @@ namespace AWProbe
             for (int i = 0; i < top.Count && i < 8; i++)
                 sb.AppendFormat(" ${0:X4}={1:0.0}%", top[i].Key, 100.0 * top[i].Value / samples);
             log.WriteLine(sb.ToString());
+            if (ddmaN >= 0) log.WriteLine(DdmaLine());
+            if (peekAddr >= 0)
+            {
+                var pk = new System.Text.StringBuilder("# peek");
+                for (int i = 0; i < peekLen; i++) pk.AppendFormat(" {0:X2}", CSpect.Peek((ushort)(peekAddr + i)));
+                log.WriteLine(pk.ToString());
+            }
             hist.Clear();
             samples = 0;
             if (textWatch) log.WriteLine(string.Format("# text watch: {0} writes to $E000-$EDFF seen, {1} while MMU7 was page 1", textAll, textHits));
@@ -201,6 +225,10 @@ namespace AWProbe
 
         // Both are per-frame (~50 Hz), so sample on every one.
         int W(int a) { return CSpect.Peek((ushort)a) | (CSpect.Peek((ushort)(a + 1)) << 8); }
+        string DdmaLine()
+        {
+            return string.Format("# ddma have={0} n={1}", CSpect.Peek((ushort)ddmaHave), W(ddmaN));
+        }
 
         // THE VISIBLE LAYER 2 PAGE, straight out of the banks, as a PPM. 256x192 at 8bpp is
         // three 8K banks; NextReg $12 names the first of them and the palette comes from the
@@ -254,7 +282,11 @@ namespace AWProbe
                 for (int v = 0; v < 4; v++) if (CSpect.Peek((ushort)(voicesAddr + v * 18 + 11)) != 0) n++;
                 voiceHist[n]++; voiceFrames++; voiceSum += n;
             }
-            if (goAddr != 0 && ticks == 150) { CSpect.Poke((ushort)goAddr, 1); log.WriteLine("# released the ENTER wait"); }
+            if (goAddr != 0 && ticks == 150)
+            {
+                CSpect.Poke((ushort)goAddr, 1); log.WriteLine("# released the ENTER wait");
+                if (ddmaN >= 0) log.WriteLine(DdmaLine() + " at go");
+            }
             if (false)
             {
                 int bb = 0; Z80Regs rr = null;
@@ -290,7 +322,12 @@ namespace AWProbe
                         pace.WriteLine("{0} {1} {2} {3}", b, W(paceTicks), W(0xC008), W(pacePoly));
                 }
             }
-            if (blitAddr != 0 && !blitDumped && W(blitAddr) >= blitAt) { blitDumped = true; DumpScreen(100000 + W(blitAddr)); }
+            if (blitAddr != 0 && blitAts.Count > 0 && W(blitAddr) >= blitAts[0])
+            {
+                int b = W(blitAddr);
+                while (blitAts.Count > 0 && blitAts[0] <= b) blitAts.RemoveAt(0);
+                DumpScreen(100000 + b);
+            }
             Sample();
         }
         public void OSTick() { osticks++; }
