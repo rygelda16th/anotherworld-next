@@ -3491,7 +3491,59 @@ irq_latch:
         and     %00000011               ; the line and ULA enables, as nextreg $22 set them
         nextreg $C4, a
         nextreg $C0, %00000001          ; hardware IM2, vector bits 7:5 = 0
+        ; and on into boot_clear
+
+;-----------------------------------------------------------------------------
+; boot_clear - all four Layer 2 pages to colour 0, and the border black, before the ENTER wait.
+;
+; l2_display puts Layer 2 on the screen at once, and nothing had written its pages: on the KS3 the
+; wait for ENTER showed whatever the RAM held at power-on, a screen of coloured noise (David,
+; 2026-11-18; the emulators start their RAM zeroed, so it never showed there). Zero is also what
+; the reference's pages start as. The border was left blue, l2_display's "the boot got this far",
+; and in 320x256 it is the 28 rows above and below the 200-row picture (wide_display's clip).
+;
+; By dma_mem's fill, so by the zxnDDMA's where the probe found it: 40 strips of 8K, about 23 ms
+; on the KS3. Not through aw_fill_page, which counts fills (n_fill) for the gates; n_ddma is put back
+; too, so every count a checker reads starts where it did. MMU7 is put back as ddma_probe does.
+;-----------------------------------------------------------------------------
+boot_clear:
+        ld      a, NR_DWIN_MMU
+        call    nr_read
+        push    af
+        ld      hl, (n_ddma)
+        push    hl
+        ld      d, 0                    ; D = the page, 0-3
+.page:  push    de
+        ld      a, d
+        call    page_to_p0
+        pop     de
+        ld      c, a                    ; C = its first 8K page
+        ld      b, BANDS
+.band:  ld      a, c
+        nextreg NR_DWIN_MMU, a
+        push    bc
+        push    de
+        ld      hl, .zero               ; held fixed: a fill
+        ld      de, DWIN
+        ld      bc, $2000
+        ld      a, 1
+        call    dma_mem
+        pop     de
+        pop     bc
+        inc     c
+        djnz    .band
+        inc     d
+        ld      a, d
+        cp      4
+        jr      nz, .page
+        pop     hl
+        ld      (n_ddma), hl
+        pop     af
+        nextreg NR_DWIN_MMU, a
+        xor     a
+        out     ($FE), a                ; black: the boot is past the display set-up
         ret
+.zero:  db      0
 
 ddma_probe_prog:
         db      $83, $C3                ; DISABLE, RESET
@@ -5412,7 +5464,8 @@ auto_input:
 ; The BORDER is the one thing that shows regardless of Layer 2, its palette, or whether anything
 ; was ever drawn - so it is what a first failure should speak through.
 ;
-;     BLUE   the boot got as far as setting the display up
+;     BLUE   the boot got as far as setting the display up, and stopped before boot_clear
+;     BLACK  boot_clear ran (page 10, after ddma_probe): the normal colour from then on
 ;     RED    a resource did not load; err is non-zero
 ;-----------------------------------------------------------------------------
 show_err:
