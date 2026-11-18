@@ -1,6 +1,5 @@
 data/
 build/
-certs/
 *.nex
 *.exp
 *.lst

@@ -27,12 +27,6 @@ FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Corporate TLS inspection (Netskope) re-signs every HTTPS connection, so the
-# image needs the same root CA the Mac already trusts or `git clone` fails.
-# `make certs` extracts it from the system keychain; the dir is gitignored, and
-# an empty one is harmless off the corporate network.
-COPY certs/ /usr/local/share/ca-certificates/
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates git make cmake pkg-config \
         autoconf automake libtool python3 \

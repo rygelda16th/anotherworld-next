@@ -23,7 +23,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
                    --nex-no-automount-esxdos \
                    --nosplash --noconfigfile
 
-.PHONY: help certs image doctor shell asm cc cc-game emu clean distclean \
+.PHONY: help image doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
         check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-save check-bitmap \
         toolchain-diff play record check-sndcalls gus-assets check-gus check-card play-gus check-ddma check-ddma256 measure-ddma \
@@ -32,7 +32,6 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
         measure-wide320 measure-wide320-isr
 
 help:
-	@echo "make certs          extract the corporate TLS-inspection CA for the image"
 	@echo "make image          build the toolchain container (first run: ~10-20 min)"
 	@echo "make doctor         report tool versions from inside the container"
 	@echo "make assets         convert the player's data to Next form (host only)"
@@ -68,13 +67,7 @@ help:
 	@echo "make check-ddma     plan-ddma.md D1: the zxnDDMA's fills against the plain ones, CSpect 4.5 on Xvfb (check-ddma256: 256x192)"
 	@echo "make play-gus       plan-pi-gus A4: play it in CSpect, the card on the Mac's speakers (CARD=0: the Z80 path)"
 
-certs:
-	@mkdir -p certs
-	@security find-certificate -a -c "caadmin.netskope.com" -p /Library/Keychains/System.keychain > certs/netskope-root.crt
-	@security find-certificate -a -c "ca.tenant.goskope.com" -p /Library/Keychains/System.keychain > certs/netskope-tenant.crt
-	@echo "certs/ populated from the system keychain"
-
-image: certs
+image:
 	$(DC) build
 
 doctor:

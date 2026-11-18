@@ -1,7 +1,8 @@
 # Licence, and why this one
 
 **This port is GPLv2.** The full text is in `LICENSE`, fetched from gnu.org
-rather than typed.
+rather than typed (by wolf3d-next; this is the same file). The one exception is the
+three ZEsarUX patches, which are GPLv3 - see "The toolchain" below.
 
 ## Why GPLv2, and which lineage the facts come from
 
@@ -58,9 +59,9 @@ where a GPL lineage of the same engine exists, this port takes from that one.
 
 ## What is NOT covered, and must never be
 
-**No Another World data is in this repository and none is in the binary.**
-Everything - bytecode, polygons, palettes, bitmaps, sounds, music, the strings -
-is read from the player's own files. `data/` is gitignored, and so are the
+**No Another World data file is in this repository, and no data from the player's
+files is in the binary.** Everything the game files hold - bytecode, polygons,
+palettes, bitmaps, sounds, music - is read from the player's own copy. `data/` is gitignored, and so are the
 converted blobs under `build/`, the polygon traces and the framebuffer dumps,
 because all four are derived from that data.
 
@@ -71,16 +72,31 @@ respectively. The DOS **playable demo** uses the same format as the full game
 (`MEMLIST.BIN` plus `BANK01`, `02`, `05`, `06`, `0D`) and is sufficient for every
 measurement in `docs/`.
 
-The one piece of Montoir's own data this port does embed is the **8x8 font**, 768
-bytes, which is his work under the GPL grant above and not the game publisher's.
-It is extracted by dumping it from a build of the reference engine rather than
-transcribed, so there is no opportunity for a typo.
+Two things the binary does embed come from the reference engine's source, not from
+the game files, and both arrive under its GPL grant:
+
+- the **8x8 font**, 768 bytes, extracted by dumping it from a build of the reference
+  engine rather than transcribed, so there is no opportunity for a typo;
+- the **string table** - the game's on-screen text - which the reference keeps in
+  `staticres.cpp` and `tools/mkstrings.py` converts at build time
+  (`build/strings.inc`). The text was written for the game, and the DOS data files
+  do not hold it: every reimplementation of this engine carries it the same way.
+
+Neither is in this repository: both are generated from the pinned reference clone,
+which is a build product.
 
 ## The toolchain, which is borrowed too
 
 `Dockerfile`, `compose.yml`, `tools/zrcp.py` and the three patches under
 `tools/zesarux/` are copies from **wolf3d-next at commit `5a870c8`**, which is
-also GPLv2 and also the author's own work. They are duplicated rather than
+also GPLv2 and also the author's own work.
+
+**The three patches under `tools/zesarux/` are GPLv3, not GPLv2.** They change
+ZEsarUX's own source (`src/datagear.c` and others), which is "version 3 of the
+License, or (at your option) any later version" (its `src/LICENSE`, and the header
+of each file). A patch to it carries its terms. The patches are applied inside the
+toolchain container to build the emulator the checks drive; nothing from them is
+in the game or linked with it. They are duplicated rather than
 shared by submodule; `make toolchain-diff` reports drift. The Dockerfile header
 explains why.
 

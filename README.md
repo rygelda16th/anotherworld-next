@@ -36,10 +36,17 @@ correctly (its speed needs hardware - the emulator charges nothing for it).
 
 ## Getting started
 
-    make certs      # once, on the corporate network: the TLS-inspection CA
-    make image      # build the toolchain container
+    make image      # build the toolchain container, once
     make doctor     # prove both toolchain images are real
     make help       # everything else
+
+The container is the easy route, and the only practical one for the `check-*` targets: they
+drive a ZEsarUX built at a pinned commit with three local patches (`tools/zesarux/`), and their
+numbers depend on it. To build the game with your own tools instead you need
+[sjasmplus](https://github.com/z00m128/sjasmplus) (the z00m128 fork; measured at `8c87edd`),
+[z88dk](https://github.com/z88dk/z88dk) (measured with the `z88dk/z88dk:20260907` image) and
+Python 3 for the asset tools. The `Dockerfile` and the `Makefile`'s `cc` target record the exact
+versions.
 
 You need your own copy of the game's DOS data files in `data/`. **None of them are
 in this repository and none are in the binary** - see `docs/licence.md`, which also
