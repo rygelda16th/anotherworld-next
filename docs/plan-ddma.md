@@ -7,8 +7,8 @@ measure the long-row fill and build it only if it wins.
 |---|---|---|---|
 | D0 | find the zxnDDMA at boot (`ddma_have`) | ZEsarUX: 0, and every gate as before; CSpect 4.5.1.0: 1 | done: 1 in CSpect 4.5.1.0, both builds; the ZEsarUX sweep below |
 | D1 | every DMA fill by the zxnDDMA's fill where it is there | `make check-ddma` (CSpect 4.5.1.0, Xvfb): the intro's screens the same with it on and off, and the fills really took the new path; ZEsarUX: the sweep, both builds | done: `check-ddma` 13 of 13 screens the same, 70 fills the new way (`check-ddma256`: 13 of 13, 1,783, the long spans included), none with it off |
-| D2 | measure a 320x256 row by a 2D fill | a bench in CSpect 4.5.1.0: T-states a row, by length, against the CPU's 11 a pixel | **no price yet**: the KS3 gives the same counts as CSpect, so the fault is most likely the bench's own (below, "The KS3, 2026-11-18") |
-| D3 | only if D2 wins: long rows in 320x256 by the 2D fill | as D1, and speed.py | **not built**: the bench's 2D tests stop at span 37 on the KS3 as in CSpect. Find that in CSpect, which matches the KS3, then run the bench on the KS3 again |
+| D2 | measure a 320x256 row by a 2D fill | a bench in CSpect 4.5.1.0: T-states a row, by length, against the CPU's 11 a pixel | **priced, 2026-11-18**: about 355 T a span and 1.9 T a pixel, against the CPU's 11.4 a pixel - faster from about 40 pixels (below, "D2 priced") |
+| D3 | only if D2 wins: long rows in 320x256 by the 2D fill | as D1, and speed.py | **not built; D2's rule is met**. Waiting on David's go, and on the fixed bench run once on the KS3 to confirm |
 
 ## Why
 
@@ -176,3 +176,33 @@ David played the intro on the KS3 after all three and judged the sound fixed. ch
 builds, 13/13), check-stream, check-snd, check-draw and check-bmp pass on the final code.
 ZEsarUX's `check-cop` fails on the Deck before and after the copper change (it runs at half
 speed there), but counts fewer clean steps after it: worth a run where ZEsarUX keeps full speed.
+
+## D2 priced: the bench's own bug (2026-11-18)
+
+**The span count was the bench's fault, not the zxnDDMA's.** `t_2d_run` pushed B (the spans) and
+DE (the length), called `clear`, popped them, pushed them again and called `sync` - whose
+`line_now` leaves B = $25 - and only then `t_2d`, which took that B. So every 2D test ran 37 spans
+($25), in CSpect and on the KS3 alike, and the counts were exactly 37 spans written correctly. The
+pop now comes after `sync`. With it, every test writes exactly what it is told (4096 4096, 4160
+4160) and CSpect 4.5.1.0 reads:
+
+| test | lines | T a pixel |
+|---|---|---|
+| 1 CPU, 64 spans of 64 | 26 | 11.4 |
+| 4 2D, 64 spans of 64 | 17 | 7.4 |
+| 5 2D, 13 spans of 320 | 7 | 3.0 |
+| 6 2D, 256 spans of 16 | 55 | 24.1 |
+| 7 as 4, the whole programme a span | 38 | 16.6 |
+| 9 as 4, a 3,300 T wait a span | 153 | 66.9 (the waits) |
+
+From tests 4 and 6: **about 355 T-states a span and 1.9 a pixel.** The CPU's span is 11.4 a pixel,
+so the 2D fill wins from about 40 pixels and loses below; a full 320-pixel row is nearly four times
+faster. The short reload (test 4) is worth its complexity: the full programme each span (test 7)
+costs twice as much. The KS3's run of the old bench matched CSpect digit for digit, so these should
+hold there too; one run of the fixed bench on the KS3 confirms it.
+
+**D3 by the rule:** the fill writes what it is told, and test 4 is well under test 1 (17 lines
+against 26). So the 2D row fill is worth building for spans of about 64 pixels and up in the
+320x256 build - with the CPU kept for short ones - and part index 4, whose scenes are made of big
+polygons, is where it would pay. Not started: it is David's call, and it is a change to
+`raster.inc`'s span path that check-draw and the intro's screens would have to hold byte for byte.

@@ -221,11 +221,11 @@ t_2d_run:
         push    bc
         push    de
         call    clear
-        pop     de
-        pop     bc
+        call    sync                    ; line_now leaves B = $25: so BC goes back AFTER it. Before
+        pop     de                      ; 2026-11-18 it did not, and every 2D test ran 37 spans ($25)
+        pop     bc                      ; whatever it asked for - on the KS3 as in CSpect
         push    bc
         push    de
-        call    sync
         call    t_2d
         call    line_now
         call    store

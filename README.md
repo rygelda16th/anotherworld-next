@@ -34,7 +34,22 @@ Measured on the machine so far: a polygon span end to end, a polygon's setup cos
 one output sample of the four-voice mixer, and that esxDOS reads every byte
 correctly (its speed needs hardware - the emulator charges nothing for it).
 
-## Getting started
+## Playing it
+
+You need a ZX Spectrum Next (tested on a KS3, core 3.03.03), `AW.NEX` from a release, and **your
+own copy of the DOS game** - the folder with `MEMLIST.BIN` and the `BANKxx` files. The DOS playable
+demo should work as well. No game data is in this repository or in the `.nex`.
+
+    python3 tools/mkcard.py <your DOS game folder> <output folder> --nex AW.NEX
+
+needs only Python 3.6 or later. Copy the output folder to the Next's SD card, run `AW.NEX` from it
+in the Browser, and press ENTER. Keys: O left, P right, Q up, A down, Space fire - or a Kempston
+joystick. The output folder is the game's data from your copy: don't share it.
+
+`AW.NEX` is the 320x256 build; `AW256.NEX` is the same game at 256x192. Please report what you find
+as a GitHub issue: the part, what happened, and the core version.
+
+## Getting started (building it)
 
     make image      # build the toolchain container, once
     make doctor     # prove both toolchain images are real

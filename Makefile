@@ -23,7 +23,7 @@ ZESARUX := zesarux --vo null --ao null --machine tbblue --enable-remoteprotocol 
                    --nex-no-automount-esxdos \
                    --nosplash --noconfigfile
 
-.PHONY: help image doctor shell asm cc cc-game emu clean distclean \
+.PHONY: help image sdtime doctor shell asm cc cc-game emu clean distclean \
         assets check-data check-ref frame-load voices check-span check-cc \
         check-map check-aw check-input check-draw check-res check-text check-mus check-poly check-mix check-polycost check-reader check-readmachine check-load check-boot check-pace check-snd check-parts check-part check-bmp check-save check-bitmap \
         toolchain-diff play record check-sndcalls gus-assets check-gus check-card play-gus check-ddma check-ddma256 measure-ddma \
@@ -64,6 +64,7 @@ help:
 	@echo "make check-gus      plan-pi-gus A1: the card holds every sound byte for byte, the pins"
 	@echo "make check-card     plan-pi-gus A2/A3: the game with a fake Pi card in CSpect (windows, one at a time)"
 	@echo "make measure-ddma   plan-ddma.md D2: a 320x256 row by the zxnDDMA's 2D fill against the CPU, CSpect 4.5"
+	@echo "make sdtime         build/sdtime.nex: the card's read and open times, for the KS3 (preflight/sdtime)"
 	@echo "make check-ddma     plan-ddma.md D1: the zxnDDMA's fills against the plain ones, CSpect 4.5 on Xvfb (check-ddma256: 256x192)"
 	@echo "make play-gus       plan-pi-gus A4: play it in CSpect, the card on the Mac's speakers (CARD=0: the Z80 path)"
 
@@ -566,6 +567,11 @@ measure-ddma:
 	$(RUN) sjasmplus --zxnext=cspect --fullpath --exp=$(BUILD)/ddmabench.exp \
 		--lst=$(BUILD)/ddmabench.lst preflight/ddma/bench.asm
 	$(CSPECT_BOX) python3 tools/cspect/ddmabench.py
+
+# How long the card takes to read and open, timed on the KS3 by the CTC (ST_CHUNK's question). Builds
+# build/sdtime.nex only: the emulators answer esxDOS instantly, so there is nothing to run here.
+sdtime:
+	$(RUN) sjasmplus --zxnext=cspect --fullpath --exp=$(BUILD)/sdtime.exp preflight/sdtime/sdtime.asm
 
 # plan-pi-gus.md A2 and A3: the shipped image in CSpect with its Pi UART on nextpi-gus's fake NextPi -
 # the boot, the upload and %M (A2: sessions 1-3), the effects and music on the card, the markers, the

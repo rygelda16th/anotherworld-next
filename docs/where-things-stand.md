@@ -3865,7 +3865,15 @@ rate, which step 5 established the emulator cannot time.
 after the three sound fixes in plan-ddma.md ("The KS3"). The KS3 runs at 50 Hz. The joystick works:
 David tried it on the KS3 the same day (Kempston, port $1F, `src/inc/input.inc`). Still to do on
 metal: the rest of the game, part 4's pacing, the Pi card builds, and how long an esxDOS read
-takes (`ST_CHUNK`).
+takes (`ST_CHUNK`) - for which `make sdtime` builds `build/sdtime.nex` (preflight/sdtime): 32
+reads of 256 to 4,096 bytes of MUSIC.PCM and eight opens of an early and a late RES file, timed by
+the CTC (which reads 0 in CSpect 4.5.1.0) and by raster lines, on the ULA screen.
+
+**For play-testers**, `tools/mkcard.py` makes the card's files from a DOS copy with nothing but
+Python: it is `mkassets.py` with a front that checks the folder, logs the long report, and skips
+the resources of a missing bank (the DOS demo) instead of stopping. It does not make MUSIC.PCM,
+which needs the reference engine's trace: without it the intro's music is mixed live, about 3%
+slower. Its output matches `make assets` byte for byte.
 
 ### Four gates are narrower than they sound - all four are now settled
 
