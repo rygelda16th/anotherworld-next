@@ -596,7 +596,7 @@ play-gus: cc-game
 # plan-pi-gus.md A0: the game's own sound calls, logged from outside in CSpect (tools/cspect/awsnd.cs),
 # against the reference engine's run of the intro. Opens a CSpect window; one at a time.
 check-sndcalls:
-	python3 tools/checksndcalls.py
+	$(CSPECT_BOX) python3 tools/checksndcalls.py
 
 toolchain-diff:
 	@test -d $(WOLF3D) || { echo "no wolf3d-next checkout at $(WOLF3D)"; exit 1; }
