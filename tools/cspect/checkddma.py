@@ -56,8 +56,11 @@ def session(label, nex, sym, off, most=900):
         if f.startswith(os.path.basename(log)):
             os.remove(os.path.join(OUT, f))
     pokes = f"{sym['start_part']:X}=2"                  # part index 1, the intro
-    if off:
+    if off:                                             # and undo ddma_probe's two patches
         pokes += f",{sym['ddma_have']:X}=0"
+        pokes += f",{sym['dm_pre']:X}=83,{sym['dm_pre'] + 1:X}=83"
+        pk = sym['dma_mem.plain']
+        pokes += f",{sym['dma_mem.fill'] + 1:X}={pk & 0xFF:X},{sym['dma_mem.fill'] + 2:X}={pk >> 8:X}"
     env = dict(os.environ, AWPROBE_LOG=log, AWPROBE_MAX="100000", AWPROBE_GO=f"{sym['go']:X}",
                AWPROBE_POKE=pokes, AWPROBE_BLIT=f"{sym['n_blit']:X}:" + ",".join(map(str, BLITS)),
                AWPROBE_DDMA=f"{sym['ddma_have']:X}:{sym['n_ddma']:X}")

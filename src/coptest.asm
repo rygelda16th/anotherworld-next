@@ -37,7 +37,8 @@ NR_COP_LO       EQU $61                 ; write index, low byte
 NR_COP_HI       EQU $62                 ; %cc000iii: control bits and the index's high bits
 NR_DAC_AD       EQU $2D
 DMA_PORT        EQU $6B
-COP_LOOP        EQU %10000000           ; start, and loop the list from its start
+COP_LOOP        EQU %11000000           ; restart the list at raster (0,0) every frame: %10 plays it
+                                        ; once and stops on the KS3 and in CSpect 4.5.1.0
 
 LINES           EQU 312
 HALF            EQU 156

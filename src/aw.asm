@@ -211,7 +211,9 @@ NR_COP_DATA     EQU $60
 NR_COP_LO       EQU $61
 NR_COP_HI       EQU $62                 ; %cc000iii
 NR_DAC_AD       EQU $2D
-COP_LOOP        EQU %10000000
+COP_LOOP        EQU %11000000           ; restart the list at raster (0,0) every frame. %10, "loop",
+                                        ; plays the list once and stops on the KS3 and in CSpect
+                                        ; 4.5.1.0 (one beep, then silence); ZEsarUX and CSpect 3 loop
 LINEINT_ON      EQU %00000110           ; line interrupt on, ULA interrupt off
         DEFINE SND_STRIDE4              ; sound.inc: mix into every fourth byte
         DEFINE SND_NO_DMA               ; sound.inc: no DMA stream programme
@@ -3445,11 +3447,50 @@ ddma_probe:
         jr      nz, .set
         inc     a
 .set:   ld      (ddma_have), a          ; over whatever a plain zxnDMA copied there
+        or      a
+        jr      z, .plain
+        ld      hl, $00DF               ; dm_pre: $DF 0 in front of every dma_mem copy
+        ld      (dm_pre), hl
+        ld      hl, ddma_tramp          ; and every fill by the zxnDDMA's own
+        ld      (dma_mem.fill + 1), hl
+.plain:
         xor     a
         ld      ($E000 + DDMA_MARK), a  ; the two bytes zero again
         ld      ($E000 + (ddma_have & $1FFF)), a
         pop     af
         nextreg NR_MMU7, a
+        ; and on into irq_latch: it is boot work for the same page, and costs no resident bytes
+
+;-----------------------------------------------------------------------------
+; irq_latch - HARDWARE IM2, so a line interrupt waits for the CPU instead of being lost.
+;
+; In the default pulse mode (nextreg $C0 bit 0 = 0) a line interrupt is a pulse a few microseconds
+; long. If interrupts are off - every esxDOS call here - or the DMA is holding the CPU when it comes,
+; it is gone, and the copper replays the half-frame that interrupt should have refilled: on the KS3
+; the music dragged and stretched. In hardware IM2 mode the core holds it pending until the CPU
+; takes it (the core's registers.txt, nextreg $C0 and $C8), so a refill is late, not lost.
+;
+; The DMA must never wait for an interrupt: with $CC-$CE set, a transfer started under DI never runs
+; (docs/zxnDDMA/zxnddma.gde 2.9 note 10), and dma_mem's flush sends the copper upload under DI. So
+; all three are cleared, as the guide's own example does. No CTC or UART interrupts ($C5, $C6), and
+; no expansion bus ($C4 bit 7, on at reset): only the line interrupt, which nextreg $22 enables. The
+; vector is $00 + 0 for the line interrupt; the table is 257 bytes of one value, so any vector works.
+; The ISR ends EI / RETI, which is what clears the pending state.
+;-----------------------------------------------------------------------------
+irq_latch:
+        nextreg $CC, 0
+        nextreg $CD, 0
+        nextreg $CE, 0
+        nextreg $C5, 0
+        nextreg $C6, 0
+        ld      bc, $243B
+        ld      a, $C4
+        out     (c), a
+        inc     b
+        in      a, (c)
+        and     %00000011               ; the line and ULA enables, as nextreg $22 set them
+        nextreg $C4, a
+        nextreg $C0, %00000001          ; hardware IM2, vector bits 7:5 = 0
         ret
 
 ddma_probe_prog:
@@ -4581,8 +4622,8 @@ pace_due:       dw 0
 ; ZEsarUX's own audio output clean over 92,159 samples, and CSpect's copper writing $2D exactly
 ; 15,600 times a second.
 ;
-; The list is 312 WAIT L / MOVE $2D pairs and 400 NOOPs, in LOOP mode, so it wraps once a frame
-; wherever the vertical blank falls. The interrupt fires at LINE_A and LINE_B, mixes 156 lines into
+; The list is 312 WAIT L / MOVE $2D pairs and 400 NOOPs, restarted at raster
+; (0,0) every frame (COP_LOOP). The interrupt fires at LINE_A and LINE_B, mixes 156 lines into
 ; the half of the list the beam has just played and has the DMA upload them - at least 64 lines
 ; ahead of the beam, so nothing is overwritten before it plays.
 ;-----------------------------------------------------------------------------
@@ -4988,16 +5029,15 @@ dma_mem:
         or      a
         ld      a, $54                  ; WR1: port A memory, incrementing
         jr      z, .kind
-        ld      a, (ddma_have)
-        or      a
-        jp      nz, ddma_tramp          ; the core's own fill (plan-ddma.md D1)
+.fill:  jp      .plain                  ; ddma_probe makes it `jp ddma_tramp`: the core's own fill
+.plain:                                 ; (plan-ddma.md D1)
         ld      a, $64                  ; WR1: port A memory, fixed - a fill
 .kind:
         ld      (dm_wr1), a
         ld      a, 1
         ld      (dma_busy), a
-        ld      hl, dm_prog
-        ld      bc, ((dm_end - dm_prog) << 8) | DMA_PORT
+        ld      hl, dm_pre
+        ld      bc, ((dm_end - dm_pre) << 8) | DMA_PORT
         otir
 .sent:
         xor     a
@@ -5018,6 +5058,15 @@ dma_mem:
         ei
         ret
 
+; dm_pre: two DISABLEs, which a plain zxnDMA ignores - or, once ddma_probe has found the zxnDDMA,
+; its command with no flags ($DF 0), which makes the copy that follows about twelve times faster:
+; 8K in 278 raster lines without it on the KS3 (plan-ddma.md D2's test 2), and 22 with it in CSpect
+; 4.5.1.0, which gives the KS3's own 278 and 9 for the other two. 278 lines held the interrupt
+; past the copper's 64 lines of headroom, so the sound replayed half-frames: it stretched.
+        EXPORT dm_pre
+        EXPORT dma_mem.fill
+        EXPORT dma_mem.plain
+dm_pre:         db      $83, $83
 dm_prog:
         db      $83                     ; DISABLE
         db      $7D                     ; WR0: A -> B, address and length follow
