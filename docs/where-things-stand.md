@@ -3862,9 +3862,10 @@ true. It is also where the one genuinely unmeasurable number lands: esxDOS read
 rate, which step 5 established the emulator cannot time.
 
 **Started 2026-11-18.** The game boots from a card on the KS3 and plays the intro with sound,
-after the three sound fixes in plan-ddma.md ("The KS3"). The KS3 runs at 50 Hz. Still to do on
-metal: the rest of the game, part 4's pacing, the joystick, the Pi card builds, and how long an
-esxDOS read takes (`ST_CHUNK`).
+after the three sound fixes in plan-ddma.md ("The KS3"). The KS3 runs at 50 Hz. The joystick works:
+David tried it on the KS3 the same day (Kempston, port $1F, `src/inc/input.inc`). Still to do on
+metal: the rest of the game, part 4's pacing, the Pi card builds, and how long an esxDOS read
+takes (`ST_CHUNK`).
 
 ### Four gates are narrower than they sound - all four are now settled
 
