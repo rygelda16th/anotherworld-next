@@ -3844,6 +3844,15 @@ page clears, which are frequent only in part index 4: about 81% to 85% there by 
 counts, under a point elsewhere. A 2D fill of a 320x256 row was measured and not built: CSpect
 4.5.1.0 writes the wrong bytes for it, so only the KS3 can price it (`make measure-ddma`).
 
+**On the KS3, 2026-11-18** (docs/plan-ddma.md, "The KS3"): the bench matched CSpect 4.5.1.0 digit
+for digit. Two statements above were wrong: the plain zxnDMA's 278 lines an 8K strip are the
+machine's, so the fill gains about thirty times, not two; and the 2D fill's wrong counts are the
+same on the KS3, so the bench is the suspect, not the emulator. Copies now go by the zxnDDMA too
+(`$DF 0` first, about twelve times faster). And the sound, silent and then dragging on the KS3, is
+fixed: the copper restarts every frame (LOOP mode plays the list once on real hardware), and
+hardware IM2 holds a line interrupt that comes under DI or a DMA transfer instead of losing it.
+David judged it fixed on the KS3.
+
 #### H1. Real hardware
 
 Card boot, the joystick's physical wiring, and timing on metal without the three
@@ -3851,6 +3860,11 @@ local ZEsarUX patches (`prescalar`, `readback`, `autorestart`). Its gate cannot 
 run until the KS3 arrives, and it is the only step in this document of which that is
 true. It is also where the one genuinely unmeasurable number lands: esxDOS read
 rate, which step 5 established the emulator cannot time.
+
+**Started 2026-11-18.** The game boots from a card on the KS3 and plays the intro with sound,
+after the three sound fixes in plan-ddma.md ("The KS3"). The KS3 runs at 50 Hz. Still to do on
+metal: the rest of the game, part 4's pacing, the joystick, the Pi card builds, and how long an
+esxDOS read takes (`ST_CHUNK`).
 
 ### Four gates are narrower than they sound - all four are now settled
 
